@@ -1,0 +1,13 @@
+@import "tailwindcss";
+
+/* Dark mode triggered by .dark class on <html> */
+@variant dark (&:where(.dark, .dark *));
+
+#root {
+  width: 100%;
+  min-height: 100vh;
+}
+
+body {
+  margin: 0;
+}
