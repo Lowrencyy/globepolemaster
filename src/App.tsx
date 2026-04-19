@@ -69,6 +69,7 @@ export default function App() {
         <Route path="/field/live" element={<ProtectedRoute><LiveTeardownPage /></ProtectedRoute>} />
         <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Routes>
+      
     </BrowserRouter >
   )
 }

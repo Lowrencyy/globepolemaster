@@ -163,7 +163,7 @@ export default function Sidebar() {
             <li className={labelCls}>Reports</li>
 
             <li className={auditRpts.open ? 'mm-active' : ''}>
-              <a href="javascript:void(0);" onClick={auditRpts.toggle} aria-expanded={auditRpts.open} className={parentCls}>
+              <a href="javascript:void(0);" onClick={auditRpts.toggle} aria-expanded={auditRpts.open} className={auditRpts.childActive ? activeLinkCls : parentCls}>
                 <i data-feather="bar-chart-2"></i>
                 <span>Audit Reports</span>
               </a>
