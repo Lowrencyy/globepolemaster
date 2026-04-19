@@ -7,6 +7,8 @@ import PoleMapView from './pages/poles/PoleMapView'
 import AllNapBoxes from './pages/nap/AllNapBoxes'
 import NapBoxReport from './pages/nap/NapBoxReport'
 import SlotStatus from './pages/nap/SlotStatus'
+import PoleAudit from './pages/poleaudit/PoleAudit'
+import LiveTeardown from './pages/field/LiveTeardown'
 import { isAuthenticated } from './lib/auth'
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
@@ -22,6 +24,14 @@ function Dashboard() {
   )
 }
 
+function PoleAuditPage() {
+  return <Layout><PoleAudit /></Layout>
+}
+
+function LiveTeardownPage() {
+  return <Layout><LiveTeardown /></Layout>
+}
+
 function AllPolesPage() {
   return <Layout><AllPoles /></Layout>
 }
@@ -29,6 +39,8 @@ function AllPolesPage() {
 function PoleMapViewPage() {
   return <Layout><PoleMapView /></Layout>
 }
+
+
 
 function AllNapBoxesPage() {
   return <Layout><AllNapBoxes /></Layout>
@@ -53,8 +65,10 @@ export default function App() {
         <Route path="/nap/boxes" element={<ProtectedRoute><AllNapBoxesPage /></ProtectedRoute>} />
         <Route path="/nap/report" element={<ProtectedRoute><NapBoxReportPage /></ProtectedRoute>} />
         <Route path="/nap/slot-status" element={<ProtectedRoute><SlotStatusPage /></ProtectedRoute>} />
+        <Route path="/polereports/poleAudit" element={<ProtectedRoute><PoleAuditPage /></ProtectedRoute>} />
+        <Route path="/field/live" element={<ProtectedRoute><LiveTeardownPage /></ProtectedRoute>} />
         <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Routes>
-    </BrowserRouter>
+    </BrowserRouter >
   )
 }

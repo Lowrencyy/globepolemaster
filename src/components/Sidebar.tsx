@@ -26,7 +26,7 @@ export default function Sidebar() {
   const subscriber   = useOpen(pathname, [])
   const teardown     = useOpen(pathname, [])
   const validation   = useOpen(pathname, [])
-  const auditRpts    = useOpen(pathname, [])
+  const auditRpts    = useOpen(pathname, ['/polereports/poleAudit'])
   const ownerPrev    = useOpen(pathname, [])
   const areaMgmt     = useOpen(pathname, [])
 
@@ -59,6 +59,14 @@ export default function Sidebar() {
 
             {/* ── GLOBE ── */}
             <li className={labelCls}>Globe</li>
+
+            {/* Live Teardown Map */}
+            <li className={pathname === '/field/live' ? 'mm-active' : ''}>
+              <a href="/field/live" className={pathname === '/field/live' ? activeLinkCls : linkCls}>
+                <i data-feather="activity"></i>
+                <span>Live Teardown Map</span>
+              </a>
+            </li>
 
             {/* Area Management */}
             <li className={areaMgmt.open ? 'mm-active' : ''}>
@@ -160,7 +168,7 @@ export default function Sidebar() {
                 <span>Audit Reports</span>
               </a>
               <ul style={{ display: auditRpts.open ? 'block' : 'none' }}>
-                {sub('#', 'Pole Audit Summary')}
+                {sub('/polereports/poleAudit', 'Pole Audit Summary')}
                 {sub('#', 'NAP Utilization')}
                 {sub('#', 'Span Teardown Report')}
                 {sub('#', 'Validation Summary')}
