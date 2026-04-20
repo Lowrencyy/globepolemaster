@@ -1,7 +1,7 @@
 import { useMemo, useState, type ReactNode, type SyntheticEvent } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { isAdmin } from '../../lib/auth'
 import PsgcCascade from '../../components/PsgcCascade'
-import NapSlotPreview from '../../components/NapSlotPreview'
 
 type NapStatus = 'active' | 'inactive' | 'damaged' | 'for_replacement'
 type NapType   = '8-port' | '16-port' | '24-port'
@@ -234,6 +234,7 @@ function NapForm({ data, onChange, onSubmit, close, mode }: FormProps) {
 
 export default function AllNapBoxes() {
   const admin = isAdmin()
+  const navigate = useNavigate()
   const [boxes, setBoxes]         = useState<NapBox[]>(initialBoxes)
   const [search, setSearch]       = useState('')
   const [filterStatus, setFilterStatus] = useState<'all' | NapStatus>('all')
@@ -241,7 +242,6 @@ export default function AllNapBoxes() {
   const [isAddOpen, setIsAddOpen] = useState(false)
   const [editBox, setEditBox]     = useState<NapBox | null>(null)
   const [delBox, setDelBox]       = useState<NapBox | null>(null)
-  const [slotBox, setSlotBox]     = useState<NapBox | null>(null)
   const [formData, setFormData]   = useState<NapBox>(emptyBox())
 
   const counts = useMemo(() => ({
@@ -264,7 +264,7 @@ export default function AllNapBoxes() {
 
   const owners = useMemo(() => ['all', ...Array.from(new Set(boxes.map(b => b.owner)))], [boxes])
 
-  const close = () => { setIsAddOpen(false); setEditBox(null); setDelBox(null); setSlotBox(null) }
+  const close = () => { setIsAddOpen(false); setEditBox(null); setDelBox(null) }
 
   const handleAdd = (e: SyntheticEvent<HTMLFormElement>) => {
     e.preventDefault()
@@ -388,9 +388,9 @@ export default function AllNapBoxes() {
                   <tr key={b.id} className="hover:bg-slate-50/60 dark:hover:bg-zinc-700/30 transition-colors">
                     <td className="px-4 py-3 text-center">
                       <button
-                        onClick={() => setSlotBox(b)}
+                        onClick={() => navigate(`/nap/boxes/${b.id}`)}
                         className="font-mono text-xs font-semibold text-violet-600 dark:text-violet-400 hover:underline underline-offset-2 transition"
-                        title="View slot layout"
+                        title="View full detail"
                       >
                         {b.id}
                       </button>
@@ -492,31 +492,6 @@ export default function AllNapBoxes() {
         </div>
       </Modal>
 
-      {/* Slot Preview Modal */}
-      <Modal
-        open={!!slotBox}
-        onClose={close}
-        title={`Slot Layout — ${slotBox?.id ?? ''}`}
-        subtitle={`${slotBox?.type} · ${slotBox?.used_slots}/${slotBox?.total_slots} slots used`}
-        width="max-w-2xl"
-      >
-        {slotBox && (
-          <NapSlotPreview
-            box={{
-              id: slotBox.id,
-              tag: slotBox.tag,
-              type: slotBox.type,
-              owner: slotBox.owner,
-              city: slotBox.city,
-              barangay: slotBox.barangay,
-              status: slotBox.status,
-              used_slots: slotBox.used_slots,
-              total_slots: slotBox.total_slots,
-            }}
-            onClose={close}
-          />
-        )}
-      </Modal>
     </>
   )
 }

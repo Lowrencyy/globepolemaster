@@ -1,4 +1,6 @@
 import { useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
+
 import PsgcCascade from '../../components/PsgcCascade'
 
 type SlotStatus = 'occupied' | 'available' | 'reserved' | 'damaged'
@@ -92,6 +94,7 @@ function FiberPort({ slot, hovered, onHover }: { slot: Slot; hovered: Slot | nul
 // ── NAP Box panel card ───────────────────────────────────────────────────────
 function NapPanelCard({ box }: { box: NapBox }) {
   const [hovered, setHovered] = useState<Slot | null>(null)
+  const navigate = useNavigate()
 
   const cols = box.type === '8-port' ? 4 : box.type === '16-port' ? 8 : 12
   const row1 = box.slots.slice(0, cols)
@@ -106,14 +109,14 @@ function NapPanelCard({ box }: { box: NapBox }) {
   const utilPct = Math.round((counts.occupied / box.slots.length) * 100)
 
   return (
-    <div className="rounded-3xl bg-white dark:bg-zinc-800 shadow-sm ring-1 ring-slate-100 dark:ring-zinc-700 overflow-hidden">
+    <div onClick={() => navigate(`/nap/boxes/${box.id}`)} className="rounded-3xl bg-white dark:bg-zinc-800 shadow-sm ring-1 ring-slate-100 dark:ring-zinc-700 overflow-hidden cursor-pointer hover:ring-violet-400 dark:hover:ring-violet-500 transition-shadow hover:shadow-lg hover:shadow-violet-500/10">
 
       {/* Card header */}
       <div className="bg-gradient-to-r from-slate-800 to-slate-700 dark:from-zinc-900 dark:to-zinc-800 px-5 py-3 flex items-center justify-between gap-3">
         <div className="flex items-center gap-2.5">
           <div>
             <div className="flex items-center gap-2">
-              <span className="font-mono text-sm font-bold text-white">{box.id}</span>
+              <button onClick={() => navigate(`/nap/boxes/${box.id}`)} className="font-mono text-sm font-bold text-white hover:text-violet-300 transition underline-offset-2 hover:underline">{box.id}</button>
               <span className="text-white/40 text-xs">{box.tag}</span>
             </div>
             <p className="text-white/50 text-[11px] mt-0.5">

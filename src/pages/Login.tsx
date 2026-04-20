@@ -21,7 +21,7 @@ export default function Login() {
       if (token) saveToken(token)
       if (data.user) saveUser(data.user)
       console.log('[auth] login response:', data)
-      navigate('/dashboard')
+      navigate('/loading')
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Invalid credentials.')
     } finally {

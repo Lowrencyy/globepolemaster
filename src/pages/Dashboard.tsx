@@ -89,13 +89,13 @@ function initCharts() {
   }
 }
 
-const recentTeardowns = [
-  { id: 'TD-0041', span: 'SP-1032', pole: 'PL-8812', area: 'Brgy. Sta. Cruz, Makati', status: 'for_validation', date: 'Apr 17, 2026' },
-  { id: 'TD-0040', span: 'SP-0987', pole: 'PL-7703', area: 'Brgy. Palanan, Makati', status: 'approved', date: 'Apr 16, 2026' },
-  { id: 'TD-0039', span: 'SP-1011', pole: 'PL-8801', area: 'Brgy. Bangkal, Makati', status: 'completed', date: 'Apr 15, 2026' },
-  { id: 'TD-0038', span: 'SP-0952', pole: 'PL-7654', area: 'Brgy. Pio del Pilar, Makati', status: 'rejected', date: 'Apr 14, 2026' },
-  { id: 'TD-0037', span: 'SP-1005', pole: 'PL-8790', area: 'Brgy. Comembo, Makati', status: 'for_validation', date: 'Apr 13, 2026' },
-  { id: 'TD-0036', span: 'SP-0944', pole: 'PL-7621', area: 'Brgy. Pembo, Makati', status: 'approved', date: 'Apr 12, 2026' },
+const napSurveys = [
+  { id: 'NAP-0021', pole: 'PL-8812', area: 'Brgy. Sta. Cruz, Makati', surveyedBy: 'J. Santos', total: 12, used: 9, free: 2, inactive: 1, utilization: 75, status: 'complete',  date: 'Apr 17, 2026' },
+  { id: 'NAP-0019', pole: 'PL-7703', area: 'Brgy. Palanan, Makati',   surveyedBy: 'R. Cruz',   total: 8,  used: 5, free: 3, inactive: 0, utilization: 63, status: 'complete',  date: 'Apr 16, 2026' },
+  { id: 'NAP-0018', pole: 'PL-8801', area: 'Brgy. Bangkal, Makati',   surveyedBy: 'M. Reyes',  total: 16, used: 14,free: 1, inactive: 1, utilization: 88, status: 'flagged',   date: 'Apr 15, 2026' },
+  { id: 'NAP-0016', pole: 'PL-7654', area: 'Brgy. Pio del Pilar, Makati', surveyedBy: 'A. Dela Cruz', total: 12, used: 6, free: 6, inactive: 0, utilization: 50, status: 'pending', date: 'Apr 14, 2026' },
+  { id: 'NAP-0015', pole: 'PL-8790', area: 'Brgy. Comembo, Makati',  surveyedBy: 'J. Santos', total: 8,  used: 4, free: 3, inactive: 1, utilization: 50, status: 'complete',  date: 'Apr 13, 2026' },
+  { id: 'NAP-0013', pole: 'PL-7621', area: 'Brgy. Pembo, Makati',    surveyedBy: 'R. Cruz',   total: 16, used: 16,free: 0, inactive: 0, utilization: 100,status: 'flagged',   date: 'Apr 12, 2026' },
 ]
 
 const validationQueue = [
@@ -105,33 +105,30 @@ const validationQueue = [
   { id: 'TD-0029', submittedBy: 'A. Dela Cruz', pole: 'PL-6540', span: 'SP-0820', evidence: { before: true, after: true, tag: true, gps: false }, date: 'Apr 14, 2026' },
 ]
 
-const statusBadge: Record<string, string> = {
-  for_validation: 'bg-yellow-500/40 text-yellow-500 dark:bg-yellow-500/30',
-  approved:       'bg-green-500/40 text-green-500 dark:bg-green-500/30',
-  completed:      'bg-violet-500/40 text-violet-500 dark:bg-violet-500/30',
-  rejected:       'bg-red-500/40 text-red-500 dark:bg-red-500/30',
+const surveyBadge: Record<string, string> = {
+  complete: 'bg-green-500/40 text-green-500 dark:bg-green-500/30',
+  pending:  'bg-yellow-500/40 text-yellow-500 dark:bg-yellow-500/30',
+  flagged:  'bg-red-500/40 text-red-500 dark:bg-red-500/30',
 }
 
-const statusLabel: Record<string, string> = {
-  for_validation: 'For Validation',
-  approved: 'Approved',
-  completed: 'Completed',
-  rejected: 'Rejected',
+const surveyLabel: Record<string, string> = {
+  complete: 'Complete',
+  pending:  'Pending',
+  flagged:  'Flagged',
 }
+
 
 export default function Dashboard() {
-  const [txTab, setTxTab] = useState<'all' | 'pending' | 'approved' | 'rejected'>('all')
+  const [surveyTab, setSurveyTab] = useState<'all' | 'complete' | 'pending' | 'flagged'>('all')
 
   useEffect(() => {
     const timer = setTimeout(initCharts, 100)
     return () => clearTimeout(timer)
   }, [])
 
-  const filtered = txTab === 'all'
-    ? recentTeardowns
-    : txTab === 'pending'
-      ? recentTeardowns.filter(r => r.status === 'for_validation')
-      : recentTeardowns.filter(r => r.status === txTab)
+  const filteredSurveys = surveyTab === 'all'
+    ? napSurveys
+    : napSurveys.filter(s => s.status === surveyTab)
 
   return (
     <>
@@ -275,7 +272,7 @@ export default function Dashboard() {
                     ].map(s => (
                       <div key={s.label} className="flex items-center">
                         <i className={`mr-2 align-middle mdi mdi-circle text-10 ${s.dot}`}></i>
-                        <span className="flex-grow text-gray-700 dark:text-zinc-100 text-13">{s.label}</span>
+                        <span className="grow text-gray-700 dark:text-zinc-100 text-13">{s.label}</span>
                         <span className="font-medium text-gray-700 dark:text-gray-100 text-13">{s.val}</span>
                       </div>
                     ))}
@@ -287,21 +284,24 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Row 3 — Teardown Logs + Map */}
+      {/* Row 3 — NAP Survey + Map */}
       <div className="grid grid-cols-12 gap-6 gap-y-0 2xl:gap-6 mt-4">
 
-        {/* Teardown Logs table */}
+        {/* NAP Box Latest Survey View */}
         <div className="col-span-12 lg:col-span-8">
           <div className="card dark:bg-zinc-800 dark:border-zinc-600 card-h-100">
             <div className="nav-tabs border-b-tabs">
-              <div className="flex pb-0 border-b card-body border-gray-50 dark:border-zinc-700">
-                <h5 className="flex-grow mr-2 text-gray-800 text-15 dark:text-gray-100">Recent Teardown Logs</h5>
+              <div className="flex pb-0 border-b card-body border-gray-50 dark:border-zinc-700 items-center">
+                <div className="grow">
+                  <h5 className="text-gray-800 text-15 dark:text-gray-100">NAP Box Latest Survey</h5>
+                  <p className="text-xs text-gray-500 dark:text-zinc-400 mt-0.5">Most recent pole survey submissions</p>
+                </div>
                 <ul className="flex nav" role="tablist">
-                  {([['all','All'],['pending','Pending'],['approved','Approved'],['rejected','Rejected']] as const).map(([v, l]) => (
+                  {([['all','All'],['complete','Complete'],['pending','Pending'],['flagged','Flagged']] as const).map(([v, l]) => (
                     <li key={v} className="nav-item">
                       <a
-                        onClick={() => setTxTab(v)}
-                        className={`inline-block px-4 pb-3 font-medium dark:text-gray-100 cursor-pointer ${txTab === v ? 'active' : ''}`}
+                        onClick={() => setSurveyTab(v)}
+                        className={`inline-block px-4 pb-3 font-medium dark:text-gray-100 cursor-pointer ${surveyTab === v ? 'active' : ''}`}
                       >
                         {l}
                       </a>
@@ -314,22 +314,40 @@ export default function Dashboard() {
                   <table className="table w-full">
                     <thead>
                       <tr className="border-b border-gray-50 dark:border-zinc-700">
-                        {['Ticket','Span','Pole','Area','Date','Status'].map(h => (
+                        {['NAP Box','Pole','Area','Surveyed By','Slots','Utilization','Date','Status'].map(h => (
                           <th key={h} className="p-3 text-left text-xs font-medium text-gray-600 dark:text-zinc-400">{h}</th>
                         ))}
                       </tr>
                     </thead>
                     <tbody>
-                      {filtered.map(row => (
-                        <tr key={row.id}>
-                          <td className="p-3 font-medium text-violet-500 text-sm">{row.id}</td>
-                          <td className="p-3 text-sm text-gray-700 dark:text-gray-100">{row.span}</td>
+                      {filteredSurveys.map(row => (
+                        <tr key={row.id} className="border-b border-gray-50/60 dark:border-zinc-700/60 last:border-0">
+                          <td className="p-3 font-mono font-medium text-violet-500 text-sm">{row.id}</td>
                           <td className="p-3 text-sm text-gray-700 dark:text-gray-100">{row.pole}</td>
-                          <td className="p-3 text-xs text-gray-600 dark:text-zinc-100 whitespace-nowrap">{row.area}</td>
+                          <td className="p-3 text-xs text-gray-600 dark:text-zinc-100 max-w-35 truncate">{row.area}</td>
+                          <td className="p-3 text-xs text-gray-600 dark:text-zinc-100 whitespace-nowrap">{row.surveyedBy}</td>
+                          <td className="p-3">
+                            <div className="flex gap-1 text-[10px] font-medium">
+                              <span className="px-1.5 py-0.5 rounded bg-violet-500/20 text-violet-500">{row.used}U</span>
+                              <span className="px-1.5 py-0.5 rounded bg-green-500/20 text-green-500">{row.free}F</span>
+                              {row.inactive > 0 && <span className="px-1.5 py-0.5 rounded bg-red-500/20 text-red-400">{row.inactive}X</span>}
+                            </div>
+                          </td>
+                          <td className="p-3">
+                            <div className="flex items-center gap-2 min-w-20">
+                              <div className="grow h-1.5 rounded-full bg-gray-200 dark:bg-zinc-600">
+                                <div
+                                  className={`h-1.5 rounded-full ${row.utilization >= 90 ? 'bg-red-500' : row.utilization >= 60 ? 'bg-violet-500' : 'bg-green-500'}`}
+                                  style={{ width: `${row.utilization}%` }}
+                                />
+                              </div>
+                              <span className="text-[11px] font-medium text-gray-700 dark:text-zinc-100 whitespace-nowrap">{row.utilization}%</span>
+                            </div>
+                          </td>
                           <td className="p-3 text-xs text-gray-600 dark:text-zinc-100 whitespace-nowrap">{row.date}</td>
                           <td className="p-3">
-                            <span className={`text-[10px] py-[1px] px-2 rounded font-medium ${statusBadge[row.status] ?? ''}`}>
-                              {statusLabel[row.status] ?? row.status}
+                            <span className={`text-[10px] py-[1px] px-2 rounded font-medium ${surveyBadge[row.status] ?? ''}`}>
+                              {surveyLabel[row.status] ?? row.status}
                             </span>
                           </td>
                         </tr>
@@ -369,7 +387,7 @@ export default function Dashboard() {
         <div className="card dark:bg-zinc-800 dark:border-zinc-600">
           <div className="nav-tabs border-b-tabs">
             <div className="flex pb-0 border-b card-body border-gray-50 dark:border-zinc-700">
-              <h5 className="flex-grow mr-2 text-gray-800 text-15 dark:text-gray-100">Validation Queue</h5>
+              <h5 className="grow mr-2 text-gray-800 text-15 dark:text-gray-100">Validation Queue</h5>
               <span className="text-[10px] py-[1px] px-2 rounded font-medium bg-yellow-500/40 text-yellow-500 dark:bg-yellow-500/30 self-center">
                 {validationQueue.length} pending
               </span>

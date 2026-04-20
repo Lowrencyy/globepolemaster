@@ -25,13 +25,7 @@ export default function Layout({ children }: { children: ReactNode }) {
     const initAll = () => {
       if (w.feather) w.feather.replace()
 
-      const sideMenu = document.getElementById('side-menu')
-      if (sideMenu && w.MetisMenu) {
-        // destroy previous instance to avoid duplicate handlers on StrictMode double-mount
-        try { (sideMenu as any)._metisMenu?.dispose() } catch (_) {}
-        const mm = new w.MetisMenu('#side-menu')
-        ;(sideMenu as any)._metisMenu = mm
-      }
+      // sidebar dropdowns are fully React-controlled via useOpen() — MetisMenu removed to prevent conflict
 
       // re-run app.js sidebar collapse init
       const verticalBtn = document.getElementById('vertical-menu-btn')

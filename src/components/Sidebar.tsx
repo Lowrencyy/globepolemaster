@@ -21,7 +21,7 @@ export default function Sidebar() {
   const { pathname } = useLocation()
 
   const poleMaster   = useOpen(pathname, ['/poles/all', '/poles/map'])
-  const napInventory = useOpen(pathname, ['/nap/boxes', '/nap/report', '/nap/slot-status'])
+  const napInventory = useOpen(pathname, ['/nap/boxes', '/nap/slot-status'])
   const spanMgmt     = useOpen(pathname, [])
   const subscriber   = useOpen(pathname, [])
   const teardown     = useOpen(pathname, [])
@@ -102,8 +102,7 @@ export default function Sidebar() {
                 <span>NAP Inventory</span>
               </a>
               <ul style={{ display: napInventory.open ? 'block' : 'none' }}>
-                {sub('/nap/boxes',  'NAP Boxes')}
-                {sub('/nap/report', 'NAP Box Report')}
+                {sub('/nap/boxes',       'NAP Boxes')}
                 {sub('/nap/slot-status', 'Slot Status')}
               </ul>
             </li>
@@ -112,11 +111,12 @@ export default function Sidebar() {
             <li className={spanMgmt.open ? 'mm-active' : ''}>
               <a href="javascript:void(0);" onClick={spanMgmt.toggle} aria-expanded={spanMgmt.open} className={parentCls}>
                 <i data-feather="git-commit"></i>
-                <span>Span Management</span>
+                <span>Teardown Management</span>
               </a>
               <ul style={{ display: spanMgmt.open ? 'block' : 'none' }}>
-                {sub('#', 'All Spans')}
-                {sub('#', 'Span per Pole')}
+                {sub('#', 'Teardown Report')}
+                {sub('#', 'Teardown Approval')}
+                {sub('#', 'Daily Reports')}
               </ul>
             </li>
 
