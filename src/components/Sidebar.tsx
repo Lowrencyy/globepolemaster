@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { useLocation } from 'react-router-dom'
+import { useLocation, Link } from 'react-router-dom'
 
 const linkCls = "block py-2.5 px-6 text-sm font-medium text-gray-950 transition-all duration-150 ease-linear hover:text-violet-500 dark:text-gray-300 dark:hover:text-white"
 const parentCls = `${linkCls} nav-menu`
@@ -32,12 +32,16 @@ export default function Sidebar() {
 
   const sub = (href: string, label: string) => {
     const isActive = href !== '#' && pathname.startsWith(href)
+    const cls = isActive ? subActiveCls : subCls
     return (
       <li key={label} className={isActive ? 'mm-active' : ''}>
-        <a href={href} className={isActive ? subActiveCls : subCls}>
-          {isActive && <span className="mr-1.5 inline-block h-1.5 w-1.5 rounded-full bg-violet-500 align-middle" />}
-          {label}
-        </a>
+        {href === '#'
+          ? <a href="#" className={cls}>{label}</a>
+          : <Link to={href} className={cls}>
+              {isActive && <span className="mr-1.5 inline-block h-1.5 w-1.5 rounded-full bg-violet-500 align-middle" />}
+              {label}
+            </Link>
+        }
       </li>
     )
   }
@@ -51,21 +55,29 @@ export default function Sidebar() {
             {/* ── MAIN ── */}
             <li className={labelCls}>Main</li>
             <li className={pathname === '/dashboard' ? 'mm-active' : ''}>
-              <a href="/dashboard" className={pathname === '/dashboard' ? activeLinkCls : linkCls}>
+              <Link to="/dashboard" className={pathname === '/dashboard' ? activeLinkCls : linkCls}>
                 <i data-feather="home"></i>
                 <span> Dashboard</span>
-              </a>
+              </Link>
             </li>
 
             {/* ── GLOBE ── */}
             <li className={labelCls}>Globe</li>
 
-            {/* Live Teardown Map */}
+            {/* Live Onsite Map */}
             <li className={pathname === '/field/live' ? 'mm-active' : ''}>
-              <a href="/field/live" className={pathname === '/field/live' ? activeLinkCls : linkCls}>
-                <i data-feather="activity"></i>
-                <span>Live Teardown Map</span>
-              </a>
+              <Link to="/field/live" className={pathname === '/field/live' ? activeLinkCls : linkCls}>
+                <i data-feather="radio"></i>
+                <span>Live Onsite Map</span>
+              </Link>
+            </li>
+
+            {/* Live Teardown Logs */}
+            <li className={pathname === '/field/live' ? 'mm-active' : ''}>
+              <Link to="/field/live" className={pathname === '/field/live' ? activeLinkCls : linkCls}>
+                <i data-feather="clipboard"></i>
+                <span>Live Teardown Logs</span>
+              </Link>
             </li>
 
             {/* Area Management */}
@@ -79,6 +91,19 @@ export default function Sidebar() {
                 {sub('#', 'Provinces')}
                 {sub('#', 'Cities / Municipalities')}
                 {sub('#', 'Barangays')}
+              </ul>
+            </li>
+            
+            {/* Node Management */}
+            <li className={spanMgmt.open ? 'mm-active' : ''}>
+              <a href="javascript:void(0);" onClick={spanMgmt.toggle} aria-expanded={spanMgmt.open} className={parentCls}>
+                <i data-feather="git-commit"></i>
+                <span>Node List</span>
+              </a>
+              <ul style={{ display: spanMgmt.open ? 'block' : 'none' }}>
+                {sub('#', 'Teardown Report')}
+                {sub('#', 'Teardown Approval')}
+                {sub('#', 'Daily Reports')}
               </ul>
             </li>
 
@@ -106,6 +131,7 @@ export default function Sidebar() {
                 {sub('/nap/slot-status', 'Slot Status')}
               </ul>
             </li>
+
 
             {/* Span Management */}
             <li className={spanMgmt.open ? 'mm-active' : ''}>

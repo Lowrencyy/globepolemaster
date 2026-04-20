@@ -21,6 +21,50 @@ interface Lineman {
   trail: Array<{ lat: number; lng: number }>
 }
 
+// ── Teardown log mock data ────────────────────────────────────────────────────
+
+type LogAction = 'started' | 'completed' | 'submitted' | 'flagged' | 'on_site'
+
+interface TeardownLog {
+  id: string
+  ticket: string
+  lineman: string
+  employeeId: string
+  pole: string
+  span: string
+  area: string
+  action: LogAction
+  ts: Date
+}
+
+const LOG_ACTION_STYLE: Record<LogAction, { label: string; cls: string }> = {
+  started:   { label: 'Started',   cls: 'bg-blue-500/20 text-blue-500' },
+  on_site:   { label: 'On Site',   cls: 'bg-violet-500/20 text-violet-500' },
+  completed: { label: 'Completed', cls: 'bg-green-500/20 text-green-500' },
+  submitted: { label: 'Submitted', cls: 'bg-teal-500/20 text-teal-500' },
+  flagged:   { label: 'Flagged',   cls: 'bg-red-500/20 text-red-400' },
+}
+
+function minsAgo(n: number) { const d = new Date(); d.setMinutes(d.getMinutes() - n); return d }
+
+const SEED_LOGS: TeardownLog[] = [
+  { id: 'L01', ticket: 'TK-0112', lineman: 'Ana Bautista',   employeeId: 'EMP-4055', pole: 'PL-7654', span: 'SP-1044', area: 'Laguna – Sta. Rosa',       action: 'started',   ts: minsAgo(1)  },
+  { id: 'L02', ticket: 'TK-0089', lineman: 'Ramon Castillo', employeeId: 'EMP-9007', pole: 'PL-6540', span: 'SP-0988', area: 'CDO – Divisoria',           action: 'on_site',   ts: minsAgo(3)  },
+  { id: 'L03', ticket: 'TK-0108', lineman: 'Juan Dela Cruz', employeeId: 'EMP-1042', pole: 'PL-8812', span: 'SP-1032', area: 'Makati – Brgy. Sta. Cruz',  action: 'completed', ts: minsAgo(6)  },
+  { id: 'L04', ticket: 'TK-0101', lineman: 'Luz Fernandez',  employeeId: 'EMP-8041', pole: 'PL-5210', span: 'SP-0920', area: 'Ilocos Sur – Vigan',        action: 'submitted', ts: minsAgo(11) },
+  { id: 'L05', ticket: 'TK-0095', lineman: 'Carlos Mendoza', employeeId: 'EMP-5002', pole: 'PL-5802', span: 'SP-0871', area: 'Cebu – Mandaue',            action: 'flagged',   ts: minsAgo(18) },
+  { id: 'L06', ticket: 'TK-0091', lineman: 'Maria Santos',   employeeId: 'EMP-2031', pole: 'PL-7703', span: 'SP-0987', area: 'QC – Brgy. Palanan',        action: 'submitted', ts: minsAgo(24) },
+  { id: 'L07', ticket: 'TK-0087', lineman: 'Ana Bautista',   employeeId: 'EMP-4055', pole: 'PL-7200', span: 'SP-0964', area: 'Laguna – Biñan',            action: 'completed', ts: minsAgo(30) },
+  { id: 'L08', ticket: 'TK-0083', lineman: 'Ramon Castillo', employeeId: 'EMP-9007', pole: 'PL-6480', span: 'SP-0941', area: 'CDO – Lapasan',             action: 'completed', ts: minsAgo(37) },
+]
+
+function timeAgo(date: Date) {
+  const diff = Math.floor((Date.now() - date.getTime()) / 60000)
+  if (diff < 1) return 'just now'
+  if (diff < 60) return `${diff}m ago`
+  return `${Math.floor(diff / 60)}h ${diff % 60}m ago`
+}
+
 // ── Mock data ─────────────────────────────────────────────────────────────────
 
 const SEED: Omit<Lineman, 'trail' | 'lastUpdate'>[] = [
@@ -123,10 +167,13 @@ export default function LiveTeardown() {
   const [linemen, setLinemen] = useState<Lineman[]>(() =>
     SEED.map(l => ({ ...l, trail: [], lastUpdate: new Date() }))
   )
-  const [baseTile, setBaseTile]       = useState<BaseTile>('satellite')
+  const [baseTile, setBaseTile]         = useState<BaseTile>('satellite')
   const [filterStatus, setFilterStatus] = useState<LinemanStatus | 'all'>('all')
-  const [search, setSearch]           = useState('')
-  const [selected, setSelected]       = useState<string | null>(null)
+  const [search, setSearch]             = useState('')
+  const [selected, setSelected]         = useState<string | null>(null)
+  const [logsOpen, setLogsOpen]         = useState(false)
+  const [logs, setLogs]                 = useState<TeardownLog[]>(SEED_LOGS)
+  const [logFilter, setLogFilter]       = useState<LogAction | 'all'>('all')
 
   const selectedLineman = linemen.find(l => l.id === selected) ?? null
 
@@ -259,8 +306,87 @@ export default function LiveTeardown() {
               </button>
             ))}
           </div>
+
+          {/* Logs toggle */}
+          <button
+            onClick={() => setLogsOpen(o => !o)}
+            className={`flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-semibold border transition ${logsOpen ? 'bg-violet-600 text-white border-violet-600' : 'bg-white dark:bg-zinc-800 text-slate-600 dark:text-zinc-300 border-slate-200 dark:border-zinc-600 hover:bg-slate-50 dark:hover:bg-zinc-700'}`}
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/>
+            </svg>
+            Teardown Logs
+            <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"
+              style={{ transform: logsOpen ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }}>
+              <polyline points="6 9 12 15 18 9"/>
+            </svg>
+          </button>
         </div>
       </div>
+
+      {/* ── Teardown Logs dropdown ── */}
+      {logsOpen && (
+        <div className="rounded-2xl bg-white dark:bg-zinc-800 shadow-sm ring-1 ring-slate-100 dark:ring-zinc-700 overflow-hidden">
+          {/* Dropdown header */}
+          <div className="flex items-center justify-between px-4 py-2.5 border-b border-slate-100 dark:border-zinc-700">
+            <div className="flex items-center gap-2">
+              <span className="h-2 w-2 rounded-full bg-green-500 animate-pulse" />
+              <span className="text-xs font-bold text-slate-700 dark:text-zinc-200">Live Teardown Logs</span>
+              <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-violet-100 dark:bg-violet-500/20 text-violet-600 dark:text-violet-300">
+                {logs.length} entries
+              </span>
+            </div>
+            {/* Action filter pills */}
+            <div className="flex gap-1">
+              {(['all', 'started', 'on_site', 'completed', 'submitted', 'flagged'] as const).map(f => (
+                <button key={f} onClick={() => setLogFilter(f)}
+                  className={`px-2 py-0.5 rounded-lg text-[10px] font-semibold capitalize transition ${
+                    logFilter === f
+                      ? 'bg-violet-600 text-white'
+                      : 'bg-slate-100 dark:bg-zinc-700 text-slate-500 dark:text-zinc-400 hover:bg-slate-200 dark:hover:bg-zinc-600'
+                  }`}>
+                  {f === 'on_site' ? 'On Site' : f === 'all' ? 'All' : LOG_ACTION_STYLE[f].label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Logs table */}
+          <div className="overflow-x-auto" style={{ maxHeight: 240 }}>
+            <table className="w-full text-xs">
+              <thead className="sticky top-0 bg-slate-50 dark:bg-zinc-700/60">
+                <tr>
+                  {['Ticket', 'Lineman', 'Pole', 'Span', 'Area', 'Action', 'Time'].map(h => (
+                    <th key={h} className="px-3 py-2 text-left font-semibold text-slate-500 dark:text-zinc-400 whitespace-nowrap">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-50 dark:divide-zinc-700/50">
+                {logs
+                  .filter(l => logFilter === 'all' || l.action === logFilter)
+                  .map(log => (
+                    <tr key={log.id} className="hover:bg-slate-50 dark:hover:bg-zinc-700/30 transition-colors">
+                      <td className="px-3 py-2 font-mono font-semibold text-violet-500 whitespace-nowrap">{log.ticket}</td>
+                      <td className="px-3 py-2 whitespace-nowrap">
+                        <div className="font-medium text-slate-700 dark:text-zinc-200">{log.lineman}</div>
+                        <div className="text-[10px] text-slate-400 dark:text-zinc-500">{log.employeeId}</div>
+                      </td>
+                      <td className="px-3 py-2 font-medium text-slate-600 dark:text-zinc-300 whitespace-nowrap">{log.pole}</td>
+                      <td className="px-3 py-2 text-slate-500 dark:text-zinc-400 whitespace-nowrap">{log.span}</td>
+                      <td className="px-3 py-2 text-slate-500 dark:text-zinc-400 whitespace-nowrap max-w-40 truncate">{log.area}</td>
+                      <td className="px-3 py-2 whitespace-nowrap">
+                        <span className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-semibold ${LOG_ACTION_STYLE[log.action].cls}`}>
+                          {LOG_ACTION_STYLE[log.action].label}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2 text-slate-400 dark:text-zinc-500 whitespace-nowrap">{timeAgo(log.ts)}</td>
+                    </tr>
+                  ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {/* ── Map + panel ── */}
       <div className="flex gap-4" style={{ height: 'calc(100vh - 220px)', minHeight: 520 }}>

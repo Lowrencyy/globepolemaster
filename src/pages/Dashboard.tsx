@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import FieldCoverageMap from '../components/FieldCoverageMap'
 
 declare const ApexCharts: any
 
@@ -367,16 +368,7 @@ export default function Dashboard() {
               <h5 className="text-gray-800 text-15 dark:text-gray-100">Field Coverage Map</h5>
             </div>
             <div className="rounded-b overflow-hidden" style={{ height: 380 }}>
-              <iframe
-                title="Field Coverage Map"
-                src="https://www.google.com/maps/embed?pb=!1m14!1m12!1m3!1d15955227.318237!2d121.7740!3d12.8797!2m3!1f0!2f0!3f0!3m2!1i1024!2i768!4f13.1!5e0!3m2!1sen!2sph!4v1713400000000!5m2!1sen!2sph"
-                width="100%"
-                height="380"
-                style={{ border: 0 }}
-                allowFullScreen
-                loading="lazy"
-                referrerPolicy="no-referrer-when-downgrade"
-              ></iframe>
+              <FieldCoverageMap />
             </div>
           </div>
         </div>
