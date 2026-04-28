@@ -1,9 +1,7 @@
-import { useEffect, useRef, useState } from 'react'
-import { getToken } from '../lib/auth'
+import { useEffect, useRef, useState, memo } from 'react'
+import { getToken, API_BASE } from '../lib/auth'
 
 declare const L: any
-
-const API_BASE = 'https://disguisedly-enarthrodial-kristi.ngrok-free.dev'
 
 interface MapPin {
   id: number
@@ -55,9 +53,10 @@ function makePinIcon(status: string) {
   })
 }
 
-export default function FieldCoverageMap() {
+export default memo(function FieldCoverageMap() {
   const mapRef = useRef<HTMLDivElement>(null)
   const mapInstance = useRef<any>(null)
+  const markersRef = useRef<any[]>([])
   const [pins, setPins] = useState<MapPin[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -94,8 +93,9 @@ export default function FieldCoverageMap() {
       zoomControl: true,
     })
 
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      attribution: '© OpenStreetMap contributors',
+    L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+      attribution: '© Esri World Imagery',
+      maxZoom: 19,
     }).addTo(map)
 
     mapInstance.current = map
@@ -110,10 +110,9 @@ export default function FieldCoverageMap() {
     const map = mapInstance.current
     if (!map || typeof L === 'undefined') return
 
-    // Remove old markers
-    map.eachLayer((layer: any) => {
-      if (layer instanceof L.Marker) map.removeLayer(layer)
-    })
+    // Remove old markers via ref (avoids eachLayer DOM conflict)
+    markersRef.current.forEach(m => { try { map.removeLayer(m) } catch (_) {} })
+    markersRef.current = []
 
     pins.forEach(pin => {
       if (!pin.lat || !pin.lng) return
@@ -149,6 +148,8 @@ export default function FieldCoverageMap() {
         map.flyTo([pin.lat, pin.lng], 15, { animate: true, duration: 1.2 })
         map.once('moveend', () => marker.openPopup())
       })
+
+      markersRef.current.push(marker)
     })
   }, [pins])
 
@@ -206,4 +207,4 @@ export default function FieldCoverageMap() {
       )}
     </div>
   )
-}
+})

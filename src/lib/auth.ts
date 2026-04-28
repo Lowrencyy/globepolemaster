@@ -1,4 +1,5 @@
-const API_BASE = 'https://disguisedly-enarthrodial-kristi.ngrok-free.dev'
+export const API_BASE = 'https://disguisedly-enarthrodial-kristi.ngrok-free.dev'
+export const SKYCABLE_API = `${API_BASE}/api/v1/skycable`
 
 export interface LoginResponse {
   token?: string
@@ -8,7 +9,7 @@ export interface LoginResponse {
 }
 
 export async function apiLogin(email: string, password: string): Promise<LoginResponse> {
-  const res = await fetch(`${API_BASE}/api/v1/login`, {
+  const res = await fetch(`${API_BASE}/api/v1/skycable/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
     body: JSON.stringify({ email, password }),
@@ -62,6 +63,33 @@ function decodeJwtPayload(token: string): Record<string, unknown> | null {
   } catch {
     return null
   }
+}
+
+export function getRole(): string {
+  const user = getUser()
+  if (user) {
+    const fields = ['role', 'role_name', 'user_role', 'type', 'user_type']
+    for (const f of fields) {
+      if (user[f] && typeof user[f] === 'string') return (user[f] as string).toLowerCase()
+    }
+  }
+  return 'field_staff'
+}
+
+export function isExecutive(): boolean {
+  const user = getUser()
+  if (user) {
+    const fields = ['role', 'roles', 'role_name', 'user_role', 'type', 'user_type']
+    for (const f of fields) {
+      const val = user[f]
+      if (typeof val === 'string' && ['executive', 'exec', 'manager'].includes(val.toLowerCase())) return true
+    }
+  }
+  return false
+}
+
+export function canManageStatus(): boolean {
+  return isAdmin() || isExecutive()
 }
 
 export function isAdmin(): boolean {

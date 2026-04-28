@@ -1,20 +1,23 @@
 import { useEffect, useMemo, useState, type ReactNode, type SyntheticEvent } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { isAdmin, canManageStatus, getToken, SKYCABLE_API } from '../../lib/auth'
+import { slugify } from '../../lib/utils'
 import PsgcCascade from '../../components/PsgcCascade'
 
 type NodeStatus = 'pending' | 'in_progress' | 'completed'
 
-type Area = { id: number; name: string }
+type Area = { id: number; name: string; nodes_count?: number }
 
-type SiteNode = {
+type Node = {
   id: number
   name: string
+  label?: string
   full_label?: string
   area_id: number
   barangay_code?: string
   status: NodeStatus
   area?: Area
-  // direct location columns
+  // direct location columns (preferred)
   region?: string
   province?: string
   city?: string
@@ -24,51 +27,30 @@ type SiteNode = {
 type FormState = {
   name: string
   area_id: number | ''
-  _node_id: number | ''
   barangay_code: string
+  region: string
+  province: string
+  city: string
+  barangay_name: string
+  // PsgcCascade display helpers
   _region: string
   _province: string
   _city: string
   _barangay: string
   status: NodeStatus | ''
-  region: string
-  province: string
-  city: string
-  barangay_name: string
-}
-
-// PSGC barangay code first 2 digits → region name (must match psgc.gitlab.io/api/regions/ names)
-const REGION_MAP: Record<string, string> = {
-  '01': 'Ilocos Region',
-  '02': 'Cagayan Valley',
-  '03': 'Central Luzon',
-  '04': 'CALABARZON',
-  '05': 'Bicol Region',
-  '06': 'Western Visayas',
-  '07': 'Central Visayas',
-  '08': 'Eastern Visayas',
-  '09': 'Zamboanga Peninsula',
-  '10': 'Northern Mindanao',
-  '11': 'Davao Region',
-  '12': 'SOCCSKSARGEN',
-  '13': 'National Capital Region',
-  '14': 'Cordillera Administrative Region',
-  '15': 'Bangsamoro Autonomous Region in Muslim Mindanao',
-  '16': 'Caraga',
-  '17': 'MIMAROPA',
 }
 
 const statusConfig: Record<NodeStatus, { label: string; dot: string; badge: string }> = {
-  pending:     { label: 'Pending',   dot: 'bg-amber-400',   badge: 'bg-amber-50 text-amber-700 ring-1 ring-amber-200 dark:bg-amber-500/15 dark:text-amber-400 dark:ring-amber-500/20' },
-  in_progress: { label: 'Ongoing',   dot: 'bg-violet-500',  badge: 'bg-violet-50 text-violet-700 ring-1 ring-violet-200 dark:bg-violet-500/15 dark:text-violet-400 dark:ring-violet-500/20' },
-  completed:   { label: 'Completed', dot: 'bg-emerald-500', badge: 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200 dark:bg-emerald-500/15 dark:text-emerald-400 dark:ring-emerald-500/20' },
+  pending:     { label: 'Pending',     dot: 'bg-amber-400',   badge: 'bg-amber-50 text-amber-700 ring-1 ring-amber-200 dark:bg-amber-500/15 dark:text-amber-400 dark:ring-amber-500/20' },
+  in_progress: { label: 'Ongoing',     dot: 'bg-violet-500',  badge: 'bg-violet-50 text-violet-700 ring-1 ring-violet-200 dark:bg-violet-500/15 dark:text-violet-400 dark:ring-violet-500/20' },
+  completed:   { label: 'Completed',   dot: 'bg-emerald-500', badge: 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200 dark:bg-emerald-500/15 dark:text-emerald-400 dark:ring-emerald-500/20' },
 }
 
 const statCards = [
-  { label: 'Total Poles',  key: 'total',       icon: 'bx bx-git-commit',    accent: 'from-[#0072ff] to-[#00a6ff]' },
-  { label: 'Pending',      key: 'pending',      icon: 'bx bx-time',          accent: 'from-amber-400 to-orange-400' },
-  { label: 'Ongoing',      key: 'in_progress',  icon: 'bx bx-loader-circle', accent: 'from-indigo-500 to-violet-500' },
-  { label: 'Completed',    key: 'completed',    icon: 'bx bx-badge-check',   accent: 'from-emerald-500 to-teal-500' },
+  { label: 'Total Nodes', key: 'total',       icon: 'bx bx-git-commit',    accent: 'from-[#0072ff] to-[#00a6ff]' },
+  { label: 'Pending',     key: 'pending',      icon: 'bx bx-time',          accent: 'from-amber-400 to-orange-400' },
+  { label: 'Ongoing',     key: 'in_progress',  icon: 'bx bx-loader-circle', accent: 'from-indigo-500 to-violet-500' },
+  { label: 'Completed',   key: 'completed',    icon: 'bx bx-badge-check',   accent: 'from-emerald-500 to-teal-500' },
 ] as const
 
 const statuses: Array<'all' | NodeStatus> = ['all', 'pending', 'in_progress', 'completed']
@@ -82,8 +64,8 @@ const primaryBtnCls = 'h-10 rounded-2xl bg-violet-600 px-5 text-sm font-semibold
 const secondaryBtnCls = 'h-10 rounded-2xl border border-slate-200 bg-white px-4 text-sm font-medium text-slate-600 shadow-sm transition hover:bg-slate-50 dark:border-zinc-600 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700'
 const dangerBtnCls = 'h-10 rounded-2xl bg-red-600 px-5 text-sm font-semibold text-white shadow-[0_16px_28px_-16px_rgba(220,38,38,0.55)] transition hover:bg-red-700 active:scale-[0.99]'
 
-const emptyForm = (): FormState => ({
-  name: '', area_id: '', _node_id: '', barangay_code: '',
+const emptyForm = (areaId: number | '' = ''): FormState => ({
+  name: '', area_id: areaId, barangay_code: '',
   region: '', province: '', city: '', barangay_name: '',
   _region: '', _province: '', _city: '', _barangay: '',
   status: '',
@@ -111,7 +93,7 @@ function Modal({
   if (!open) return null
   if (danger) {
     return (
-      <div className="fixed inset-0 z-[999] flex items-center justify-center p-4">
+      <div className="fixed inset-0 z-999 flex items-center justify-center p-4">
         <div className="absolute inset-0 bg-slate-950/55 backdrop-blur-[5px]" onClick={onClose} />
         <div className={`relative w-full ${widthClass} overflow-hidden rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_30px_80px_-30px_rgba(15,23,42,0.45)] dark:border-zinc-700 dark:bg-zinc-900`}>
           <button onClick={onClose} className="absolute right-4 top-4 flex h-9 w-9 items-center justify-center rounded-full text-slate-400 transition hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-zinc-800 dark:hover:text-zinc-200">
@@ -132,7 +114,7 @@ function Modal({
     )
   }
   return (
-    <div className="fixed inset-0 z-[999] flex items-center justify-center p-4">
+    <div className="fixed inset-0 z-999 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-slate-950/55 backdrop-blur-[6px]" onClick={onClose} />
       <div className={`relative w-full ${widthClass} overflow-hidden rounded-[30px] border border-[#dbe8ff] bg-white shadow-[0_36px_100px_-34px_rgba(6,36,90,0.5)] dark:border-[#27436a] dark:bg-[#0f1728]`}>
         <div className="pointer-events-none absolute -left-20 top-0 h-40 w-40 rounded-full bg-[#0072ff]/15 blur-3xl" />
@@ -163,84 +145,85 @@ function Modal({
   )
 }
 
-function StatusModal({ node, onClose, onSave }: { node: SiteNode; onClose: () => void; onSave: (s: NodeStatus) => void }) {
-  const [sel, setSel] = useState<NodeStatus>(node.status)
+function StatusModal({ node, onClose, onSave }: { node: Node; onClose: () => void; onSave: (s: NodeStatus) => void }) {
+  const [selected, setSelected] = useState<NodeStatus>(node.status)
   return (
-    <Modal open title="Update Pole Status" subtitle={node.full_label ?? node.name} icon="bx bx-transfer" onClose={onClose} widthClass="max-w-sm">
+    <Modal open title="Update Node Status" subtitle={`${node.full_label ?? node.name}`} icon="bx bx-transfer" onClose={onClose} widthClass="max-w-sm">
       <div className="flex flex-col gap-2.5">
         {(Object.keys(statusConfig) as NodeStatus[]).map(s => (
-          <button key={s} onClick={() => setSel(s)}
-            className={`flex items-center gap-3 rounded-2xl border px-4 py-3 text-left text-sm font-medium transition ${sel === s ? 'border-[#0072ff] bg-[#e8f2ff] dark:border-[#4ea9ff] dark:bg-[#162744]' : 'border-slate-200 bg-white hover:border-slate-300 dark:border-zinc-700 dark:bg-zinc-800'}`}>
+          <button key={s} onClick={() => setSelected(s)}
+            className={`flex items-center gap-3 rounded-2xl border px-4 py-3 text-left text-sm font-medium transition ${
+              selected === s
+                ? 'border-[#0072ff] bg-[#e8f2ff] dark:border-[#4ea9ff] dark:bg-[#162744]'
+                : 'border-slate-200 bg-white hover:border-slate-300 dark:border-zinc-700 dark:bg-zinc-800'
+            }`}>
             <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${statusConfig[s].dot}`} />
-            <span className={sel === s ? 'font-semibold text-[#0072ff] dark:text-[#4ea9ff]' : 'text-slate-700 dark:text-zinc-200'}>
+            <span className={selected === s ? 'font-semibold text-[#0072ff] dark:text-[#4ea9ff]' : 'text-slate-700 dark:text-zinc-200'}>
               {statusConfig[s].label}
             </span>
-            {sel === s && <i className="bx bx-check ml-auto text-lg text-[#0072ff] dark:text-[#4ea9ff]" />}
+            {selected === s && <i className="bx bx-check ml-auto text-lg text-[#0072ff] dark:text-[#4ea9ff]" />}
           </button>
         ))}
         <div className="mt-2 flex gap-2 border-t border-[#e4eefb] pt-4 dark:border-[#263d5f]">
           <button onClick={onClose} className={`${secondaryBtnCls} flex-1`}>Cancel</button>
-          <button onClick={() => onSave(sel)} className={`${primaryBtnCls} flex-1`}>Save Status</button>
+          <button onClick={() => onSave(selected)} className={`${primaryBtnCls} flex-1`}>Save Status</button>
         </div>
       </div>
     </Modal>
   )
 }
 
-export default function AllPoles() {
+export default function AllPoles({ areaId, siteId, siteSlug }: { areaId?: number; siteId?: number; siteSlug?: string } = {}) {
   const admin     = isAdmin()
   const canStatus = canManageStatus()
+  const navigate  = useNavigate()
 
-  const [nodes, setNodes]         = useState<SiteNode[]>([])
-  const [areas, setAreas]         = useState<Area[]>([])
-  const [loading, setLoading]     = useState(true)
+  const [nodes, setNodes]           = useState<Node[]>([])
+  const [areas, setAreas]           = useState<Area[]>([])
+  const [loading, setLoading]       = useState(true)
   const [addLoading, setAddLoading] = useState(false)
-  const [addError, setAddError]   = useState<string | null>(null)
-  const [search, setSearch]       = useState('')
+  const [addError, setAddError]     = useState<string | null>(null)
+  const [search, setSearch]         = useState('')
   const [statusFilter, setStatusFilter] = useState<'all' | NodeStatus>('all')
-  const [page, setPage]           = useState(1)
-
-  const [isAddOpen, setIsAddOpen]     = useState(false)
-  const [isEditOpen, setIsEditOpen]   = useState(false)
-  const [isDelOpen, setIsDelOpen]     = useState(false)
+  const [page, setPage]             = useState(1)
+  const [isAddOpen, setIsAddOpen]   = useState(false)
+  const [isEditOpen, setIsEditOpen] = useState(false)
+  const [isDelOpen, setIsDelOpen]   = useState(false)
   const [isStatusOpen, setIsStatusOpen] = useState(false)
-
-  const [formData, setFormData]   = useState<FormState>(emptyForm())
-  const [selected, setSelected]   = useState<SiteNode | null>(null)
-
-  // Nodes loaded for the currently selected site in the form
-  const [siteNodes, setSiteNodes]     = useState<SiteNode[]>([])
-  const [siteNodesLoading, setSiteNodesLoading] = useState(false)
+  const [formData, setFormData]     = useState<FormState>(emptyForm(areaId))
+  const [selected, setSelected]     = useState<Node | null>(null)
 
   const perPage = 50
-  const h = { Authorization: `Bearer ${getToken()}`, Accept: 'application/json', 'ngrok-skip-browser-warning': '1' }
 
+  // ── Fetch areas ────────────────────────────────────────────────────────────
   useEffect(() => {
-    fetch(`${SKYCABLE_API}/areas`, { headers: h })
+    const token = getToken()
+    fetch(`${SKYCABLE_API}/areas`, {
+      headers: { Authorization: `Bearer ${token}`, Accept: 'application/json', 'ngrok-skip-browser-warning': '1' },
+    })
       .then(r => r.json())
       .then(data => { if (Array.isArray(data)) setAreas(data) })
       .catch(() => {})
   }, [])
 
+  // ── Fetch nodes ────────────────────────────────────────────────────────────
   useEffect(() => {
-    fetch(`${SKYCABLE_API}/nodes`, { headers: h })
+    const token = getToken()
+    const p = new URLSearchParams()
+    if (areaId) p.set('area_id', String(areaId))
+    if (siteId) p.set('site_id', String(siteId))
+    const params = p.toString() ? `?${p}` : ''
+    fetch(`${SKYCABLE_API}/nodes${params}`, {
+      headers: { Authorization: `Bearer ${token}`, Accept: 'application/json', 'ngrok-skip-browser-warning': '1' },
+    })
       .then(r => r.json())
-      .then(data => setNodes(Array.isArray(data) ? data : (data?.data ?? [])))
+      .then(data => {
+        const list = Array.isArray(data) ? data : (data?.data ?? [])
+        setNodes(list)
+      })
       .catch(() => {})
       .finally(() => setLoading(false))
-  }, [])
-
-  // When area changes in the form, load that site's nodes
-  useEffect(() => {
-    const areaId = formData.area_id
-    if (!areaId) { setSiteNodes([]); return }
-    setSiteNodesLoading(true)
-    fetch(`${SKYCABLE_API}/nodes?area_id=${areaId}`, { headers: h })
-      .then(r => r.json())
-      .then(data => setSiteNodes(Array.isArray(data) ? data : (data?.data ?? [])))
-      .catch(() => setSiteNodes([]))
-      .finally(() => setSiteNodesLoading(false))
-  }, [formData.area_id])
+  }, [areaId, siteId])
 
   const stats = useMemo(() => ({
     total:       nodes.length,
@@ -251,10 +234,11 @@ export default function AllPoles() {
 
   const filtered = nodes.filter(n => {
     const q = search.toLowerCase()
+    const label = (n.full_label ?? n.name ?? '').toLowerCase()
+    const area  = (n.area?.name ?? '').toLowerCase()
+    const city  = (n.barangay?.city?.name ?? '').toLowerCase()
     return (
-      (!q || (n.full_label ?? n.name).toLowerCase().includes(q) ||
-        (n.area?.name ?? '').toLowerCase().includes(q) ||
-        (n.city ?? '').toLowerCase().includes(q)) &&
+      (!q || label.includes(q) || area.includes(q) || city.includes(q)) &&
       (statusFilter === 'all' || n.status === statusFilter)
     )
   })
@@ -265,59 +249,45 @@ export default function AllPoles() {
 
   const close = () => {
     setIsAddOpen(false); setIsEditOpen(false); setIsDelOpen(false); setIsStatusOpen(false)
-    setSelected(null); setFormData(emptyForm()); setAddError(null)
-    setSiteNodes([])
+    setSelected(null); setFormData(emptyForm(areaId)); setAddError(null)
   }
 
-  // Auto-fill location from a selected site node
-  const applyNodeLocation = (nodeId: number) => {
-    const node = siteNodes.find(n => n.id === nodeId)
-    if (!node) return
-    const prefix = (node.barangay_code ?? '').substring(0, 2)
-    const regionName = node.region ?? REGION_MAP[prefix] ?? ''
-    setFormData(p => ({
-      ...p,
-      _node_id:      node.id,
-      name:          node.full_label ?? node.name,
-      status:        node.status,
-      barangay_code: node.barangay_code ?? '',
-      region:        regionName,
-      province:      node.province ?? '',
-      city:          node.city ?? '',
-      barangay_name: node.barangay_name ?? '',
-      _region:       regionName,
-      _province:     node.province ?? '',
-      _city:         node.city ?? '',
-      _barangay:     node.barangay_name ?? '',
-    }))
-  }
-
+  // ── Add node — POST to backend ─────────────────────────────────────────────
   const handleAdd = async (e: SyntheticEvent<HTMLFormElement>) => {
     e.preventDefault()
-    setAddLoading(true); setAddError(null)
+    setAddLoading(true)
+    setAddError(null)
     try {
+      const token = getToken()
+      const payload = {
+        name:          formData.name,
+        area_id:       formData.area_id,
+        barangay_code: formData.barangay_code || null,
+        status:        formData.status || 'pending',
+        region:        formData.region,
+        province:      formData.province,
+        city:          formData.city,
+        barangay_name: formData.barangay_name,
+      }
       const res = await fetch(`${SKYCABLE_API}/nodes`, {
         method: 'POST',
-        headers: { ...h, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name:          formData.name,
-          area_id:       formData.area_id,
-          barangay_code: formData.barangay_code || null,
-          status:        formData.status || 'pending',
-          region:        formData.region,
-          province:      formData.province,
-          city:          formData.city,
-          barangay_name: formData.barangay_name,
-        }),
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+          'ngrok-skip-browser-warning': '1',
+        },
+        body: JSON.stringify(payload),
       })
       const data = await res.json()
       if (!res.ok) {
-        const msg = (data.message as string | undefined) ??
-          (Object.values(data.errors ?? {}) as string[][])?.[0]?.[0] ?? 'Failed to add pole'
-        throw new Error(msg)
+        const errMsg = (data.message as string | undefined) ?? (Object.values(data.errors ?? {}) as string[][])?.[0]?.[0] ?? 'Failed to add node'
+        throw new Error(errMsg)
       }
-      setNodes(prev => [data.data ?? data, ...prev])
-      setPage(1); close()
+      const newNode: Node = data.data ?? data
+      setNodes(prev => [newNode, ...prev])
+      setPage(1)
+      close()
     } catch (err) {
       setAddError(err instanceof Error ? err.message : 'Something went wrong')
     } finally {
@@ -328,9 +298,7 @@ export default function AllPoles() {
   const handleEdit = (e: SyntheticEvent<HTMLFormElement>) => {
     e.preventDefault()
     if (!selected) return
-    setNodes(prev => prev.map(n => n.id === selected.id
-      ? { ...n, name: formData.name, status: formData.status as NodeStatus }
-      : n))
+    setNodes(prev => prev.map(n => n.id === selected.id ? { ...n, name: formData.name, status: formData.status as NodeStatus } : n))
     close()
   }
 
@@ -346,63 +314,44 @@ export default function AllPoles() {
     close()
   }
 
-  const renderForm = (mode: 'add' | 'edit') => (
+  const renderNodeForm = (mode: 'add' | 'edit') => (
     <form onSubmit={mode === 'add' ? handleAdd : handleEdit} className="space-y-5">
       <div className="grid grid-cols-2 gap-4">
-        <SectionDivider label="Site & Node" />
+        <SectionDivider label="Basic Info" />
 
-        {/* Site / Area */}
+        <div className="col-span-2">
+          <label className={lCls}>Node Name</label>
+          <input
+            value={formData.name}
+            onChange={e => setFormData(p => ({ ...p, name: e.target.value }))}
+            className={iCls} placeholder="e.g. Makati Central Node" required
+          />
+        </div>
+
         <div>
-          <label className={lCls}>Site / Area</label>
+          <label className={lCls}>Area</label>
           <div className="relative">
             <select
               value={formData.area_id}
-              onChange={e => {
-                const id = Number(e.target.value) || ''
-                setFormData(p => ({ ...p, area_id: id, _node_id: '', name: '', barangay_code: '', _region: '', _province: '', _city: '', _barangay: '', status: '' }))
-              }}
-              className={sCls} required>
-              <option value="">Select Site</option>
+              onChange={e => setFormData(p => ({ ...p, area_id: Number(e.target.value) || '' }))}
+              className={sCls} required
+              disabled={!!areaId}
+            >
+              <option value="">Select Area</option>
               {areas.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
             </select>
             <Chevron />
           </div>
         </div>
 
-        {/* Node — loaded from selected site */}
         <div>
-          <label className={lCls}>
-            Node
-            {siteNodesLoading && <i className="bx bx-loader-alt ml-1.5 animate-spin text-[10px] text-slate-400" />}
-          </label>
-          <div className="relative">
-            <select
-              value={formData._node_id}
-              onChange={e => {
-                const id = Number(e.target.value)
-                if (id) applyNodeLocation(id)
-                else setFormData(p => ({ ...p, _node_id: '' }))
-              }}
-              className={sCls}
-              disabled={!formData.area_id || siteNodesLoading}
-              required>
-              <option value="">Select Node</option>
-              {siteNodes.map(n => (
-                <option key={n.id} value={n.id}>{n.full_label ?? n.name}</option>
-              ))}
-            </select>
-            <Chevron />
-          </div>
-        </div>
-
-        {/* Status — auto-filled from selected node, still editable */}
-        <div className="col-span-2">
           <label className={lCls}>Status</label>
           <div className="relative">
             <select
               value={formData.status}
               onChange={e => setFormData(p => ({ ...p, status: e.target.value as NodeStatus }))}
-              className={sCls}>
+              className={sCls}
+            >
               <option value="">Select Status</option>
               {statuses.filter(s => s !== 'all').map(s => (
                 <option key={s} value={s}>{statusConfig[s].label}</option>
@@ -413,9 +362,8 @@ export default function AllPoles() {
         </div>
       </div>
 
-      {/* Location — auto-filled from selected node */}
       <div className="grid grid-cols-2 gap-4">
-        <SectionDivider label="Location (auto-fills when node is selected)" />
+        <SectionDivider label="Location (Barangay)" />
         <PsgcCascade
           region={formData._region}
           province={formData._province}
@@ -449,7 +397,8 @@ export default function AllPoles() {
         <button type="submit" disabled={addLoading} className={`${primaryBtnCls} disabled:opacity-60`}>
           {addLoading
             ? <span className="flex items-center gap-2"><i className="bx bx-loader-alt animate-spin text-base" /> Saving…</span>
-            : mode === 'add' ? 'Save Pole' : 'Update Pole'}
+            : mode === 'add' ? 'Save Node' : 'Update Node'
+          }
         </button>
       </div>
     </form>
@@ -457,22 +406,7 @@ export default function AllPoles() {
 
   return (
     <>
-      {/* Page header */}
-      <div className="mb-5 flex items-start justify-between px-0.5">
-        <div>
-          <h4 className="text-lg font-semibold text-gray-800 dark:text-gray-100">All Poles</h4>
-          <p className="mt-0.5 text-sm text-gray-400 dark:text-zinc-500">Pole Master View · All Sites</p>
-        </div>
-        <nav>
-          <ol className="flex items-center gap-1 text-xs text-gray-400 dark:text-zinc-500">
-            <li><a href="/dashboard" className="hover:text-[#0b6cff]">Dashboard</a></li>
-            <li>/</li>
-            <li className="text-gray-600 dark:text-zinc-300">All Poles</li>
-          </ol>
-        </nav>
-      </div>
-
-      {/* Stat cards */}
+      {/* ── Stat Cards ─────────────────────────────────────────────────────── */}
       <div className="mb-6 grid grid-cols-4 gap-4">
         {statCards.map(c => {
           const val = c.key === 'total' ? stats.total : stats[c.key as Exclude<keyof typeof stats, 'total'>]
@@ -497,14 +431,14 @@ export default function AllPoles() {
         })}
       </div>
 
-      {/* Table card */}
+      {/* ── Table Card ─────────────────────────────────────────────────────── */}
       <div className="overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-gray-100 dark:bg-zinc-800 dark:ring-zinc-700">
         {/* Toolbar */}
         <div className="flex flex-wrap items-center gap-3 border-b border-gray-100 px-5 py-3.5 dark:border-zinc-700">
           <div className="relative min-w-[180px] max-w-xs flex-1">
             <i className="bx bx-search absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
             <input value={search} onChange={e => { setSearch(e.target.value); setPage(1) }}
-              placeholder="Search name, site, city…" className={`${fiCls} pl-9`} />
+              placeholder="Search name, area, city…" className={`${fiCls} pl-9`} />
           </div>
 
           <div className="relative">
@@ -518,13 +452,15 @@ export default function AllPoles() {
           </div>
 
           <span className="ml-auto text-xs font-medium text-gray-400 dark:text-zinc-500">
-            {filtered.length} {filtered.length === 1 ? 'pole' : 'poles'}
+            {filtered.length} {filtered.length === 1 ? 'node' : 'nodes'}
           </span>
 
-          <button onClick={() => { setFormData(emptyForm()); setIsAddOpen(true) }}
-            className="inline-flex h-10 items-center gap-2 rounded-2xl bg-violet-600 px-4 text-sm font-semibold text-white shadow-lg shadow-violet-500/30 transition hover:bg-violet-700 active:scale-[0.99]">
+          <button
+            onClick={() => { setFormData(emptyForm(areaId)); setIsAddOpen(true) }}
+            className="inline-flex h-10 items-center gap-2 rounded-2xl bg-violet-600 px-4 text-sm font-semibold text-white shadow-lg shadow-violet-500/30 transition hover:bg-violet-700 active:scale-[0.99]"
+          >
             <i className="bx bx-plus translate-y-px text-[18px]" />
-            <span>Add Pole</span>
+            <span>Add Node</span>
           </button>
         </div>
 
@@ -535,14 +471,14 @@ export default function AllPoles() {
               <tr className="border-b border-[#e8f0fb] bg-[#f4f8ff] dark:border-[#1e3352] dark:bg-[#111d30]">
                 <th className="w-10 px-4 py-3 text-center text-[11px] font-bold uppercase tracking-widest text-[#8aa8d4] dark:text-[#3f6190]">#</th>
                 {[
-                  { label: 'Pole',                align: 'left'   },
-                  { label: 'Site',                align: 'left'   },
-                  { label: 'Region',              align: 'center' },
-                  { label: 'Province',            align: 'center' },
-                  { label: 'City / Municipality', align: 'center' },
-                  { label: 'Barangay',            align: 'center' },
-                  { label: 'Status',              align: 'center' },
-                  { label: 'Actions',             align: 'center' },
+                  { label: 'Node',               align: 'left'   },
+                  { label: 'Area',               align: 'left'   },
+                  { label: 'Region',             align: 'center' },
+                  { label: 'Province',           align: 'center' },
+                  { label: 'City / Municipality',align: 'center' },
+                  { label: 'Barangay',           align: 'center' },
+                  { label: 'Status',             align: 'center' },
+                  { label: 'Actions',            align: 'center' },
                 ].map(h => (
                   <th key={h.label}
                     className={`whitespace-nowrap px-4 py-3 text-[11px] font-bold uppercase tracking-widest text-[#8aa8d4] dark:text-[#3f6190] text-${h.align}`}>
@@ -558,7 +494,7 @@ export default function AllPoles() {
                     <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-[#e8f2ff] dark:bg-[#162744]">
                       <i className="bx bx-loader-alt animate-spin text-2xl text-[#0072ff] dark:text-[#4ea9ff]" />
                     </div>
-                    <p className="mt-3 text-sm font-medium text-slate-400 dark:text-zinc-500">Loading poles…</p>
+                    <p className="mt-3 text-sm font-medium text-slate-400 dark:text-zinc-500">Loading nodes…</p>
                   </td>
                 </tr>
               ) : paginated.length === 0 ? (
@@ -567,18 +503,28 @@ export default function AllPoles() {
                     <div className="mx-auto mb-3 flex h-14 w-14 items-center justify-center rounded-2xl bg-[#f0f5ff] dark:bg-[#162035]">
                       <i className="bx bx-git-commit text-2xl text-[#9bb8dc] dark:text-[#3a5a82]" />
                     </div>
-                    <p className="text-sm font-semibold text-slate-400 dark:text-zinc-500">No poles found</p>
+                    <p className="text-sm font-semibold text-slate-400 dark:text-zinc-500">No nodes found</p>
                     <p className="mt-1 text-xs text-slate-300 dark:text-zinc-600">Try adjusting your search or filter.</p>
                   </td>
                 </tr>
               ) : (
                 paginated.map((n, idx) => (
-                  <tr key={n.id} className="group border-b border-[#f0f5ff] transition-colors last:border-0 hover:bg-[#f5f9ff] dark:border-[#19304d]/60 dark:hover:bg-[#0f1e33]/60">
+                  <tr key={n.id}
+                    onClick={() => {
+                      if (!areaId) return
+                      const site = siteSlug ?? String(areaId)
+                      const node = `${slugify(n.full_label ?? n.name)}-${n.id}`
+                      navigate(`/sites/${site}/nodes/${node}`)
+                    }}
+                    className={`group border-b border-[#f0f5ff] transition-colors last:border-0 hover:bg-[#f5f9ff] dark:border-[#19304d]/60 dark:hover:bg-[#0f1e33]/60 ${areaId ? 'cursor-pointer' : ''}`}>
+                    {/* Row number */}
                     <td className="px-4 py-3.5 text-center">
                       <span className="text-[11px] font-bold tabular-nums text-[#b0c8e8] dark:text-[#2e4d6e]">
                         {(safePage - 1) * perPage + idx + 1}
                       </span>
                     </td>
+
+                    {/* Node name */}
                     <td className="px-4 py-3.5">
                       <div className="flex items-center gap-2.5">
                         <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-[#e8f2ff] dark:bg-[#162744]">
@@ -589,36 +535,52 @@ export default function AllPoles() {
                         </span>
                       </div>
                     </td>
+
+                    {/* Area */}
                     <td className="px-4 py-3.5">
                       <span className="inline-flex items-center gap-1.5 rounded-lg bg-slate-100 px-2.5 py-1 text-[11px] font-semibold text-slate-600 dark:bg-zinc-700/60 dark:text-zinc-300">
                         <i className="bx bx-map-pin text-xs text-slate-400 dark:text-zinc-500" />
                         {n.area?.name ?? '—'}
                       </span>
                     </td>
+
+                    {/* Region */}
                     <td className="px-4 py-3.5 text-center text-xs text-slate-500 dark:text-zinc-400">
                       {n.region ?? '—'}
                     </td>
+
+                    {/* Province */}
                     <td className="px-4 py-3.5 text-center text-xs text-slate-500 dark:text-zinc-400">
                       {n.province ?? '—'}
                     </td>
+
+                    {/* City */}
                     <td className="px-4 py-3.5 text-center">
                       <span className="text-xs font-medium text-slate-700 dark:text-zinc-300">
                         {n.city ?? '—'}
                       </span>
                     </td>
+
+                    {/* Barangay */}
                     <td className="px-4 py-3.5 text-center text-xs text-slate-500 dark:text-zinc-400">
                       {n.barangay_name ?? '—'}
                     </td>
+
+                    {/* Status */}
                     <td className="px-4 py-3.5 text-center">
                       <span className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-semibold ${statusConfig[n.status]?.badge ?? 'bg-gray-100 text-gray-500 ring-1 ring-gray-200'}`}>
                         <span className={`h-1.5 w-1.5 rounded-full ${statusConfig[n.status]?.dot ?? 'bg-gray-400'}`} />
                         {statusConfig[n.status]?.label ?? n.status}
                       </span>
                     </td>
-                    <td className="px-4 py-3.5">
+
+                    {/* Actions */}
+                    <td className="px-4 py-3.5" onClick={e => e.stopPropagation()}>
                       <div className="flex items-center justify-center gap-1">
                         {canStatus && (
-                          <button onClick={() => { setSelected(n); setIsStatusOpen(true) }} title="Change Status"
+                          <button
+                            onClick={() => { setSelected(n); setIsStatusOpen(true) }}
+                            title="Change Status"
                             className="flex h-7 w-7 items-center justify-center rounded-lg text-slate-400 transition hover:bg-violet-50 hover:text-violet-600 dark:hover:bg-violet-500/10 dark:hover:text-violet-400">
                             <i className="bx bx-transfer translate-y-px text-sm" />
                           </button>
@@ -626,13 +588,19 @@ export default function AllPoles() {
                         <button
                           onClick={() => {
                             setSelected(n)
-                            const prefix = (n.barangay_code ?? '').substring(0, 2)
-                            const rgn = n.region ?? REGION_MAP[prefix] ?? ''
                             setFormData({
-                              name: n.name, area_id: n.area_id, _node_id: n.id,
-                              status: n.status, barangay_code: n.barangay_code ?? '',
-                              region: rgn, province: n.province ?? '', city: n.city ?? '', barangay_name: n.barangay_name ?? '',
-                              _region: rgn, _province: n.province ?? '', _city: n.city ?? '', _barangay: n.barangay_name ?? '',
+                              ...emptyForm(n.area_id),
+                              name:         n.name,
+                              status:       n.status,
+                              barangay_code: n.barangay_code ?? '',
+                              region:        n.region ?? '',
+                              province:      n.province ?? '',
+                              city:          n.city ?? '',
+                              barangay_name: n.barangay_name ?? '',
+                              _region:       n.region ?? '',
+                              _province:     n.province ?? '',
+                              _city:         n.city ?? '',
+                              _barangay:     n.barangay_name ?? '',
                             })
                             setIsEditOpen(true)
                           }}
@@ -640,7 +608,9 @@ export default function AllPoles() {
                           className="flex h-7 w-7 items-center justify-center rounded-lg text-slate-400 transition hover:bg-[#e8f2ff] hover:text-[#0072ff] dark:hover:bg-[#162744] dark:hover:text-[#4ea9ff]">
                           <i className="bx bx-edit translate-y-px text-sm" />
                         </button>
-                        <button onClick={() => { setSelected(n); setIsDelOpen(true) }} title="Delete"
+                        <button
+                          onClick={() => { setSelected(n); setIsDelOpen(true) }}
+                          title="Delete"
                           className="flex h-7 w-7 items-center justify-center rounded-lg text-slate-400 transition hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-500/10 dark:hover:text-red-400">
                           <i className="bx bx-trash translate-y-px text-sm" />
                         </button>
@@ -678,25 +648,20 @@ export default function AllPoles() {
         )}
       </div>
 
-      {/* Modals */}
-      <Modal open={isAddOpen} title="Add New Pole" subtitle="Select a site and node — location auto-fills." icon="bx bx-git-commit" onClose={close}>
-        {renderForm('add')}
+      {/* ── Modals ──────────────────────────────────────────────────────────── */}
+      <Modal open={isAddOpen} title="Add New Node" subtitle="Fill in all required fields to register a new node." icon="bx bx-git-commit" onClose={close}>
+        {renderNodeForm('add')}
       </Modal>
 
-      <Modal open={isEditOpen} title="Edit Pole" subtitle={`Editing: ${selected?.full_label ?? selected?.name ?? ''}`} icon="bx bx-edit" onClose={close}>
-        {renderForm('edit')}
+      <Modal open={isEditOpen} title="Edit Node" subtitle={`Editing: ${selected?.full_label ?? selected?.name ?? ''}`} icon="bx bx-edit" onClose={close}>
+        {renderNodeForm('edit')}
       </Modal>
 
-      <Modal open={isDelOpen} title="Delete Pole?" subtitle="This action cannot be undone." icon="bx bx-trash" onClose={close} widthClass="max-w-md" danger>
+      <Modal open={isDelOpen} title="Delete Node?" subtitle="This action cannot be undone." icon="bx bx-trash" onClose={close} widthClass="max-w-md" danger>
         <div className="space-y-5">
           <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4 dark:border-zinc-700 dark:bg-zinc-800/70">
             <dl className="grid grid-cols-2 gap-3 text-sm">
-              {([
-                ['Pole',     selected?.full_label ?? selected?.name],
-                ['Site',     selected?.area?.name],
-                ['City',     selected?.city],
-                ['Barangay', selected?.barangay_name],
-              ] as [string, string | undefined][]).map(([k, v]) => (
+              {([['Node', selected?.full_label ?? selected?.name], ['Area', selected?.area?.name], ['City', selected?.barangay?.city?.name], ['Barangay', selected?.barangay?.name]] as [string, string | undefined][]).map(([k, v]) => (
                 <div key={k}>
                   <dt className="text-[11px] font-semibold uppercase tracking-wider text-slate-400 dark:text-zinc-500">{k}</dt>
                   <dd className="mt-1 font-medium text-slate-800 dark:text-zinc-200">{v ?? '—'}</dd>
