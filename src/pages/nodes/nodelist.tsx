@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode, type SyntheticEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { isAdmin, canManageStatus, getToken, SKYCABLE_API } from '../../lib/auth'
+import { cacheGet, cacheSet } from '../../lib/cache'
 import { slugify } from '../../lib/utils'
 import PsgcCascade from '../../components/PsgcCascade'
 
@@ -195,20 +196,26 @@ export default function AllPoles({ areaId, siteId, siteSlug }: { areaId?: number
 
   const perPage = 50
 
+  const nodesCacheKey = `nodelist_nodes_${areaId ?? 'all'}_${siteId ?? 'all'}`
+
   // ── Fetch areas ────────────────────────────────────────────────────────────
   useEffect(() => {
     const token = getToken()
+    const hit = cacheGet<Area[]>('nodelist_areas')
+    if (hit) setAreas(hit)
     fetch(`${SKYCABLE_API}/areas`, {
       headers: { Authorization: `Bearer ${token}`, Accept: 'application/json', 'ngrok-skip-browser-warning': '1' },
     })
       .then(r => r.json())
-      .then(data => { if (Array.isArray(data)) setAreas(data) })
+      .then(data => { if (Array.isArray(data)) { setAreas(data); cacheSet('nodelist_areas', data) } })
       .catch(() => {})
   }, [])
 
   // ── Fetch nodes ────────────────────────────────────────────────────────────
   useEffect(() => {
     const token = getToken()
+    const hit = cacheGet<Node[]>(nodesCacheKey)
+    if (hit) { setNodes(hit); setLoading(false) }
     const p = new URLSearchParams()
     if (areaId) p.set('area_id', String(areaId))
     if (siteId) p.set('site_id', String(siteId))
@@ -220,6 +227,7 @@ export default function AllPoles({ areaId, siteId, siteSlug }: { areaId?: number
       .then(data => {
         const list = Array.isArray(data) ? data : (data?.data ?? [])
         setNodes(list)
+        cacheSet(nodesCacheKey, list)
       })
       .catch(() => {})
       .finally(() => setLoading(false))
@@ -285,7 +293,7 @@ export default function AllPoles({ areaId, siteId, siteSlug }: { areaId?: number
         throw new Error(errMsg)
       }
       const newNode: Node = data.data ?? data
-      setNodes(prev => [newNode, ...prev])
+      setNodes(prev => { const next = [newNode, ...prev]; cacheSet(nodesCacheKey, next); return next })
       setPage(1)
       close()
     } catch (err) {
@@ -298,19 +306,19 @@ export default function AllPoles({ areaId, siteId, siteSlug }: { areaId?: number
   const handleEdit = (e: SyntheticEvent<HTMLFormElement>) => {
     e.preventDefault()
     if (!selected) return
-    setNodes(prev => prev.map(n => n.id === selected.id ? { ...n, name: formData.name, status: formData.status as NodeStatus } : n))
+    setNodes(prev => { const next = prev.map(n => n.id === selected.id ? { ...n, name: formData.name, status: formData.status as NodeStatus } : n); cacheSet(nodesCacheKey, next); return next })
     close()
   }
 
   const handleDelete = () => {
     if (!selected) return
-    setNodes(prev => prev.filter(n => n.id !== selected.id))
+    setNodes(prev => { const next = prev.filter(n => n.id !== selected.id); cacheSet(nodesCacheKey, next); return next })
     close()
   }
 
   const handleStatusSave = (status: NodeStatus) => {
     if (!selected) return
-    setNodes(prev => prev.map(n => n.id === selected.id ? { ...n, status } : n))
+    setNodes(prev => { const next = prev.map(n => n.id === selected.id ? { ...n, status } : n); cacheSet(nodesCacheKey, next); return next })
     close()
   }
 

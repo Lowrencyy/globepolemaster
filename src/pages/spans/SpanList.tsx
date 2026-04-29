@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode, type SyntheticEvent } from 'react'
 import { getToken, SKYCABLE_API } from '../../lib/auth'
+import { cacheGet, cacheSet } from '../../lib/cache'
 
 type SpanStatus = 'pending' | 'in_progress' | 'completed' | 'cancelled'
 
@@ -18,6 +19,19 @@ type EditForm = {
   length_meters: string
   status: SpanStatus | ''
 }
+
+type AddForm = {
+  node_id: number | ''
+  from_pole_id: number | ''
+  to_pole_id: number | ''
+  span_code: string
+  length_meters: string
+}
+
+type NodeOption = { id: number; name: string; full_label?: string }
+type PoleOption = { id: number; sequence: number; pole?: { id: number; pole_code: string } }
+
+const emptyAddForm = (): AddForm => ({ node_id: '', from_pole_id: '', to_pole_id: '', span_code: '', length_meters: '' })
 
 const statusConfig: Record<SpanStatus, { label: string; dot: string; badge: string }> = {
   pending:     { label: 'Pending',   dot: 'bg-amber-400',   badge: 'bg-amber-50 text-amber-700 ring-1 ring-amber-200 dark:bg-amber-500/15 dark:text-amber-400 dark:ring-amber-500/20' },
@@ -43,6 +57,23 @@ const lCls = 'mb-1.5 block text-[11px] font-semibold uppercase tracking-[0.18em]
 const primaryBtnCls = 'h-10 rounded-2xl bg-violet-600 px-5 text-sm font-semibold text-white shadow-lg shadow-violet-500/30 transition hover:bg-violet-700 active:scale-[0.99]'
 const secondaryBtnCls = 'h-10 rounded-2xl border border-slate-200 bg-white px-4 text-sm font-medium text-slate-600 shadow-sm transition hover:bg-slate-50 dark:border-zinc-600 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700'
 const dangerBtnCls = 'h-10 rounded-2xl bg-red-600 px-5 text-sm font-semibold text-white shadow-[0_16px_28px_-16px_rgba(220,38,38,0.55)] transition hover:bg-red-700 active:scale-[0.99]'
+
+function exportCSV(spans: Span[]) {
+  const header = ['Span Code', 'Node', 'Area', 'From Pole', 'To Pole', 'Length (m)', 'Status']
+  const lines = spans.map(s => [
+    s.span_code ?? '',
+    s.node?.full_label ?? s.node?.name ?? '',
+    s.node?.area?.name ?? '',
+    s.from_pole?.pole?.pole_code ?? '',
+    s.to_pole?.pole?.pole_code ?? '',
+    s.length_meters ?? '',
+    s.status,
+  ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(','))
+  const blob = new Blob([[header.join(','), ...lines].join('\n')], { type: 'text/csv' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a'); a.href = url; a.download = 'spans.csv'; a.click()
+  URL.revokeObjectURL(url)
+}
 
 function authHeaders() {
   return {
@@ -85,10 +116,10 @@ function Modal({
   return (
     <div className="fixed inset-0 z-999 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-slate-950/55 backdrop-blur-[6px]" onClick={onClose} />
-      <div className={`relative w-full ${widthClass} overflow-hidden rounded-[30px] border border-[#dbe8ff] bg-white shadow-[0_36px_100px_-34px_rgba(6,36,90,0.5)] dark:border-[#27436a] dark:bg-[#0f1728]`}>
+      <div className={`relative w-full ${widthClass} rounded-[30px] border border-[#dbe8ff] bg-white shadow-[0_36px_100px_-34px_rgba(6,36,90,0.5)] dark:border-[#27436a] dark:bg-[#0f1728]`}>
         <div className="pointer-events-none absolute -left-20 top-0 h-40 w-40 rounded-full bg-[#0072ff]/15 blur-3xl" />
         <div className="pointer-events-none absolute -right-14 -top-10 h-44 w-44 rounded-full bg-[#5fd0ff]/20 blur-3xl" />
-        <div className="relative overflow-hidden border-b border-white/20 bg-linear-to-r from-[#0057d9] via-[#0072ff] to-[#00a6ff] px-6 py-4">
+        <div className="relative overflow-hidden rounded-t-[30px] border-b border-white/20 bg-linear-to-r from-[#0057d9] via-[#0072ff] to-[#00a6ff] px-6 py-4">
           <div className="pointer-events-none absolute inset-x-0 top-0 h-12 bg-linear-to-b from-white/30 to-transparent" />
           <div className="relative flex items-center gap-3.5">
             {icon && (
@@ -121,22 +152,49 @@ export default function SpanList() {
   const [statusFilter, setStatusFilter] = useState<'all' | SpanStatus>('all')
   const [page, setPage]       = useState(1)
 
+  const [isAddOpen, setIsAddOpen]   = useState(false)
   const [isEditOpen, setIsEditOpen] = useState(false)
   const [isDelOpen, setIsDelOpen]   = useState(false)
   const [selected, setSelected]     = useState<Span | null>(null)
   const [editForm, setEditForm]     = useState<EditForm>({ span_code: '', length_meters: '', status: '' })
+  const [addForm, setAddForm]       = useState<AddForm>(emptyAddForm())
   const [saving, setSaving]         = useState(false)
   const [formError, setFormError]   = useState<string | null>(null)
+  const [addError, setAddError]     = useState<string | null>(null)
+
+  const [nodes, setNodes]           = useState<NodeOption[]>([])
+  const [nodePoles, setNodePoles]   = useState<PoleOption[]>([])
+  const [polesLoading, setPolesLoading] = useState(false)
 
   const perPage = 50
+  const CACHE_KEY = 'spanlist'
 
   useEffect(() => {
+    const hit = cacheGet<Span[]>(CACHE_KEY)
+    if (hit) { setSpans(hit); setLoading(false) }
     fetch(`${SKYCABLE_API}/spans?per_page=500`, { headers: authHeaders() })
       .then(r => r.json())
-      .then(data => setSpans(Array.isArray(data) ? data : (data?.data ?? [])))
+      .then(data => { const list = Array.isArray(data) ? data : (data?.data ?? []); setSpans(list); cacheSet(CACHE_KEY, list) })
       .catch(() => {})
       .finally(() => setLoading(false))
   }, [])
+
+  useEffect(() => {
+    fetch(`${SKYCABLE_API}/nodes`, { headers: authHeaders() })
+      .then(r => r.json())
+      .then(data => setNodes(Array.isArray(data) ? data : (data?.data ?? [])))
+      .catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    if (!addForm.node_id) { setNodePoles([]); return }
+    setPolesLoading(true)
+    fetch(`${SKYCABLE_API}/nodes/${addForm.node_id}/poles`, { headers: authHeaders() })
+      .then(r => r.json())
+      .then(data => setNodePoles(Array.isArray(data) ? data : []))
+      .catch(() => setNodePoles([]))
+      .finally(() => setPolesLoading(false))
+  }, [addForm.node_id])
 
   const stats = useMemo(() => ({
     total:       spans.length,
@@ -164,9 +222,45 @@ export default function SpanList() {
   const paginated  = filtered.slice((safePage - 1) * perPage, safePage * perPage)
 
   const close = () => {
-    setIsEditOpen(false); setIsDelOpen(false)
-    setSelected(null); setEditForm({ span_code: '', length_meters: '', status: '' })
-    setFormError(null)
+    setIsAddOpen(false); setIsEditOpen(false); setIsDelOpen(false)
+    setSelected(null)
+    setEditForm({ span_code: '', length_meters: '', status: '' })
+    setAddForm(emptyAddForm()); setNodePoles([])
+    setFormError(null); setAddError(null)
+  }
+
+  const handleAddSpan = async (e: SyntheticEvent<HTMLFormElement>) => {
+    e.preventDefault()
+    setSaving(true); setAddError(null)
+    try {
+      const res = await fetch(`${SKYCABLE_API}/spans`, {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({
+          node_id:       addForm.node_id,
+          from_pole_id:  addForm.from_pole_id,
+          to_pole_id:    addForm.to_pole_id,
+          span_code:     addForm.span_code || null,
+          length_meters: addForm.length_meters ? Number(addForm.length_meters) : null,
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        const msg = (data.message as string | undefined) ??
+          (Object.values(data.errors ?? {}) as string[][])?.[0]?.[0] ?? 'Failed to add span'
+        throw new Error(msg)
+      }
+      setSpans(prev => {
+        const next = [data, ...prev]
+        cacheSet(CACHE_KEY, next)
+        return next
+      })
+      close()
+    } catch (err) {
+      setAddError(err instanceof Error ? err.message : 'Something went wrong')
+    } finally {
+      setSaving(false)
+    }
   }
 
   const handleEdit = async (e: SyntheticEvent<HTMLFormElement>) => {
@@ -189,10 +283,13 @@ export default function SpanList() {
           (Object.values(data.errors ?? {}) as string[][])?.[0]?.[0] ?? 'Failed to update'
         throw new Error(msg)
       }
-      setSpans(prev => prev.map(s => s.id === selected.id
-        ? { ...s, span_code: editForm.span_code || undefined, length_meters: editForm.length_meters ? Number(editForm.length_meters) : null, status: editForm.status as SpanStatus }
-        : s
-      ))
+      setSpans(prev => {
+        const next = prev.map(s => s.id === selected.id
+          ? { ...s, span_code: editForm.span_code || undefined, length_meters: editForm.length_meters ? Number(editForm.length_meters) : null, status: editForm.status as SpanStatus }
+          : s)
+        cacheSet(CACHE_KEY, next)
+        return next
+      })
       close()
     } catch (err) {
       setFormError(err instanceof Error ? err.message : 'Something went wrong')
@@ -210,7 +307,11 @@ export default function SpanList() {
         headers: authHeaders(),
       })
       if (!res.ok) throw new Error('Failed to delete span')
-      setSpans(prev => prev.filter(s => s.id !== selected.id))
+      setSpans(prev => {
+        const next = prev.filter(s => s.id !== selected.id)
+        cacheSet(CACHE_KEY, next)
+        return next
+      })
       close()
     } catch (err) {
       setFormError(err instanceof Error ? err.message : 'Something went wrong')
@@ -277,9 +378,28 @@ export default function SpanList() {
             </select>
             <i className="bx bx-chevron-down pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-sm text-gray-400" />
           </div>
-          <span className="ml-auto text-xs font-medium text-gray-400 dark:text-zinc-500">
+          <span className="text-xs font-medium text-gray-400 dark:text-zinc-500">
             {filtered.length} {filtered.length === 1 ? 'span' : 'spans'}
           </span>
+
+          <div className="ml-auto flex items-center gap-2">
+            {filtered.length > 0 && (
+              <button
+                onClick={() => exportCSV(filtered)}
+                className="inline-flex h-10 items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-600 shadow-sm transition hover:bg-slate-50 dark:border-zinc-600 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700"
+              >
+                <i className="bx bx-download text-[16px]" />
+                Export
+              </button>
+            )}
+            <button
+              onClick={() => { setAddForm(emptyAddForm()); setIsAddOpen(true) }}
+              className="inline-flex h-10 items-center gap-2 rounded-2xl bg-sky-600 px-4 text-sm font-semibold text-white shadow-lg shadow-sky-500/30 transition hover:bg-sky-700 active:scale-[0.99]"
+            >
+              <i className="bx bx-plus translate-y-px text-[18px]" />
+              Add Span
+            </button>
+          </div>
         </div>
 
         <div className="overflow-x-auto">
@@ -402,6 +522,83 @@ export default function SpanList() {
           </div>
         )}
       </div>
+
+      {/* Add Span modal */}
+      <Modal open={isAddOpen} title="Add Span" subtitle="Select a node then choose poles" icon="bx bx-git-branch" onClose={close}>
+        <form onSubmit={handleAddSpan} className="space-y-4">
+          <div className="grid grid-cols-2 gap-4">
+            <div className="col-span-2">
+              <label className={lCls}>Node</label>
+              <div className="relative">
+                <select
+                  required
+                  value={addForm.node_id}
+                  onChange={e => setAddForm(p => ({ ...p, node_id: Number(e.target.value) || '', from_pole_id: '', to_pole_id: '' }))}
+                  className={sCls}
+                >
+                  <option value="">Select node</option>
+                  {nodes.map(n => <option key={n.id} value={n.id}>{n.full_label ?? n.name}</option>)}
+                </select>
+                <i className="bx bx-chevron-down pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-base text-slate-400" />
+              </div>
+            </div>
+            <div>
+              <label className={lCls}>
+                From Pole
+                {polesLoading && <i className="bx bx-loader-alt ml-1.5 animate-spin text-[10px] text-slate-400" />}
+              </label>
+              <div className="relative">
+                <select
+                  required
+                  value={addForm.from_pole_id}
+                  onChange={e => setAddForm(p => ({ ...p, from_pole_id: Number(e.target.value) || '' }))}
+                  disabled={!addForm.node_id || polesLoading}
+                  className={sCls}
+                >
+                  <option value="">Select pole</option>
+                  {nodePoles.map(p => (
+                    <option key={p.id} value={p.id}>{p.pole?.pole_code ?? `Pole #${p.id}`} (Seq {p.sequence})</option>
+                  ))}
+                </select>
+                <i className="bx bx-chevron-down pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-base text-slate-400" />
+              </div>
+            </div>
+            <div>
+              <label className={lCls}>To Pole</label>
+              <div className="relative">
+                <select
+                  required
+                  value={addForm.to_pole_id}
+                  onChange={e => setAddForm(p => ({ ...p, to_pole_id: Number(e.target.value) || '' }))}
+                  disabled={!addForm.node_id || polesLoading}
+                  className={sCls}
+                >
+                  <option value="">Select pole</option>
+                  {nodePoles.filter(p => p.id !== addForm.from_pole_id).map(p => (
+                    <option key={p.id} value={p.id}>{p.pole?.pole_code ?? `Pole #${p.id}`} (Seq {p.sequence})</option>
+                  ))}
+                </select>
+                <i className="bx bx-chevron-down pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-base text-slate-400" />
+              </div>
+            </div>
+            <div>
+              <label className={lCls}>Span Code <span className="normal-case text-slate-300">(optional)</span></label>
+              <input value={addForm.span_code} onChange={e => setAddForm(p => ({ ...p, span_code: e.target.value }))} placeholder="e.g. SP-001" className={iCls} />
+            </div>
+            <div>
+              <label className={lCls}>Length (meters) <span className="normal-case text-slate-300">(optional)</span></label>
+              <input type="number" step="any" min="0" value={addForm.length_meters} onChange={e => setAddForm(p => ({ ...p, length_meters: e.target.value }))} placeholder="e.g. 50" className={iCls} />
+            </div>
+          </div>
+          {addError && <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-400">{addError}</div>}
+          <div className="flex justify-end gap-2 border-t border-[#e4eefb] pt-4 dark:border-[#263d5f]">
+            <button type="button" onClick={close} className={secondaryBtnCls}>Cancel</button>
+            <button type="submit" disabled={saving} className={`${primaryBtnCls} disabled:opacity-60`}>
+              {saving ? <span className="flex items-center gap-2"><i className="bx bx-loader-alt animate-spin text-base" /> Saving…</span> : 'Add Span'}
+            </button>
+          </div>
+        </form>
+      </Modal>
 
       {/* Edit modal */}
       <Modal open={isEditOpen} title="Edit Span" subtitle={`Editing: ${selected?.span_code ?? `Span #${selected?.id}`}`} icon="bx bx-edit" onClose={close}>

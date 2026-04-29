@@ -357,9 +357,9 @@ export default function Sidebar() {
 
   const poleMaster   = useOpen(pathname, ['/poles/all', '/poles/map'])
   const napInventory = useOpen(pathname, ['/nap/boxes', '/nap/slot-status'])
-  const auditRpts    = useOpen(pathname, ['/polereports/poleAudit', '/reports/teardown-logs'])
+  const auditRpts    = useOpen(pathname, ['/polereports/poleAudit', '/reports/teardown-logs', '/dailyreports', '/reports/daily', '/reports/rtd', '/reports/vicinity', '/reports/pole-reports'])
   const usersMgmt    = useOpen(pathname, ['/users'])
-  const subcon       = useOpen(pathname, ['/subcontractors/teams', '/subcontractors/users'])
+  const subcon       = useOpen(pathname, ['/subcontractors'])
   const sub = (href: string, label: string) => {
     const isActive = href !== '#' && pathname.startsWith(href)
     const cls = isActive ? subActiveCls : subCls
@@ -506,6 +506,10 @@ export default function Sidebar() {
                 {sub('#', 'NAP Utilization')}
                 {sub('#', 'Span Teardown Report')}
                 {sub('#', 'Validation Summary')}
+                {sub('/dailyreports', 'Daily Reports')}
+                {sub('/reports/rtd', 'RTD Reports')}
+                {sub('/reports/vicinity', 'Vicinity Maps')}
+                {sub('/reports/pole-reports', 'Pole Reports')}
               </ul>
             </li>
 
@@ -524,15 +528,11 @@ export default function Sidebar() {
             </li>
 
             {/* Subcontractors */}
-            <li className={subcon.open ? 'mm-active' : ''}>
-              <a href="javascript:void(0);" onClick={subcon.toggle} aria-expanded={subcon.open} className={subcon.childActive ? activeLinkCls : parentCls}>
+            <li className={pathname.startsWith('/subcontractors') ? 'mm-active' : ''}>
+              <Link to="/subcontractors" className={pathname.startsWith('/subcontractors') ? activeLinkCls : linkCls}>
                 <i data-feather="briefcase"></i>
                 <span>Subcontractors</span>
-              </a>
-              <ul style={{ display: subcon.open ? 'block' : 'none' }}>
-                {sub('/subcontractors/teams', 'Teams')}
-                {sub('/subcontractors/users', 'Subcon Users')}
-              </ul>
+              </Link>
             </li>
 
             <li>

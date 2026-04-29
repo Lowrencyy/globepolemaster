@@ -1,5 +1,9 @@
 import { useEffect, useMemo, useState, type ReactNode, type SyntheticEvent } from 'react'
 import { isAdmin, canManageStatus, getToken, SKYCABLE_API } from '../../lib/auth'
+import { cacheGet, cacheSet } from '../../lib/cache'
+
+const CACHE_NODES = 'allpoles_nodes'
+const CACHE_AREAS = 'allpoles_areas'
 import PsgcCascade from '../../components/PsgcCascade'
 
 type NodeStatus = 'pending' | 'in_progress' | 'completed'
@@ -216,16 +220,20 @@ export default function AllPoles() {
   const h = { Authorization: `Bearer ${getToken()}`, Accept: 'application/json', 'ngrok-skip-browser-warning': '1' }
 
   useEffect(() => {
+    const hit = cacheGet<Area[]>(CACHE_AREAS)
+    if (hit) setAreas(hit)
     fetch(`${SKYCABLE_API}/areas`, { headers: h })
       .then(r => r.json())
-      .then(data => { if (Array.isArray(data)) setAreas(data) })
+      .then(data => { if (Array.isArray(data)) { setAreas(data); cacheSet(CACHE_AREAS, data) } })
       .catch(() => {})
   }, [])
 
   useEffect(() => {
+    const hit = cacheGet<SiteNode[]>(CACHE_NODES)
+    if (hit) { setNodes(hit); setLoading(false) }
     fetch(`${SKYCABLE_API}/nodes`, { headers: h })
       .then(r => r.json())
-      .then(data => setNodes(Array.isArray(data) ? data : (data?.data ?? [])))
+      .then(data => { const list = Array.isArray(data) ? data : (data?.data ?? []); setNodes(list); cacheSet(CACHE_NODES, list) })
       .catch(() => {})
       .finally(() => setLoading(false))
   }, [])

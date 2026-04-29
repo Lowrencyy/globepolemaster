@@ -11,3 +11,30 @@
 body {
   margin: 0;
 }
+
+/* Template sets overflow:hidden on .main-content which clips all vertical content */
+.main-content {
+  overflow: visible !important;
+}
+
+/* Fix Leaflet map interactivity - allow pan/drag */
+.leaflet-container {
+  width: 100% !important;
+  height: 100% !important;
+  cursor: grab !important;
+}
+
+.leaflet-container:active {
+  cursor: grabbing !important;
+}
+
+/* Ensure map tiles and overlays receive pointer events */
+.leaflet-container .leaflet-pane,
+.leaflet-container .leaflet-pane * {
+  pointer-events: auto !important;
+}
+
+/* Fix for React rendering issues */
+.leaflet-container.leaflet-touch-drag {
+  touch-action: none;
+}

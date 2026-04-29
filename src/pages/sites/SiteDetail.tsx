@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import AllPoles from '../nodes/nodelist'
 import { SKYCABLE_API, getToken } from '../../lib/auth'
+import { cacheGet, cacheSet } from '../../lib/cache'
 import { idFromSlug, slugify } from '../../lib/utils'
 
 type Site = {
@@ -22,6 +23,8 @@ export default function SiteDetail() {
 
   useEffect(() => {
     if (!siteId) return
+    const hit = cacheGet<Site>(`sitedetail_${siteId}`)
+    if (hit) { setSite(hit); setLoading(false) }
     const token = getToken()
     fetch(`${SKYCABLE_API}/areas/${siteId}`, {
       headers: {
@@ -31,7 +34,7 @@ export default function SiteDetail() {
       },
     })
       .then(r => r.json())
-      .then((data: Site) => setSite(data))
+      .then((data: Site) => { setSite(data); cacheSet(`sitedetail_${siteId}`, data) })
       .catch(() => {})
       .finally(() => setLoading(false))
   }, [siteId])

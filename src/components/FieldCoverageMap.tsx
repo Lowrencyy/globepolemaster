@@ -1,7 +1,9 @@
-import { useEffect, useRef, useState, memo } from 'react'
-import { getToken, API_BASE } from '../lib/auth'
+import { useEffect, useRef, useState } from 'react'
+import { getToken } from '../lib/auth'
 
 declare const L: any
+
+const API_BASE = 'https://disguisedly-enarthrodial-kristi.ngrok-free.dev'
 
 interface MapPin {
   id: number
@@ -53,13 +55,29 @@ function makePinIcon(status: string) {
   })
 }
 
-export default memo(function FieldCoverageMap() {
+export const TILE_LAYERS = {
+  satellite: { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', attribution: '© Esri, Maxar, Earthstar Geographics', label: 'Satellite' },
+  street:    { url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',                                           attribution: '© OpenStreetMap contributors',            label: 'Street'    },
+  dark:      { url: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',                                attribution: '© CartoDB',                               label: 'Dark'      },
+}
+export type MapView = keyof typeof TILE_LAYERS
+
+interface Props {
+  mapView?: MapView
+  onMapViewChange?: (v: MapView) => void
+}
+
+export default function FieldCoverageMap({ mapView: mapViewProp, onMapViewChange }: Props = {}) {
   const mapRef = useRef<HTMLDivElement>(null)
   const mapInstance = useRef<any>(null)
-  const markersRef = useRef<any[]>([])
+  const tileLayerRef = useRef<any>(null)
   const [pins, setPins] = useState<MapPin[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [mapViewInternal, setMapViewInternal] = useState<MapView>('satellite')
+
+  const mapView = mapViewProp ?? mapViewInternal
+  const setMapView = onMapViewChange ?? setMapViewInternal
 
   // Fetch pins from backend
   useEffect(() => {
@@ -93,10 +111,10 @@ export default memo(function FieldCoverageMap() {
       zoomControl: true,
     })
 
-    L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-      attribution: '© Esri World Imagery',
-      maxZoom: 19,
+    const tl = L.tileLayer(TILE_LAYERS.satellite.url, {
+      attribution: TILE_LAYERS.satellite.attribution,
     }).addTo(map)
+    tileLayerRef.current = tl
 
     mapInstance.current = map
     return () => {
@@ -105,14 +123,26 @@ export default memo(function FieldCoverageMap() {
     }
   }, [])
 
+  // Swap tile layer when mapView changes
+  useEffect(() => {
+    const map = mapInstance.current
+    if (!map || typeof L === 'undefined') return
+    if (tileLayerRef.current) {
+      map.removeLayer(tileLayerRef.current)
+    }
+    const { url, attribution } = TILE_LAYERS[mapView]
+    tileLayerRef.current = L.tileLayer(url, { attribution }).addTo(map)
+  }, [mapView])
+
   // Add / refresh markers whenever pins change
   useEffect(() => {
     const map = mapInstance.current
     if (!map || typeof L === 'undefined') return
 
-    // Remove old markers via ref (avoids eachLayer DOM conflict)
-    markersRef.current.forEach(m => { try { map.removeLayer(m) } catch (_) {} })
-    markersRef.current = []
+    // Remove old markers
+    map.eachLayer((layer: any) => {
+      if (layer instanceof L.Marker) map.removeLayer(layer)
+    })
 
     pins.forEach(pin => {
       if (!pin.lat || !pin.lng) return
@@ -148,8 +178,6 @@ export default memo(function FieldCoverageMap() {
         map.flyTo([pin.lat, pin.lng], 15, { animate: true, duration: 1.2 })
         map.once('moveend', () => marker.openPopup())
       })
-
-      markersRef.current.push(marker)
     })
   }, [pins])
 
@@ -182,7 +210,8 @@ export default memo(function FieldCoverageMap() {
         <button
           onClick={resetView}
           title="Zoom out to Philippines"
-          className="absolute top-3 right-3 z-400 flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white/90 dark:bg-zinc-800/90 backdrop-blur-sm border border-gray-100 dark:border-zinc-700 shadow text-[11px] font-medium text-gray-700 dark:text-zinc-200 hover:bg-violet-50 dark:hover:bg-violet-900/30 hover:text-violet-600 dark:hover:text-violet-400 transition-colors"
+          className="absolute top-3 right-3 flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white/90 dark:bg-zinc-800/90 backdrop-blur-sm border border-gray-100 dark:border-zinc-700 shadow text-[11px] font-medium text-gray-700 dark:text-zinc-200 hover:bg-violet-50 dark:hover:bg-violet-900/30 hover:text-violet-600 dark:hover:text-violet-400 transition-colors"
+          style={{ zIndex: 1000 }}
         >
           <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
             <path d="M3 12a9 9 0 1 0 18 0 9 9 0 0 0-18 0"/><path d="M3 12h4m10 0h4M12 3v4m0 10v4"/>
@@ -193,7 +222,7 @@ export default memo(function FieldCoverageMap() {
 
       {/* Legend */}
       {!loading && !error && (
-        <div className="absolute bottom-3 left-3 z-400 bg-white/90 dark:bg-zinc-800/90 backdrop-blur-sm rounded-lg p-2.5 shadow text-[10px] space-y-1.5 border border-gray-100 dark:border-zinc-700">
+        <div className="absolute bottom-3 left-3 bg-white/90 dark:bg-zinc-800/90 backdrop-blur-sm rounded-lg p-2.5 shadow text-[10px] space-y-1.5 border border-gray-100 dark:border-zinc-700" style={{ zIndex: 1000 }}>
           {Object.entries(STATUS_COLOR).map(([key, col]) => (
             <div key={key} className="flex items-center gap-1.5">
               <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ background: col }} />
@@ -207,4 +236,4 @@ export default memo(function FieldCoverageMap() {
       )}
     </div>
   )
-})
+}

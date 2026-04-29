@@ -8,6 +8,9 @@ import {
 } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { SKYCABLE_API, getToken, isAdmin } from '../../lib/auth'
+import { cacheGet, cacheSet } from '../../lib/cache'
+
+const CACHE_KEY = 'sitelist'
 import { slugify } from '../../lib/utils'
 
 type Site = {
@@ -320,7 +323,11 @@ export default function Sitelist() {
   const [formErr, setFormErr] = useState('')
 
   async function loadSites(options?: { silent?: boolean }) {
-    if (!options?.silent) setLoading(true)
+    if (!options?.silent) {
+      const hit = cacheGet<Site[]>(CACHE_KEY)
+      if (hit) { setSites(hit); setLoading(false) }
+      else setLoading(true)
+    }
 
     setFetchErr('')
 
@@ -336,8 +343,10 @@ export default function Sitelist() {
       }
 
       const list = Array.isArray(data) ? data : data?.data ?? []
+      const sorted = [...list].sort((a, b) => areaSortIndex(a.name) - areaSortIndex(b.name))
 
-      setSites([...list].sort((a, b) => areaSortIndex(a.name) - areaSortIndex(b.name)))
+      setSites(sorted)
+      if (!options?.silent) cacheSet(CACHE_KEY, sorted)
     } catch (error) {
       setFetchErr(error instanceof Error ? error.message : 'Failed to load sites')
       setSites([])
