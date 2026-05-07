@@ -819,7 +819,7 @@ export default function Sitelist() {
               {sites.map((site) => (
                 <article
                   key={site.id}
-                  onClick={() => navigate(`/sites/${slugify(site.name)}-${site.id}`)}
+                  onClick={() => navigate(`/sites/${site.id}/nodes`)}
                   className="group relative min-w-0 cursor-pointer overflow-hidden rounded-2xl border border-slate-200 bg-white p-3.5 shadow-sm transition hover:-translate-y-1 hover:border-blue-300 hover:shadow-xl dark:border-slate-700 dark:bg-slate-950/30 dark:hover:border-blue-500"
                 >
                   <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-blue-600 to-sky-400 opacity-0 transition group-hover:opacity-100" />

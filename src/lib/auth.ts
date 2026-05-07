@@ -1,5 +1,6 @@
 export const API_BASE = 'https://disguisedly-enarthrodial-kristi.ngrok-free.dev'
 export const SKYCABLE_API = `${API_BASE}/api/v1/skycable`
+export const GLOBE_API = `${API_BASE}/api/v1/globe`
 
 export interface LoginResponse {
   token?: string

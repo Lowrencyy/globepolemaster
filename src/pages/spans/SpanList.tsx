@@ -1,79 +1,152 @@
-import { useEffect, useMemo, useState, type ReactNode, type SyntheticEvent } from 'react'
-import { getToken, SKYCABLE_API } from '../../lib/auth'
+import { useEffect, useMemo, useState, useRef, type ReactNode, type SyntheticEvent } from 'react'
+import { useNavigate, useParams } from 'react-router-dom'
+import L from 'leaflet'
+import 'leaflet/dist/leaflet.css'
+import { getToken, SKYCABLE_API, isAdmin } from '../../lib/auth'
 import { cacheGet, cacheSet } from '../../lib/cache'
+import { slugify } from '../../lib/utils'
+
+// ── Types ────────────────────────────────────────────────────────────────────
 
 type SpanStatus = 'pending' | 'in_progress' | 'completed' | 'cancelled'
 
+type Area = { id: number; name: string; nodes_count?: number }
+
+type NodeItem = {
+  id: number
+  name: string
+  full_label?: string | null
+  status: 'pending' | 'in_progress' | 'completed'
+  expected_cable?: number | null
+  subcontractor?: { name: string } | null
+}
+
 type Span = {
   id: number
-  span_code?: string
-  length_meters?: number | null
+  span_code?: string | null
+  strand_length?: number | null
+  number_of_runs?: number | null
+  actual_cable?: number | null
   status: SpanStatus
-  node?: { id: number; name: string; full_label?: string; area?: { id: number; name: string } }
-  from_pole?: { id: number; sequence: number; pole?: { id: number; pole_code: string } }
-  to_pole?: { id: number; sequence: number; pole?: { id: number; pole_code: string } }
+  from_pole?: { id: number; pole?: { id: number; pole_code: string } | null } | null
+  to_pole?: { id: number; pole?: { id: number; pole_code: string } | null } | null
 }
 
 type EditForm = {
   span_code: string
-  length_meters: string
+  strand_length: string
+  number_of_runs: string
   status: SpanStatus | ''
 }
 
 type AddForm = {
-  node_id: number | ''
-  from_pole_id: number | ''
-  to_pole_id: number | ''
+  from_pole_id: string
+  to_pole_id: string
   span_code: string
-  length_meters: string
+  strand_length: string
+  number_of_runs: string
 }
 
-type NodeOption = { id: number; name: string; full_label?: string }
-type PoleOption = { id: number; sequence: number; pole?: { id: number; pole_code: string } }
+type PoleOption = { id: number; pole_code: string; lat?: string | null; lng?: string | null }
 
-const emptyAddForm = (): AddForm => ({ node_id: '', from_pole_id: '', to_pole_id: '', span_code: '', length_meters: '' })
+// ── Brand UI ─────────────────────────────────────────────────────────────────
 
-const statusConfig: Record<SpanStatus, { label: string; dot: string; badge: string }> = {
-  pending:     { label: 'Pending',   dot: 'bg-amber-400',   badge: 'bg-amber-50 text-amber-700 ring-1 ring-amber-200 dark:bg-amber-500/15 dark:text-amber-400 dark:ring-amber-500/20' },
-  in_progress: { label: 'Ongoing',   dot: 'bg-violet-500',  badge: 'bg-violet-50 text-violet-700 ring-1 ring-violet-200 dark:bg-violet-500/15 dark:text-violet-400 dark:ring-violet-500/20' },
-  completed:   { label: 'Completed', dot: 'bg-emerald-500', badge: 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200 dark:bg-emerald-500/15 dark:text-emerald-400 dark:ring-emerald-500/20' },
-  cancelled:   { label: 'Cancelled', dot: 'bg-slate-400',   badge: 'bg-slate-50 text-slate-600 ring-1 ring-slate-200 dark:bg-slate-500/15 dark:text-slate-400 dark:ring-slate-500/20' },
+const BRAND = {
+  blue: '#2E3791',
+  blue2: '#4450C4',
+  dark: '#1F276F',
+  textDark: '#0D123F',
+  soft: '#EEF1FF',
+  softer: '#F7F8FF',
+  panel: '#F4F6FF',
+  border: '#D8DCFF',
+  borderStrong: '#C9D0FF',
+  muted: '#6B73A8',
+  muted2: '#8E96C5',
 }
 
-const statCards = [
-  { label: 'Total Spans', key: 'total',      icon: 'bx bx-git-branch',    accent: 'from-[#0072ff] to-[#00a6ff]' },
-  { label: 'Pending',     key: 'pending',    icon: 'bx bx-time',          accent: 'from-amber-400 to-orange-400' },
-  { label: 'Ongoing',     key: 'in_progress',icon: 'bx bx-loader-circle', accent: 'from-indigo-500 to-violet-500' },
-  { label: 'Completed',   key: 'completed',  icon: 'bx bx-badge-check',   accent: 'from-emerald-500 to-teal-500' },
-] as const
+const BRAND_GRADIENTS = [
+  'linear-gradient(135deg, #2E3791 0%, #4450C4 100%)',
+  'linear-gradient(135deg, #1F276F 0%, #2E3791 100%)',
+  'linear-gradient(135deg, #2E3791 0%, #5362D8 100%)',
+  'linear-gradient(135deg, #283184 0%, #4450C4 100%)',
+  'linear-gradient(135deg, #182060 0%, #2E3791 100%)',
+]
 
-const statuses: Array<'all' | SpanStatus> = ['all', 'pending', 'in_progress', 'completed', 'cancelled']
+// ── Helpers ──────────────────────────────────────────────────────────────────
 
-const iCls = 'h-[42px] w-full rounded-2xl border border-[#d8e6f8] bg-[#f7fbff] px-3.5 text-sm text-slate-800 shadow-[inset_0_1px_0_rgba(255,255,255,0.95)] outline-none transition focus:border-[#1683ff] focus:bg-white focus:ring-4 focus:ring-[#1683ff]/10 dark:border-[#29456e] dark:bg-[#11203a]/70 dark:text-slate-100 dark:focus:border-[#4ea9ff] dark:focus:bg-[#162744] dark:focus:ring-[#4ea9ff]/15'
-const sCls = `${iCls} appearance-none pr-10 cursor-pointer`
-const fiCls = 'h-9 w-full rounded-full border border-[#d8e6f8] bg-white px-4 text-xs font-medium text-slate-600 outline-none transition hover:border-[#8fc5ff] focus:border-[#1683ff] focus:ring-2 focus:ring-[#1683ff]/10 dark:border-[#29456e] dark:bg-[#15233c]/80 dark:text-slate-200'
-const fsCls = `${fiCls} appearance-none pr-8 cursor-pointer`
-const lCls = 'mb-1.5 block text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400 dark:text-slate-500'
-const primaryBtnCls = 'h-10 rounded-2xl bg-violet-600 px-5 text-sm font-semibold text-white shadow-lg shadow-violet-500/30 transition hover:bg-violet-700 active:scale-[0.99]'
-const secondaryBtnCls = 'h-10 rounded-2xl border border-slate-200 bg-white px-4 text-sm font-medium text-slate-600 shadow-sm transition hover:bg-slate-50 dark:border-zinc-600 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700'
-const dangerBtnCls = 'h-10 rounded-2xl bg-red-600 px-5 text-sm font-semibold text-white shadow-[0_16px_28px_-16px_rgba(220,38,38,0.55)] transition hover:bg-red-700 active:scale-[0.99]'
+const cx = (...classes: Array<string | false | null | undefined>) => classes.filter(Boolean).join(' ')
 
-function exportCSV(spans: Span[]) {
-  const header = ['Span Code', 'Node', 'Area', 'From Pole', 'To Pole', 'Length (m)', 'Status']
-  const lines = spans.map(s => [
-    s.span_code ?? '',
-    s.node?.full_label ?? s.node?.name ?? '',
-    s.node?.area?.name ?? '',
-    s.from_pole?.pole?.pole_code ?? '',
-    s.to_pole?.pole?.pole_code ?? '',
-    s.length_meters ?? '',
-    s.status,
-  ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(','))
-  const blob = new Blob([[header.join(','), ...lines].join('\n')], { type: 'text/csv' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a'); a.href = url; a.download = 'spans.csv'; a.click()
-  URL.revokeObjectURL(url)
+const STATUSES: SpanStatus[] = ['pending', 'in_progress', 'completed', 'cancelled']
+
+const STATUS_CFG: Record<
+  SpanStatus,
+  {
+    label: string
+    dot: string
+    text: string
+    soft: string
+    border: string
+    icon: string
+    bar: string
+    active: string
+  }
+> = {
+  pending: {
+    label: 'Pending',
+    dot: '#f59e0b',
+    text: '#b45309',
+    soft: '#fffbeb',
+    border: '#fde68a',
+    icon: 'bx-time-five',
+    bar: 'linear-gradient(90deg, #f59e0b, #f97316)',
+    active: 'bg-amber-500 text-white shadow-lg shadow-amber-500/25',
+  },
+  in_progress: {
+    label: 'In Progress',
+    dot: BRAND.blue,
+    text: BRAND.blue,
+    soft: BRAND.soft,
+    border: BRAND.borderStrong,
+    icon: 'bx-loader-circle',
+    bar: 'linear-gradient(90deg, #2E3791, #5362D8)',
+    active: 'bg-[#2E3791] text-white shadow-lg shadow-blue-900/20',
+  },
+  completed: {
+    label: 'Completed',
+    dot: '#10b981',
+    text: '#047857',
+    soft: '#ecfdf5',
+    border: '#a7f3d0',
+    icon: 'bx-check-circle',
+    bar: 'linear-gradient(90deg, #10b981, #14b8a6)',
+    active: 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/25',
+  },
+  cancelled: {
+    label: 'Cancelled',
+    dot: '#64748b',
+    text: '#475569',
+    soft: '#f8fafc',
+    border: '#e2e8f0',
+    icon: 'bx-x-circle',
+    bar: 'linear-gradient(90deg, #64748b, #94a3b8)',
+    active: 'bg-slate-600 text-white shadow-lg shadow-slate-500/20',
+  },
 }
+
+const NODE_STATUS_CFG = {
+  pending: STATUS_CFG.pending,
+  in_progress: STATUS_CFG.in_progress,
+  completed: STATUS_CFG.completed,
+}
+
+const emptyAdd = (): AddForm => ({
+  from_pole_id: '',
+  to_pole_id: '',
+  span_code: '',
+  strand_length: '',
+  number_of_runs: '1',
+})
 
 function authHeaders() {
   return {
@@ -84,180 +157,752 @@ function authHeaders() {
   }
 }
 
+function poleCode(spanPole?: { pole?: { pole_code: string } | null } | null) {
+  return spanPole?.pole?.pole_code ?? '—'
+}
+
+function expectedCable(strand?: number | null, runs?: number | null) {
+  if (strand == null || runs == null) return '—'
+  return `${(strand * runs).toFixed(0)}m`
+}
+
+function formatMeters(value?: number | null) {
+  return value != null ? `${value}m` : '—'
+}
+
+function fmt(n: number | string | null | undefined, dec = 0) {
+  return Number(n ?? 0)
+    .toFixed(dec)
+    .replace(/\B(?=(\d{3})+(?!\d))/g, ',')
+}
+
+// ── Shared classes ───────────────────────────────────────────────────────────
+
+const inputCls =
+  'h-11 w-full rounded-xl bg-white px-4 text-sm font-semibold outline-none transition placeholder:text-slate-400 focus:ring-4 focus:ring-blue-900/10'
+
+const selectCls = `${inputCls} appearance-none pr-10 cursor-pointer`
+
+const labelCls =
+  'mb-1.5 block text-[10px] font-black uppercase tracking-[0.18em] text-[#8E96C5]'
+
+const primaryBtnCls =
+  'inline-flex h-10 items-center justify-center gap-2 rounded-xl px-4 text-sm font-black text-white transition hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0'
+
+const secondaryBtnCls =
+  'inline-flex h-10 items-center justify-center gap-2 rounded-xl bg-white px-4 text-sm font-bold transition hover:-translate-y-0.5'
+
+const dangerBtnCls =
+  'inline-flex h-10 items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-red-600 to-rose-600 px-4 text-sm font-black text-white shadow-lg shadow-red-500/25 transition hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0'
+
+// ── Small Components ─────────────────────────────────────────────────────────
+
+function Chevron() {
+  return <i className="bx bx-chevron-down pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-lg text-[#8E96C5]" />
+}
+
+function StatusChip({ status }: { status: SpanStatus }) {
+  const cfg = STATUS_CFG[status] ?? STATUS_CFG.pending
+
+  return (
+    <span
+      className="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[10px] font-black"
+      style={{
+        backgroundColor: cfg.soft,
+        color: cfg.text,
+        border: `1px solid ${cfg.border}`,
+      }}
+    >
+      <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: cfg.dot }} />
+      {cfg.label}
+    </span>
+  )
+}
+
 function Modal({
-  open, title, subtitle, icon, children, onClose, widthClass = 'max-w-lg', danger = false,
+  open,
+  title,
+  sub,
+  onClose,
+  children,
+  wide = false,
+  danger = false,
 }: {
-  open: boolean; title: string; subtitle?: string; icon?: string
-  children: ReactNode; onClose: () => void; widthClass?: string; danger?: boolean
+  open: boolean
+  title: string
+  sub?: string
+  onClose: () => void
+  children: ReactNode
+  wide?: boolean
+  danger?: boolean
 }) {
   if (!open) return null
-  if (danger) {
-    return (
-      <div className="fixed inset-0 z-999 flex items-center justify-center p-4">
-        <div className="absolute inset-0 bg-slate-950/55 backdrop-blur-[5px]" onClick={onClose} />
-        <div className={`relative w-full ${widthClass} overflow-hidden rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_30px_80px_-30px_rgba(15,23,42,0.45)] dark:border-zinc-700 dark:bg-zinc-900`}>
-          <button onClick={onClose} className="absolute right-4 top-4 flex h-9 w-9 items-center justify-center rounded-full text-slate-400 transition hover:bg-slate-100 dark:hover:bg-zinc-800">
-            <i className="bx bx-x text-[22px]" />
-          </button>
-          <div className="mb-4 flex justify-center">
-            <div className="flex h-14 w-14 items-center justify-center rounded-full bg-red-50 ring-8 ring-red-50/70 dark:bg-red-500/10 dark:ring-red-500/10">
-              <i className={`${icon ?? 'bx bx-trash'} translate-y-px text-[26px] text-red-500 dark:text-red-400`} />
-            </div>
-          </div>
-          <div className="text-center">
-            <h5 className="text-lg font-semibold text-slate-800 dark:text-slate-100">{title}</h5>
-            {subtitle && <p className="mt-1 text-sm leading-6 text-slate-500 dark:text-zinc-400">{subtitle}</p>}
-          </div>
-          <div className="mt-6">{children}</div>
-        </div>
-      </div>
-    )
-  }
+
   return (
-    <div className="fixed inset-0 z-999 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-slate-950/55 backdrop-blur-[6px]" onClick={onClose} />
-      <div className={`relative w-full ${widthClass} rounded-[30px] border border-[#dbe8ff] bg-white shadow-[0_36px_100px_-34px_rgba(6,36,90,0.5)] dark:border-[#27436a] dark:bg-[#0f1728]`}>
-        <div className="pointer-events-none absolute -left-20 top-0 h-40 w-40 rounded-full bg-[#0072ff]/15 blur-3xl" />
-        <div className="pointer-events-none absolute -right-14 -top-10 h-44 w-44 rounded-full bg-[#5fd0ff]/20 blur-3xl" />
-        <div className="relative overflow-hidden rounded-t-[30px] border-b border-white/20 bg-linear-to-r from-[#0057d9] via-[#0072ff] to-[#00a6ff] px-6 py-4">
-          <div className="pointer-events-none absolute inset-x-0 top-0 h-12 bg-linear-to-b from-white/30 to-transparent" />
-          <div className="relative flex items-center gap-3.5">
-            {icon && (
-              <div className="relative flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-[14px] border border-white/30 bg-white/15 text-white backdrop-blur-xl">
-                <div className="pointer-events-none absolute inset-x-1 top-1 h-1/2 rounded-full bg-linear-to-b from-white/35 to-transparent" />
-                <i className={`${icon} relative translate-y-px text-[19px]`} />
-              </div>
-            )}
-            <div className="min-w-0 flex-1">
-              <h5 className="text-sm font-bold tracking-[0.01em] text-white">{title}</h5>
-              {subtitle && <p className="mt-0.5 text-xs text-white/80">{subtitle}</p>}
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-slate-950/55 backdrop-blur-md" onClick={onClose} />
+
+      <div
+        className={cx(
+          'relative max-h-[90vh] w-full overflow-hidden rounded-[24px] bg-white shadow-2xl',
+          wide ? 'max-w-2xl' : 'max-w-md',
+        )}
+        style={{ border: `1px solid ${danger ? '#fecaca' : BRAND.borderStrong}` }}
+      >
+        <div
+          className="relative overflow-hidden px-6 py-5"
+          style={{
+            background: danger
+              ? 'linear-gradient(135deg, #dc2626 0%, #e11d48 100%)'
+              : 'linear-gradient(135deg, #2E3791 0%, #4450C4 100%)',
+          }}
+        >
+          <div className="relative flex items-start justify-between gap-3">
+            <div>
+              <h3 className="text-base font-black text-white">{title}</h3>
+              {sub && <p className="mt-0.5 text-xs font-semibold text-white/75">{sub}</p>}
             </div>
-            <button onClick={onClose} className="flex h-9 w-9 items-center justify-center rounded-full border border-white/15 bg-white/10 text-white/80 transition hover:bg-white/20 hover:text-white">
-              <i className="bx bx-x text-[21px]" />
+
+            <button onClick={onClose} className="rounded-full p-1.5 text-white/75 transition hover:bg-white/10 hover:text-white">
+              <i className="bx bx-x text-xl leading-none" />
             </button>
           </div>
         </div>
-        <div className="relative bg-[linear-gradient(180deg,rgba(248,251,255,0.92),rgba(255,255,255,1))] p-6 dark:bg-[linear-gradient(180deg,rgba(15,23,40,0.98),rgba(15,23,40,1))]">
-          {children}
+
+        <div className="max-h-[calc(90vh-84px)] overflow-y-auto p-6">{children}</div>
+      </div>
+    </div>
+  )
+}
+
+function SkeletonCard() {
+  return (
+    <div
+      className="relative min-h-[190px] overflow-hidden rounded-[22px] bg-white p-5"
+      style={{
+        border: `1px solid ${BRAND.border}`,
+        boxShadow: '0 12px 30px -24px rgba(46,55,145,0.35)',
+      }}
+    >
+      <div className="h-11 w-11 animate-pulse rounded-2xl bg-[#EEF1FF]" />
+      <div className="mt-7 h-4 w-2/3 animate-pulse rounded-full bg-[#EEF1FF]" />
+      <div className="mt-3 h-3 w-1/3 animate-pulse rounded-full bg-[#EEF1FF]" />
+    </div>
+  )
+}
+
+function EmptyState({ icon, title, text, action }: { icon: string; title: string; text?: string; action?: ReactNode }) {
+  return (
+    <div
+      className="flex min-h-[280px] flex-col items-center justify-center rounded-[24px] bg-white px-6 py-14 text-center"
+      style={{
+        color: BRAND.muted2,
+        border: `1px solid ${BRAND.border}`,
+      }}
+    >
+      <i className={cx('bx text-5xl', icon)} />
+      <h3 className="mt-3 text-base font-black" style={{ color: BRAND.textDark }}>{title}</h3>
+      {text && <p className="mt-1 max-w-sm text-sm font-semibold" style={{ color: BRAND.muted }}>{text}</p>}
+      {action && <div className="mt-5">{action}</div>}
+    </div>
+  )
+}
+
+function StatCard({ label, value, icon, accent, helper }: { label: string; value: number | string; icon: string; accent: string; helper?: string }) {
+  return (
+    <div
+      className="relative overflow-hidden rounded-[20px] bg-white p-4"
+      style={{
+        border: `1px solid ${BRAND.border}`,
+        boxShadow: '0 12px 30px -24px rgba(46,55,145,0.35)',
+      }}
+    >
+      <div className="relative flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-[10px] font-black uppercase tracking-[0.16em]" style={{ color: BRAND.muted2 }}>
+            {label}
+          </p>
+
+          <p className="mt-2 truncate font-mono text-[28px] font-black leading-none" style={{ color: BRAND.textDark }}>
+            {value}
+          </p>
+
+          {helper && <p className="mt-2 text-[11px] font-bold" style={{ color: BRAND.muted2 }}>{helper}</p>}
+        </div>
+
+        <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl text-white" style={{ background: accent }}>
+          <i className={cx('bx text-[22px]', icon)} />
         </div>
       </div>
     </div>
   )
 }
 
+function PageShell({ children }: { children: ReactNode }) {
+  return <div className="flex flex-col gap-5 bg-slate-50 px-4 py-4 pb-10 sm:px-6 lg:px-8">{children}</div>
+}
+
+function ViewHero({ crumbs, eyebrow, title, subtitle, actions }: { crumbs: Array<{ label: ReactNode; onClick?: () => void }>; eyebrow: string; title: ReactNode; subtitle: string; actions?: ReactNode }) {
+  return (
+    <div
+      className="relative overflow-hidden rounded-[28px] px-6 py-7"
+      style={{
+        background: `linear-gradient(135deg, #ffffff 0%, ${BRAND.softer} 40%, ${BRAND.soft} 100%)`,
+        border: `1px solid ${BRAND.borderStrong}`,
+        boxShadow: '0 24px 60px -38px rgba(46,55,145,0.38)',
+      }}
+    >
+      <div className="pointer-events-none absolute -left-16 -top-20 h-64 w-64 rounded-full blur-3xl" style={{ background: 'rgba(46,55,145,0.12)' }} />
+      <div className="pointer-events-none absolute -right-16 -bottom-20 h-64 w-64 rounded-full blur-3xl" style={{ background: 'rgba(68,80,196,0.12)' }} />
+
+      <div className="relative">
+        <nav className="mb-4 flex flex-wrap items-center gap-2 text-xs font-bold" style={{ color: BRAND.muted2 }}>
+          {crumbs.map((c, i) => (
+            <span key={i} className="inline-flex items-center gap-2">
+              {i > 0 && <i className="bx bx-chevron-right text-base" />}
+              {c.onClick ? (
+                <button type="button" onClick={c.onClick} className="transition hover:text-[#2E3791]">
+                  {c.label}
+                </button>
+              ) : (
+                <span style={{ color: BRAND.textDark }}>{c.label}</span>
+              )}
+            </span>
+          ))}
+        </nav>
+
+        <div className="flex flex-wrap items-start justify-between gap-5">
+          <div className="min-w-0">
+            <span
+              className="inline-flex items-center gap-2 rounded-full px-3 py-1 text-[10px] font-black uppercase tracking-[0.22em]"
+              style={{
+                backgroundColor: BRAND.soft,
+                color: BRAND.blue,
+                border: `1px solid ${BRAND.borderStrong}`,
+              }}
+            >
+              <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: BRAND.blue }} />
+              {eyebrow}
+            </span>
+
+            <h2 className="mt-3 text-3xl font-black tracking-[-0.05em]" style={{ color: BRAND.blue }}>
+              {title}
+            </h2>
+
+            <p className="mt-2 text-sm font-semibold" style={{ color: BRAND.muted }}>{subtitle}</p>
+          </div>
+
+          {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function PolePill({ value }: { value: ReactNode }) {
+  return (
+    <span
+      className="inline-flex rounded-full px-3 py-1 font-mono text-[11px] font-black"
+      style={{
+        backgroundColor: BRAND.soft,
+        color: BRAND.blue,
+        border: `1px solid ${BRAND.borderStrong}`,
+      }}
+    >
+      {value}
+    </span>
+  )
+}
+
+// ── Leaflet Span Map ─────────────────────────────────────────────────────────
+
+const SPAN_TILES = {
+  satellite: {
+    url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+    attr: '© Esri',
+    label: 'Satellite',
+  },
+  streets: {
+    url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+    attr: '© OpenStreetMap contributors',
+    label: 'Streets',
+  },
+  dark: {
+    url: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+    attr: '© CartoDB',
+    label: 'Dark',
+  },
+} as const
+type SpanTile = keyof typeof SPAN_TILES
+
+function makePoleIcon(color: string, size: number) {
+  const html = `<div style="width:${size}px;height:${size}px;border-radius:50%;background:${color};border:3px solid #fff;box-shadow:0 2px 10px rgba(0,0,0,0.45);cursor:pointer"></div>`
+  return L.divIcon({ html, className: '', iconSize: [size, size], iconAnchor: [size / 2, size / 2], popupAnchor: [0, -size / 2 - 4] })
+}
+
+function LeafletSpanMap({
+  poles, spans, onPairSelected, savedPairs,
+}: {
+  poles: PoleOption[]
+  spans: Span[]
+  onPairSelected: (from: PoleOption, to: PoleOption) => void
+  savedPairs: Array<{ from: number; to: number }>
+}) {
+  const containerRef  = useRef<HTMLDivElement>(null)
+  const mapRef        = useRef<L.Map | null>(null)
+  const markerLayRef  = useRef<L.LayerGroup | null>(null)
+  const spanLayRef    = useRef<L.LayerGroup | null>(null)
+  const tileLayRef    = useRef<L.TileLayer | null>(null)
+  const fromRef       = useRef<PoleOption | null>(null)
+  const onSelectRef   = useRef(onPairSelected)
+  const didFitRef     = useRef(false)
+  useEffect(() => { onSelectRef.current = onPairSelected }, [onPairSelected])
+
+  const [baseTile,    setBaseTile]    = useState<SpanTile>('satellite')
+  const [fromDisplay, setFromDisplay] = useState<PoleOption | null>(null)
+
+  const gpsPoles = useMemo(() => poles.filter(p => p.lat && p.lng), [poles])
+
+  // Init map (once)
+  useEffect(() => {
+    if (!containerRef.current || mapRef.current) return
+    const map = L.map(containerRef.current, { center: [12.88, 121.77], zoom: 6, zoomControl: false })
+    L.control.zoom({ position: 'bottomright' }).addTo(map)
+    tileLayRef.current = L.tileLayer(SPAN_TILES.satellite.url, { attribution: SPAN_TILES.satellite.attr, maxZoom: 21 }).addTo(map)
+    spanLayRef.current   = L.layerGroup().addTo(map)
+    markerLayRef.current = L.layerGroup().addTo(map)
+    mapRef.current = map
+    return () => { map.remove(); mapRef.current = null; didFitRef.current = false }
+  }, [])
+
+  // Tile switching
+  useEffect(() => {
+    const map = mapRef.current; if (!map) return
+    tileLayRef.current?.remove()
+    tileLayRef.current = L.tileLayer(SPAN_TILES[baseTile].url, { attribution: SPAN_TILES[baseTile].attr, maxZoom: 21 })
+    tileLayRef.current.addTo(map)
+    tileLayRef.current.setZIndex(0)
+  }, [baseTile])
+
+  // Draw spans
+  useEffect(() => {
+    const lay = spanLayRef.current; if (!lay) return
+    lay.clearLayers()
+
+    spans.forEach(s => {
+      const fp = gpsPoles.find(p => p.id === s.from_pole?.id)
+      const tp = gpsPoles.find(p => p.id === s.to_pole?.id)
+      if (!fp || !tp) return
+      const line = L.polyline(
+        [[Number(fp.lat), Number(fp.lng)], [Number(tp.lat), Number(tp.lng)]],
+        { color: '#ffffff', weight: 2.5, dashArray: '6 5', opacity: 0.85 },
+      ).addTo(lay)
+      line.bindPopup(`
+        <div style="font-family:ui-sans-serif,sans-serif;min-width:190px">
+          <div style="background:linear-gradient(135deg,#2E3791,#4450C4);color:#fff;padding:8px 12px;border-radius:8px 8px 0 0;margin:-8px -12px 10px">
+            <div style="font-size:9px;opacity:.65;text-transform:uppercase;letter-spacing:.12em">Span</div>
+            <div style="font-size:13px;font-weight:900;font-family:ui-monospace,monospace">${s.span_code ?? `#${s.id}`}</div>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
+            ${[['From', poleCode(s.from_pole)], ['To', poleCode(s.to_pole)], ['Length', formatMeters(s.strand_length)], ['Runs', String(s.number_of_runs ?? '—')], ['Cable', expectedCable(s.strand_length, s.number_of_runs)], ['Status', STATUS_CFG[s.status]?.label ?? s.status]]
+              .map(([k, v]) => `<div><div style="font-size:9px;font-weight:900;text-transform:uppercase;letter-spacing:.1em;color:#8E96C5">${k}</div><div style="font-weight:700;color:#0D123F;font-size:12px">${v}</div></div>`).join('')}
+          </div>
+        </div>
+      `, { maxWidth: 260 })
+    })
+
+    savedPairs.forEach(s => {
+      const fp = gpsPoles.find(p => p.id === s.from)
+      const tp = gpsPoles.find(p => p.id === s.to)
+      if (!fp || !tp) return
+      L.polyline([[Number(fp.lat), Number(fp.lng)], [Number(tp.lat), Number(tp.lng)]], { color: '#34d399', weight: 4 }).addTo(lay)
+    })
+  }, [gpsPoles, spans, savedPairs])
+
+  // Draw markers (re-runs when fromDisplay changes to update colors)
+  useEffect(() => {
+    const lay = markerLayRef.current; if (!lay) return
+    lay.clearLayers()
+
+    const currentFrom = fromRef.current
+    gpsPoles.forEach(p => {
+      const isFrom = currentFrom?.id === p.id
+      const marker = L.marker(
+        [Number(p.lat), Number(p.lng)],
+        { icon: makePoleIcon(isFrom ? '#2563eb' : '#f59e0b', isFrom ? 26 : 20) },
+      ).addTo(lay)
+      marker.bindTooltip(`<b style="font-family:ui-monospace,monospace;font-size:11px">${p.pole_code}</b>`, { direction: 'top', className: 'pole-tooltip' })
+      marker.on('click', () => {
+        const cf = fromRef.current
+        if (!cf) {
+          fromRef.current = p; setFromDisplay(p)
+        } else if (cf.id !== p.id) {
+          fromRef.current = null; setFromDisplay(null)
+          onSelectRef.current(cf, p)
+        }
+      })
+    })
+
+    if (!didFitRef.current && mapRef.current && gpsPoles.length > 0) {
+      mapRef.current.fitBounds(
+        L.latLngBounds(gpsPoles.map(p => [Number(p.lat), Number(p.lng)] as [number, number])),
+        { padding: [50, 50], maxZoom: 17 },
+      )
+      didFitRef.current = true
+    }
+  }, [gpsPoles, fromDisplay])
+
+  const clearFrom = () => { fromRef.current = null; setFromDisplay(null) }
+
+  return (
+    <div className="relative flex h-full w-full overflow-hidden">
+      <div ref={containerRef} className="flex-1 h-full" />
+
+      {/* Tile buttons */}
+      <div className="absolute left-3 top-3 z-[1000] flex overflow-hidden rounded-xl shadow-xl" style={{ border: '1px solid rgba(255,255,255,0.18)' }}>
+        {(Object.keys(SPAN_TILES) as SpanTile[]).map(t => (
+          <button
+            key={t}
+            type="button"
+            onClick={() => setBaseTile(t)}
+            className="px-3.5 py-2 text-xs font-black transition"
+            style={{
+              background: baseTile === t ? 'linear-gradient(135deg,#2E3791,#4450C4)' : 'rgba(0,0,0,0.55)',
+              color: baseTile === t ? '#fff' : 'rgba(255,255,255,0.75)',
+              backdropFilter: 'blur(10px)',
+            }}
+          >
+            {SPAN_TILES[t].label}
+          </button>
+        ))}
+      </div>
+
+      {/* From pole indicator */}
+      {fromDisplay && (
+        <div className="absolute bottom-10 left-1/2 z-[1000] -translate-x-1/2 flex items-center gap-2 rounded-full bg-white px-4 py-2 shadow-2xl" style={{ border: '2px solid #2563eb' }}>
+          <span className="h-2.5 w-2.5 rounded-full bg-blue-600" />
+          <span className="text-xs font-black text-slate-800">
+            From: <span className="text-blue-600">{fromDisplay.pole_code}</span>
+          </span>
+          <span className="text-xs text-slate-400">— click the To pole</span>
+          <button type="button" onClick={clearFrom} className="ml-1 rounded-full p-0.5 text-slate-400 transition hover:text-red-500">
+            <i className="bx bx-x text-base leading-none" />
+          </button>
+        </div>
+      )}
+
+      {/* Legend */}
+      <div
+        className="absolute bottom-3 right-3 z-[1000] flex flex-wrap items-center gap-3 rounded-xl px-3 py-2 text-[11px] font-semibold shadow-xl"
+        style={{ background: 'rgba(0,0,0,0.6)', color: 'rgba(255,255,255,0.8)', backdropFilter: 'blur(10px)' }}
+      >
+        {[{ color: '#f59e0b', label: 'Pole' }, { color: '#2563eb', label: 'From' }, { color: '#ffffff', label: 'Span (click for details)' }, { color: '#34d399', label: 'Newly added' }].map(l => (
+          <span key={l.label} className="flex items-center gap-1.5">
+            <span className="h-2 w-2 rounded-full" style={{ background: l.color }} />
+            {l.label}
+          </span>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+
+// ── Main Component ───────────────────────────────────────────────────────────
+
+function idFromSlug(slug: string): number | null {
+  const parts = slug.split('-')
+  const id = Number(parts[parts.length - 1])
+  return isNaN(id) ? null : id
+}
+
 export default function SpanList() {
-  const [spans, setSpans]     = useState<Span[]>([])
-  const [loading, setLoading] = useState(true)
-  const [search, setSearch]   = useState('')
-  const [statusFilter, setStatusFilter] = useState<'all' | SpanStatus>('all')
-  const [page, setPage]       = useState(1)
+  const admin = isAdmin()
+  const navigate = useNavigate()
+  const { spanSiteSlug, spanNodeSlug } = useParams<{ spanSiteSlug?: string; spanNodeSlug?: string }>()
 
-  const [isAddOpen, setIsAddOpen]   = useState(false)
-  const [isEditOpen, setIsEditOpen] = useState(false)
-  const [isDelOpen, setIsDelOpen]   = useState(false)
-  const [selected, setSelected]     = useState<Span | null>(null)
-  const [editForm, setEditForm]     = useState<EditForm>({ span_code: '', length_meters: '', status: '' })
-  const [addForm, setAddForm]       = useState<AddForm>(emptyAddForm())
-  const [saving, setSaving]         = useState(false)
-  const [formError, setFormError]   = useState<string | null>(null)
-  const [addError, setAddError]     = useState<string | null>(null)
+  const [selectedArea, setSelectedArea] = useState<Area | null>(null)
+  const [selectedNode, setSelectedNode] = useState<NodeItem | null>(null)
 
-  const [nodes, setNodes]           = useState<NodeOption[]>([])
-  const [nodePoles, setNodePoles]   = useState<PoleOption[]>([])
-  const [polesLoading, setPolesLoading] = useState(false)
+  // Sync state with URL (handles browser back/forward and navigate-only calls)
+  useEffect(() => {
+    if (!spanSiteSlug) {
+      setSelectedArea(null)
+      setSelectedNode(null)
+    } else if (!spanNodeSlug) {
+      setSelectedNode(null)
+    }
+  }, [spanSiteSlug, spanNodeSlug])
 
-  const perPage = 50
-  const CACHE_KEY = 'spanlist'
+  const [areas, setAreas] = useState<Area[]>([])
+  const [nodes, setNodes] = useState<NodeItem[]>([])
+  const [spans, setSpans] = useState<Span[]>([])
+  const [poles, setPoles] = useState<PoleOption[]>([])
+
+  const [areasLoading, setAreasLoading] = useState(true)
+  const [nodesLoading, setNodesLoading] = useState(false)
+  const [spansLoading, setSpansLoading] = useState(false)
+
+  const [search, setSearch] = useState('')
+  const [statusFilter, setStatusFilter] = useState<SpanStatus | ''>('')
+
+  const [addOpen, setAddOpen] = useState(false)
+  const [editOpen, setEditOpen] = useState(false)
+  const [delOpen, setDelOpen] = useState(false)
+  const [selected, setSelected] = useState<Span | null>(null)
+
+  const [addForm, setAddForm] = useState<AddForm>(emptyAdd())
+  const [editForm, setEditForm] = useState<EditForm>({ span_code: '', strand_length: '', number_of_runs: '', status: '' })
+
+  const [saving, setSaving] = useState(false)
+  const [formErr, setFormErr] = useState<string | null>(null)
+  const [overviewLoading, setOverviewLoading] = useState(false)
+  const [overviewStats, setOverviewStats] = useState({ total: 0, completed: 0, pending: 0 })
+
+  const [spanView, setSpanView] = useState<'list' | 'map'>('list')
+  const [savedPairs, setSavedPairs] = useState<Array<{ from: number; to: number }>>([])
+
 
   useEffect(() => {
-    const hit = cacheGet<Span[]>(CACHE_KEY)
-    if (hit) { setSpans(hit); setLoading(false) }
-    fetch(`${SKYCABLE_API}/spans?per_page=500`, { headers: authHeaders() })
+    const hit = cacheGet<Area[]>('spanlist_areas')
+    if (hit) {
+      setAreas(hit)
+      setAreasLoading(false)
+      if (spanSiteSlug) {
+        const areaId = idFromSlug(spanSiteSlug)
+        const area = hit.find(a => a.id === areaId) ?? null
+        setSelectedArea(area)
+      }
+      return
+    }
+
+    fetch(`${SKYCABLE_API}/areas`, { headers: authHeaders() })
       .then(r => r.json())
-      .then(data => { const list = Array.isArray(data) ? data : (data?.data ?? []); setSpans(list); cacheSet(CACHE_KEY, list) })
+      .then(data => {
+        const list: Area[] = Array.isArray(data) ? data : data?.data ?? []
+        setAreas(list)
+        cacheSet('spanlist_areas', list)
+        if (spanSiteSlug) {
+          const areaId = idFromSlug(spanSiteSlug)
+          const area = list.find(a => a.id === areaId) ?? null
+          setSelectedArea(area)
+        }
+      })
       .catch(() => {})
-      .finally(() => setLoading(false))
+      .finally(() => setAreasLoading(false))
   }, [])
 
   useEffect(() => {
-    fetch(`${SKYCABLE_API}/nodes`, { headers: authHeaders() })
-      .then(r => r.json())
-      .then(data => setNodes(Array.isArray(data) ? data : (data?.data ?? [])))
-      .catch(() => {})
+    let mounted = true
+
+    const loadOverview = async () => {
+      setOverviewLoading(true)
+      try {
+        let page = 1
+        let lastPage = 1
+        const all: Span[] = []
+
+        do {
+          const res = await fetch(`${SKYCABLE_API}/spans?per_page=500&page=${page}`, { headers: authHeaders() })
+          const data = await res.json()
+          const rows: Span[] = Array.isArray(data) ? data : data?.data ?? []
+          all.push(...rows)
+          lastPage = Array.isArray(data) ? 1 : data?.meta?.last_page ?? data?.last_page ?? 1
+          page += 1
+        } while (page <= lastPage)
+
+        if (!mounted) return
+
+        setOverviewStats({
+          total: all.length,
+          completed: all.filter(s => s.status === 'completed').length,
+          pending: all.filter(s => s.status === 'pending').length,
+        })
+      } catch {
+        if (!mounted) return
+        setOverviewStats({ total: 0, completed: 0, pending: 0 })
+      } finally {
+        if (mounted) setOverviewLoading(false)
+      }
+    }
+
+    loadOverview()
+    return () => {
+      mounted = false
+    }
   }, [])
 
   useEffect(() => {
-    if (!addForm.node_id) { setNodePoles([]); return }
-    setPolesLoading(true)
-    fetch(`${SKYCABLE_API}/nodes/${addForm.node_id}/poles`, { headers: authHeaders() })
+    if (!selectedArea) {
+      setNodes([])
+      return
+    }
+
+    const cacheKey = `spanlist_nodes_${selectedArea.id}`
+    const hit = cacheGet<NodeItem[]>(cacheKey)
+    if (hit) {
+      setNodes(hit)
+      if (spanNodeSlug) {
+        const nodeId = idFromSlug(spanNodeSlug)
+        const node = hit.find(n => n.id === nodeId) ?? null
+        setSelectedNode(node)
+      }
+      return
+    }
+
+    setNodesLoading(true)
+
+    fetch(`${SKYCABLE_API}/nodes?area_id=${selectedArea.id}&per_page=200`, { headers: authHeaders() })
       .then(r => r.json())
-      .then(data => setNodePoles(Array.isArray(data) ? data : []))
-      .catch(() => setNodePoles([]))
-      .finally(() => setPolesLoading(false))
-  }, [addForm.node_id])
+      .then(data => {
+        const list: NodeItem[] = Array.isArray(data) ? data : data?.data ?? []
+        setNodes(list)
+        cacheSet(cacheKey, list)
+        if (spanNodeSlug) {
+          const nodeId = idFromSlug(spanNodeSlug)
+          const node = list.find(n => n.id === nodeId) ?? null
+          setSelectedNode(node)
+        }
+      })
+      .catch(() => setNodes([]))
+      .finally(() => setNodesLoading(false))
+  }, [selectedArea])
 
-  const stats = useMemo(() => ({
-    total:       spans.length,
-    pending:     spans.filter(s => s.status === 'pending').length,
-    in_progress: spans.filter(s => s.status === 'in_progress').length,
-    completed:   spans.filter(s => s.status === 'completed').length,
-  }), [spans])
+  const loadSpans = () => {
+    if (!selectedNode) return
 
-  const filtered = spans.filter(s => {
-    const q = search.toLowerCase()
-    return (
-      (!q ||
-        (s.span_code ?? '').toLowerCase().includes(q) ||
-        (s.node?.full_label ?? s.node?.name ?? '').toLowerCase().includes(q) ||
-        (s.node?.area?.name ?? '').toLowerCase().includes(q) ||
-        (s.from_pole?.pole?.pole_code ?? '').toLowerCase().includes(q) ||
-        (s.to_pole?.pole?.pole_code ?? '').toLowerCase().includes(q)
-      ) &&
-      (statusFilter === 'all' || s.status === statusFilter)
-    )
-  })
+    setSpansLoading(true)
 
-  const totalPages = Math.max(1, Math.ceil(filtered.length / perPage))
-  const safePage   = Math.min(page, totalPages)
-  const paginated  = filtered.slice((safePage - 1) * perPage, safePage * perPage)
-
-  const close = () => {
-    setIsAddOpen(false); setIsEditOpen(false); setIsDelOpen(false)
-    setSelected(null)
-    setEditForm({ span_code: '', length_meters: '', status: '' })
-    setAddForm(emptyAddForm()); setNodePoles([])
-    setFormError(null); setAddError(null)
+    fetch(`${SKYCABLE_API}/spans?node_id=${selectedNode.id}&per_page=200`, { headers: authHeaders() })
+      .then(r => r.json())
+      .then(data => setSpans(Array.isArray(data) ? data : data?.data ?? []))
+      .catch(() => setSpans([]))
+      .finally(() => setSpansLoading(false))
   }
 
-  const handleAddSpan = async (e: SyntheticEvent<HTMLFormElement>) => {
+  useEffect(() => {
+    if (!selectedNode) {
+      setSpans([])
+      setPoles([])
+      setSavedPairs([])
+      setSpanView('list')
+      return
+    }
+
+    loadSpans()
+
+    fetch(`${SKYCABLE_API}/nodes/${selectedNode.id}/poles`, { headers: authHeaders() })
+      .then(r => r.json())
+      .then(data => {
+        const list = Array.isArray(data) ? data : data?.data ?? []
+        setPoles(list.map((p: any) => ({
+          id:        p.id,
+          pole_code: p.pole?.pole_code ?? p.pole_code ?? `#${p.id}`,
+          lat:       p.pole?.lat  ?? null,
+          lng:       p.pole?.lng  ?? null,
+        })))
+      })
+      .catch(() => setPoles([]))
+  }, [selectedNode])
+
+  // Auto-generate span_code from pole codes whenever from/to pole changes,
+  // but only if span_code is empty or was previously auto-generated (not manually typed).
+  const autoSpanCodeRef = useRef<string>('')
+  useEffect(() => {
+    if (!addOpen) return
+    const from = poles.find(p => String(p.id) === addForm.from_pole_id)
+    const to   = poles.find(p => String(p.id) === addForm.to_pole_id)
+    if (!from || !to) return
+    const generated = `${from.pole_code}-${to.pole_code}`
+    if (!addForm.span_code || addForm.span_code === autoSpanCodeRef.current) {
+      autoSpanCodeRef.current = generated
+      setAddForm(f => ({ ...f, span_code: generated }))
+    }
+  }, [addForm.from_pole_id, addForm.to_pole_id, addOpen, poles])
+
+  const filtered = useMemo(() => {
+    const q = search.toLowerCase().trim()
+
+    return spans.filter(s => {
+      const spanCode = (s.span_code ?? '').toLowerCase()
+      const fromPole = poleCode(s.from_pole).toLowerCase()
+      const toPole = poleCode(s.to_pole).toLowerCase()
+
+      const matchSearch = !q || spanCode.includes(q) || fromPole.includes(q) || toPole.includes(q)
+      const matchStatus = !statusFilter || s.status === statusFilter
+
+      return matchSearch && matchStatus
+    })
+  }, [spans, search, statusFilter])
+
+  const areaStats = useMemo(() => {
+    const nodeTotal = areas.reduce((sum, area) => sum + (area.nodes_count ?? 0), 0)
+    return { sites: areas.length, nodes: nodeTotal }
+  }, [areas])
+
+  const nodeStats = useMemo(
+    () => ({
+      total: nodes.length,
+      pending: nodes.filter(n => n.status === 'pending').length,
+      ongoing: nodes.filter(n => n.status === 'in_progress').length,
+      done: nodes.filter(n => n.status === 'completed').length,
+    }),
+    [nodes],
+  )
+
+  const spanStats = useMemo(
+    () => ({
+      total: spans.length,
+      pending: spans.filter(s => s.status === 'pending').length,
+      ongoing: spans.filter(s => s.status === 'in_progress').length,
+      done: spans.filter(s => s.status === 'completed').length,
+      cable: spans.reduce((sum, s) => sum + (s.strand_length ?? 0) * (s.number_of_runs ?? 0), 0),
+    }),
+    [spans],
+  )
+
+  const closeModal = () => {
+    setAddOpen(false)
+    setEditOpen(false)
+    setDelOpen(false)
+    setSelected(null)
+    setFormErr(null)
+    setAddForm(emptyAdd())
+    setEditForm({ span_code: '', strand_length: '', number_of_runs: '', status: '' })
+    autoSpanCodeRef.current = ''
+  }
+
+  const handleAdd = async (e: SyntheticEvent<HTMLFormElement>) => {
     e.preventDefault()
-    setSaving(true); setAddError(null)
+    if (!selectedNode) return
+
+    setSaving(true)
+    setFormErr(null)
+
     try {
       const res = await fetch(`${SKYCABLE_API}/spans`, {
         method: 'POST',
         headers: authHeaders(),
         body: JSON.stringify({
-          node_id:       addForm.node_id,
-          from_pole_id:  addForm.from_pole_id,
-          to_pole_id:    addForm.to_pole_id,
-          span_code:     addForm.span_code || null,
-          length_meters: addForm.length_meters ? Number(addForm.length_meters) : null,
+          node_id: selectedNode.id,
+          from_pole_id: Number(addForm.from_pole_id),
+          to_pole_id: Number(addForm.to_pole_id),
+          span_code: addForm.span_code || null,
+          strand_length: addForm.strand_length ? Number(addForm.strand_length) : null,
+          number_of_runs: Number(addForm.number_of_runs) || 1,
         }),
       })
+
       const data = await res.json()
-      if (!res.ok) {
-        const msg = (data.message as string | undefined) ??
-          (Object.values(data.errors ?? {}) as string[][])?.[0]?.[0] ?? 'Failed to add span'
-        throw new Error(msg)
-      }
-      setSpans(prev => {
-        const next = [data, ...prev]
-        cacheSet(CACHE_KEY, next)
-        return next
-      })
-      close()
-    } catch (err) {
-      setAddError(err instanceof Error ? err.message : 'Something went wrong')
+      if (!res.ok) throw new Error(data.message ?? 'Failed to add span')
+
+      const fromId = Number(addForm.from_pole_id)
+      const toId = Number(addForm.to_pole_id)
+      closeModal()
+      loadSpans()
+      if (fromId && toId) setSavedPairs(prev => [...prev, { from: fromId, to: toId }])
+    } catch (err: any) {
+      setFormErr(err.message)
     } finally {
       setSaving(false)
     }
@@ -266,33 +911,29 @@ export default function SpanList() {
   const handleEdit = async (e: SyntheticEvent<HTMLFormElement>) => {
     e.preventDefault()
     if (!selected) return
-    setSaving(true); setFormError(null)
+
+    setSaving(true)
+    setFormErr(null)
+
     try {
       const res = await fetch(`${SKYCABLE_API}/spans/${selected.id}`, {
         method: 'PUT',
         headers: authHeaders(),
         body: JSON.stringify({
-          span_code:     editForm.span_code || null,
-          length_meters: editForm.length_meters ? Number(editForm.length_meters) : null,
-          status:        editForm.status || undefined,
+          span_code: editForm.span_code || null,
+          strand_length: editForm.strand_length ? Number(editForm.strand_length) : null,
+          number_of_runs: editForm.number_of_runs ? Number(editForm.number_of_runs) : null,
+          status: editForm.status || undefined,
         }),
       })
+
       const data = await res.json()
-      if (!res.ok) {
-        const msg = (data.message as string | undefined) ??
-          (Object.values(data.errors ?? {}) as string[][])?.[0]?.[0] ?? 'Failed to update'
-        throw new Error(msg)
-      }
-      setSpans(prev => {
-        const next = prev.map(s => s.id === selected.id
-          ? { ...s, span_code: editForm.span_code || undefined, length_meters: editForm.length_meters ? Number(editForm.length_meters) : null, status: editForm.status as SpanStatus }
-          : s)
-        cacheSet(CACHE_KEY, next)
-        return next
-      })
-      close()
-    } catch (err) {
-      setFormError(err instanceof Error ? err.message : 'Something went wrong')
+      if (!res.ok) throw new Error(data.message ?? 'Failed to update span')
+
+      closeModal()
+      loadSpans()
+    } catch (err: any) {
+      setFormErr(err.message)
     } finally {
       setSaving(false)
     }
@@ -300,365 +941,767 @@ export default function SpanList() {
 
   const handleDelete = async () => {
     if (!selected) return
-    setSaving(true); setFormError(null)
+
+    setSaving(true)
+    setFormErr(null)
+
     try {
       const res = await fetch(`${SKYCABLE_API}/spans/${selected.id}`, {
         method: 'DELETE',
         headers: authHeaders(),
       })
+
       if (!res.ok) throw new Error('Failed to delete span')
-      setSpans(prev => {
-        const next = prev.filter(s => s.id !== selected.id)
-        cacheSet(CACHE_KEY, next)
-        return next
-      })
-      close()
-    } catch (err) {
-      setFormError(err instanceof Error ? err.message : 'Something went wrong')
+
+      closeModal()
+      loadSpans()
+    } catch (err: any) {
+      setFormErr(err.message ?? 'Failed to delete')
     } finally {
       setSaving(false)
     }
   }
 
-  return (
-    <>
-      <div className="mb-5 flex items-start justify-between px-0.5">
-        <div>
-          <h4 className="text-lg font-semibold text-gray-800 dark:text-gray-100">Span List</h4>
-          <p className="mt-0.5 text-sm text-gray-400 dark:text-zinc-500">Cable span connections between poles · All Nodes</p>
-        </div>
-        <nav>
-          <ol className="flex items-center gap-1 text-xs text-gray-400 dark:text-zinc-500">
-            <li><a href="/dashboard" className="hover:text-[#0b6cff]">Dashboard</a></li>
-            <li>/</li>
-            <li className="text-gray-600 dark:text-zinc-300">Spans</li>
-          </ol>
-        </nav>
-      </div>
+  const openEdit = (s: Span) => {
+    setSelected(s)
+    setEditForm({
+      span_code: s.span_code ?? '',
+      strand_length: s.strand_length != null ? String(s.strand_length) : '',
+      number_of_runs: s.number_of_runs != null ? String(s.number_of_runs) : '',
+      status: s.status,
+    })
+    setFormErr(null)
+    setEditOpen(true)
+  }
 
-      {/* Stat cards */}
-      <div className="mb-6 grid grid-cols-4 gap-4">
-        {statCards.map(c => {
-          const val = c.key === 'total' ? stats.total : stats[c.key as Exclude<keyof typeof stats, 'total'>]
-          return (
-            <div key={c.label} className="relative overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-gray-100 dark:bg-zinc-800 dark:ring-zinc-700">
-              <div className={`h-1 w-full bg-linear-to-r ${c.accent}`} />
-              <div className="p-4">
-                <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400 dark:text-zinc-500">{c.label}</p>
-                    <p className="mt-2 text-[28px] font-extrabold leading-none text-gray-800 dark:text-gray-100">{val}</p>
-                  </div>
-                  <div className={`relative mt-3 flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-linear-to-r ${c.accent} shadow-lg`}>
-                    <div className="pointer-events-none absolute inset-x-1 top-1 h-1/2 rounded-full bg-linear-to-b from-white/35 to-transparent" />
-                    <i className={`${c.icon} translate-y-px text-[21px] text-white`} />
-                  </div>
-                </div>
-              </div>
-              <div className={`pointer-events-none absolute -bottom-4 -right-4 h-20 w-20 rounded-full bg-linear-to-r ${c.accent} opacity-[0.06]`} />
+  const renderSites = () => {
+    const siteHeaderCards = [
+      { label: 'Total Sites', value: areaStats.sites, icon: 'bx-buildings', accent: BRAND_GRADIENTS[0], helper: 'available sites' },
+      { label: 'Total Nodes', value: areaStats.nodes, icon: 'bx-git-branch', accent: BRAND_GRADIENTS[1], helper: 'site coverage' },
+      { label: 'Total Spans', value: overviewLoading ? '...' : overviewStats.total, icon: 'bx-network-chart', accent: BRAND_GRADIENTS[2], helper: 'all span records' },
+      { label: 'Finished Span', value: overviewLoading ? '...' : overviewStats.completed, icon: 'bx-check-circle', accent: 'linear-gradient(135deg, #059669, #0d9488)', helper: 'completed' },
+      { label: 'Pending Span', value: overviewLoading ? '...' : overviewStats.pending, icon: 'bx-time-five', accent: 'linear-gradient(135deg, #ea580c, #f59e0b)', helper: 'waiting' },
+    ]
+
+    return (
+      <>
+        <ViewHero
+          crumbs={[{ label: 'Span Management' }]}
+          eyebrow="Network Control"
+          title="All Sites"
+          subtitle="Select a site to open nodes, pole mapping, span status, runs, and expected cable details."
+        />
+
+        <div className="rounded-[24px] p-4" style={{ background: BRAND.panel, border: `1px solid ${BRAND.border}` }}>
+          <div className="overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            <div className="grid min-w-[1080px] grid-cols-5 gap-4 xl:min-w-0">
+              {siteHeaderCards.map(card => <StatCard key={card.label} {...card} />)}
             </div>
-          )
-        })}
-      </div>
-
-      {/* Table */}
-      <div className="overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-gray-100 dark:bg-zinc-800 dark:ring-zinc-700">
-        <div className="flex flex-wrap items-center gap-3 border-b border-gray-100 px-5 py-3.5 dark:border-zinc-700">
-          <div className="relative min-w-45 max-w-xs flex-1">
-            <i className="bx bx-search absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-            <input value={search} onChange={e => { setSearch(e.target.value); setPage(1) }}
-              placeholder="Search span code, node, pole…" className={`${fiCls} pl-9`} />
-          </div>
-          <div className="relative">
-            <select value={statusFilter} onChange={e => { setStatusFilter(e.target.value as 'all' | SpanStatus); setPage(1) }}
-              className={fsCls} style={{ minWidth: 160 }}>
-              {statuses.map(s => (
-                <option key={s} value={s}>{s === 'all' ? 'All Statuses' : statusConfig[s].label}</option>
-              ))}
-            </select>
-            <i className="bx bx-chevron-down pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-sm text-gray-400" />
-          </div>
-          <span className="text-xs font-medium text-gray-400 dark:text-zinc-500">
-            {filtered.length} {filtered.length === 1 ? 'span' : 'spans'}
-          </span>
-
-          <div className="ml-auto flex items-center gap-2">
-            {filtered.length > 0 && (
-              <button
-                onClick={() => exportCSV(filtered)}
-                className="inline-flex h-10 items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-600 shadow-sm transition hover:bg-slate-50 dark:border-zinc-600 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700"
-              >
-                <i className="bx bx-download text-[16px]" />
-                Export
-              </button>
-            )}
-            <button
-              onClick={() => { setAddForm(emptyAddForm()); setIsAddOpen(true) }}
-              className="inline-flex h-10 items-center gap-2 rounded-2xl bg-sky-600 px-4 text-sm font-semibold text-white shadow-lg shadow-sky-500/30 transition hover:bg-sky-700 active:scale-[0.99]"
-            >
-              <i className="bx bx-plus translate-y-px text-[18px]" />
-              Add Span
-            </button>
           </div>
         </div>
 
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-[#e8f0fb] bg-[#f4f8ff] dark:border-[#1e3352] dark:bg-[#111d30]">
-                <th className="w-10 px-4 py-3 text-center text-[11px] font-bold uppercase tracking-widest text-[#8aa8d4] dark:text-[#3f6190]">#</th>
-                {[
-                  { label: 'Span Code',  align: 'left'   },
-                  { label: 'From Pole',  align: 'center' },
-                  { label: 'To Pole',    align: 'center' },
-                  { label: 'Node',       align: 'left'   },
-                  { label: 'Area',       align: 'center' },
-                  { label: 'Length (m)', align: 'center' },
-                  { label: 'Status',     align: 'center' },
-                  { label: 'Actions',    align: 'center' },
-                ].map(h => (
-                  <th key={h.label} className={`whitespace-nowrap px-4 py-3 text-[11px] font-bold uppercase tracking-widest text-[#8aa8d4] dark:text-[#3f6190] text-${h.align}`}>
-                    {h.label}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {loading ? (
-                <tr><td colSpan={9} className="py-20 text-center">
-                  <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-[#e8f2ff] dark:bg-[#162744]">
-                    <i className="bx bx-loader-alt animate-spin text-2xl text-[#0072ff] dark:text-[#4ea9ff]" />
-                  </div>
-                  <p className="mt-3 text-sm font-medium text-slate-400 dark:text-zinc-500">Loading spans…</p>
-                </td></tr>
-              ) : paginated.length === 0 ? (
-                <tr><td colSpan={9} className="py-20 text-center">
-                  <div className="mx-auto mb-3 flex h-14 w-14 items-center justify-center rounded-2xl bg-[#f0f5ff] dark:bg-[#162035]">
-                    <i className="bx bx-git-branch text-2xl text-[#9bb8dc] dark:text-[#3a5a82]" />
-                  </div>
-                  <p className="text-sm font-semibold text-slate-400 dark:text-zinc-500">No spans found</p>
-                </td></tr>
-              ) : paginated.map((s, idx) => (
-                <tr key={s.id} className="border-b border-[#f0f5ff] transition-colors last:border-0 hover:bg-[#f5f9ff] dark:border-[#19304d]/60 dark:hover:bg-[#0f1e33]/60">
-                  <td className="px-4 py-3.5 text-center">
-                    <span className="text-[11px] font-bold tabular-nums text-[#b0c8e8] dark:text-[#2e4d6e]">{(safePage - 1) * perPage + idx + 1}</span>
-                  </td>
-                  <td className="px-4 py-3.5">
-                    <div className="flex items-center gap-2.5">
-                      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-[#e8f2ff] dark:bg-[#162744]">
-                        <i className="bx bx-git-branch translate-y-px text-sm text-[#0072ff] dark:text-[#4ea9ff]" />
+        {areasLoading ? (
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+            {Array.from({ length: 10 }).map((_, i) => <SkeletonCard key={i} />)}
+          </div>
+        ) : areas.length === 0 ? (
+          <EmptyState icon="bx-buildings" title="No sites available" text="Once sites are available, they will appear here." />
+        ) : (
+          <div className="rounded-[24px] p-4" style={{ background: BRAND.panel, border: `1px solid ${BRAND.border}` }}>
+            <div className="overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+              <div className="grid min-w-[1180px] grid-cols-5 gap-4 xl:min-w-0">
+                {areas.map((area, index) => {
+                  const gradient = BRAND_GRADIENTS[index % BRAND_GRADIENTS.length]
+                  const nodeCount = Number(area.nodes_count ?? 0)
+
+                  return (
+                    <button
+                      key={area.id}
+                      type="button"
+                      onClick={() => {
+                        navigate(`/spans/${slugify(area.name)}-${area.id}`)
+                        setSelectedArea(area)
+                        setSelectedNode(null)
+                        setSearch('')
+                        setStatusFilter('')
+                      }}
+                      className="group relative overflow-hidden rounded-[22px] bg-white p-5 text-left transition duration-300 hover:-translate-y-1"
+                      style={{ border: `1px solid ${BRAND.border}`, boxShadow: '0 12px 30px -24px rgba(46,55,145,0.35)' }}
+                    >
+                      <div className="absolute inset-x-0 top-0 h-1" style={{ background: gradient }} />
+
+                      <div className="relative flex min-h-[190px] flex-col justify-between">
+                        <div>
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <p className="text-[10px] font-black uppercase tracking-[0.16em]" style={{ color: BRAND.muted2 }}>
+                                Site {index + 1}
+                              </p>
+
+                              <p className="mt-3 line-clamp-2 text-xl font-black leading-tight tracking-[-0.04em]" style={{ color: BRAND.textDark }}>
+                                {area.name}
+                              </p>
+                            </div>
+
+                            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl text-white" style={{ background: gradient }}>
+                              <i className="bx bx-map-pin text-[22px]" />
+                            </div>
+                          </div>
+
+                          <p className="mt-3 text-sm font-semibold leading-6" style={{ color: BRAND.muted }}>
+                            Open nodes and manage declared pole-to-pole spans.
+                          </p>
+                        </div>
+
+                        <div className="mt-5 flex items-end justify-between border-t pt-4" style={{ borderColor: BRAND.border }}>
+                          <div>
+                            <p className="text-[10px] font-black uppercase tracking-[0.16em]" style={{ color: BRAND.muted2 }}>Nodes</p>
+                            <p className="mt-1 font-mono text-3xl font-black leading-none" style={{ color: BRAND.textDark }}>{nodeCount}</p>
+                          </div>
+
+                          <span className="inline-flex items-center gap-1 rounded-full px-3 py-2 text-xs font-black transition" style={{ backgroundColor: BRAND.soft, color: BRAND.blue }}>
+                            View Nodes
+                            <i className="bx bx-right-arrow-alt text-base" />
+                          </span>
+                        </div>
                       </div>
-                      <span className="font-mono text-[13px] font-bold text-[#0b6cff] dark:text-[#4ea9ff]">
-                        {s.span_code ?? <span className="font-normal text-slate-300 dark:text-zinc-600">—</span>}
-                      </span>
-                    </div>
-                  </td>
-                  <td className="px-4 py-3.5 text-center font-mono text-xs font-semibold text-slate-600 dark:text-zinc-300">
-                    {s.from_pole?.pole?.pole_code ?? `#${s.from_pole?.id ?? '—'}`}
-                  </td>
-                  <td className="px-4 py-3.5 text-center font-mono text-xs font-semibold text-slate-600 dark:text-zinc-300">
-                    {s.to_pole?.pole?.pole_code ?? `#${s.to_pole?.id ?? '—'}`}
-                  </td>
-                  <td className="px-4 py-3.5 text-xs font-medium text-slate-700 dark:text-zinc-300">
-                    {s.node?.full_label ?? s.node?.name ?? '—'}
-                  </td>
-                  <td className="px-4 py-3.5 text-center">
-                    {s.node?.area?.name
-                      ? <span className="inline-flex items-center gap-1.5 rounded-lg bg-slate-100 px-2.5 py-1 text-[11px] font-semibold text-slate-600 dark:bg-zinc-700/60 dark:text-zinc-300">
-                          <i className="bx bx-map-pin text-xs text-slate-400" />
-                          {s.node.area.name}
-                        </span>
-                      : <span className="text-slate-300 dark:text-zinc-600">—</span>
-                    }
-                  </td>
-                  <td className="px-4 py-3.5 text-center text-xs font-medium text-slate-500 dark:text-zinc-400">
-                    {s.length_meters != null ? `${s.length_meters} m` : <span className="text-slate-300 dark:text-zinc-600">—</span>}
-                  </td>
-                  <td className="px-4 py-3.5 text-center">
-                    <span className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-semibold ${statusConfig[s.status]?.badge ?? 'bg-gray-100 text-gray-500 ring-1 ring-gray-200'}`}>
-                      <span className={`h-1.5 w-1.5 rounded-full ${statusConfig[s.status]?.dot ?? 'bg-gray-400'}`} />
-                      {statusConfig[s.status]?.label ?? s.status}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3.5">
-                    <div className="flex items-center justify-center gap-1">
-                      <button
-                        onClick={() => {
-                          setSelected(s)
-                          setEditForm({ span_code: s.span_code ?? '', length_meters: s.length_meters != null ? String(s.length_meters) : '', status: s.status })
-                          setIsEditOpen(true)
-                        }}
-                        className="flex h-7 w-7 items-center justify-center rounded-lg text-slate-400 transition hover:bg-[#e8f2ff] hover:text-[#0072ff] dark:hover:bg-[#162744] dark:hover:text-[#4ea9ff]">
-                        <i className="bx bx-edit translate-y-px text-sm" />
-                      </button>
-                      <button
-                        onClick={() => { setSelected(s); setIsDelOpen(true) }}
-                        className="flex h-7 w-7 items-center justify-center rounded-lg text-slate-400 transition hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-500/10 dark:hover:text-red-400">
-                        <i className="bx bx-trash translate-y-px text-sm" />
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-
-        {totalPages > 1 && (
-          <div className="flex items-center justify-between border-t border-gray-100 px-5 py-3 dark:border-zinc-700">
-            <span className="text-xs font-medium text-gray-400 dark:text-zinc-500">Page {safePage} of {totalPages} · {filtered.length} total</span>
-            <div className="flex gap-1">
-              <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={safePage === 1}
-                className="h-8 rounded-lg border border-gray-200 px-3 text-xs font-medium text-gray-500 hover:bg-gray-50 disabled:opacity-40 dark:border-zinc-600 dark:text-zinc-400 dark:hover:bg-zinc-700">‹ Prev</button>
-              {Array.from({ length: totalPages }, (_, i) => i + 1).map(n => (
-                <button key={n} onClick={() => setPage(n)}
-                  className={`h-8 min-w-8 rounded-lg border text-xs font-semibold ${n === safePage ? 'border-[#0b6cff] bg-[#0b6cff] text-white' : 'border-gray-200 text-gray-500 hover:bg-gray-50 dark:border-zinc-600 dark:text-zinc-400 dark:hover:bg-zinc-700'}`}>
-                  {n}
-                </button>
-              ))}
-              <button onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={safePage === totalPages}
-                className="h-8 rounded-lg border border-gray-200 px-3 text-xs font-medium text-gray-500 hover:bg-gray-50 disabled:opacity-40 dark:border-zinc-600 dark:text-zinc-400 dark:hover:bg-zinc-700">Next ›</button>
+                    </button>
+                  )
+                })}
+              </div>
             </div>
           </div>
         )}
+      </>
+    )
+  }
+
+  const renderNodes = () => (
+    <>
+      <ViewHero
+        crumbs={[
+          {
+            label: 'Sites',
+            onClick: () => { navigate('/spans'); setSelectedArea(null); setSelectedNode(null) },
+          },
+          { label: selectedArea?.name },
+        ]}
+        eyebrow="Selected Site"
+        title={selectedArea?.name}
+        subtitle="Choose a node to view span inventory and cable details."
+        actions={
+          <button
+            type="button"
+            onClick={() => { navigate('/spans'); setSelectedArea(null); setSelectedNode(null) }}
+            className={secondaryBtnCls}
+            style={{ border: `1px solid ${BRAND.borderStrong}`, color: BRAND.dark }}
+          >
+            <i className="bx bx-arrow-back text-base" />
+            All Sites
+          </button>
+        }
+      />
+
+      <div className="rounded-[24px] p-4" style={{ background: BRAND.panel, border: `1px solid ${BRAND.border}` }}>
+        <div className="overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+          <div className="grid min-w-[940px] grid-cols-4 gap-4 xl:min-w-0">
+            <StatCard label="Total Nodes" value={nodeStats.total} icon="bx-network-chart" accent={BRAND_GRADIENTS[0]} />
+            <StatCard label="Pending" value={nodeStats.pending} icon="bx-time-five" accent="linear-gradient(135deg, #ea580c, #f59e0b)" />
+            <StatCard label="In Progress" value={nodeStats.ongoing} icon="bx-loader-circle" accent={BRAND_GRADIENTS[2]} />
+            <StatCard label="Completed" value={nodeStats.done} icon="bx-check-circle" accent="linear-gradient(135deg, #059669, #0d9488)" />
+          </div>
+        </div>
       </div>
 
-      {/* Add Span modal */}
-      <Modal open={isAddOpen} title="Add Span" subtitle="Select a node then choose poles" icon="bx bx-git-branch" onClose={close}>
-        <form onSubmit={handleAddSpan} className="space-y-4">
-          <div className="grid grid-cols-2 gap-4">
-            <div className="col-span-2">
-              <label className={lCls}>Node</label>
-              <div className="relative">
-                <select
-                  required
-                  value={addForm.node_id}
-                  onChange={e => setAddForm(p => ({ ...p, node_id: Number(e.target.value) || '', from_pole_id: '', to_pole_id: '' }))}
-                  className={sCls}
+      {nodesLoading ? (
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-2">
+          {Array.from({ length: 6 }).map((_, i) => <SkeletonCard key={i} />)}
+        </div>
+      ) : nodes.length === 0 ? (
+        <EmptyState icon="bx-layer" title="No nodes in this site" text="This site does not have any nodes yet." />
+      ) : (
+        <div className="rounded-[24px] p-4" style={{ background: BRAND.panel, border: `1px solid ${BRAND.border}` }}>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-2">
+            {nodes.map((node, index) => {
+              const cfg = NODE_STATUS_CFG[node.status] ?? NODE_STATUS_CFG.pending
+              const gradient = BRAND_GRADIENTS[index % BRAND_GRADIENTS.length]
+
+              return (
+                <button
+                  key={node.id}
+                  type="button"
+                  onClick={() => {
+                    navigate(`/spans/${slugify(selectedArea!.name)}-${selectedArea!.id}/${slugify(node.full_label ?? node.name)}-${node.id}`)
+                    setSelectedNode(node)
+                    setSearch('')
+                    setStatusFilter('')
+                  }}
+                  className="group relative overflow-hidden rounded-[22px] bg-white p-5 text-left transition duration-300 hover:-translate-y-1"
+                  style={{ border: `1px solid ${BRAND.border}`, boxShadow: '0 12px 30px -24px rgba(46,55,145,0.35)' }}
                 >
-                  <option value="">Select node</option>
-                  {nodes.map(n => <option key={n.id} value={n.id}>{n.full_label ?? n.name}</option>)}
-                </select>
-                <i className="bx bx-chevron-down pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-base text-slate-400" />
-              </div>
+                  <div className="absolute inset-x-0 top-0 h-1" style={{ background: cfg.bar }} />
+
+                  <div className="relative flex min-h-[170px] flex-col justify-between">
+                    <div>
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="truncate text-[10px] font-black uppercase tracking-[0.16em]" style={{ color: BRAND.muted2 }}>
+                            {node.full_label ?? `Node #${node.id}`}
+                          </p>
+
+                          <p className="mt-3 truncate text-xl font-black leading-tight tracking-[-0.04em]" style={{ color: BRAND.textDark }}>
+                            {node.name}
+                          </p>
+                        </div>
+
+                        <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl text-white" style={{ background: gradient }}>
+                          <i className="bx bx-git-branch text-[22px]" />
+                        </div>
+                      </div>
+
+                      <div className="mt-4 flex flex-wrap items-center gap-2">
+                        <StatusChip status={node.status} />
+
+                        {node.subcontractor?.name ? (
+                          <span className="max-w-full truncate rounded-full px-2.5 py-1 text-[10px] font-black" style={{ backgroundColor: BRAND.soft, color: BRAND.blue }}>
+                            {node.subcontractor.name}
+                          </span>
+                        ) : (
+                          <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-black text-slate-400">No contractor</span>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="mt-5 flex items-center justify-between border-t pt-4" style={{ borderColor: BRAND.border }}>
+                      <span className="text-xs font-bold" style={{ color: BRAND.muted }}>View span inventory</span>
+                      <span className="inline-flex items-center gap-1 rounded-full px-3 py-2 text-xs font-black" style={{ backgroundColor: BRAND.soft, color: BRAND.blue }}>
+                        View
+                        <i className="bx bx-right-arrow-alt text-base" />
+                      </span>
+                    </div>
+                  </div>
+                </button>
+              )
+            })}
+          </div>
+        </div>
+      )}
+    </>
+  )
+
+  const renderSpans = () => (
+    <>
+      <ViewHero
+        crumbs={[
+          {
+            label: 'Sites',
+            onClick: () => { navigate('/spans'); setSelectedArea(null); setSelectedNode(null) },
+          },
+          {
+            label: selectedArea?.name,
+            onClick: () => { navigate(`/spans/${slugify(selectedArea?.name ?? '')}-${selectedArea?.id}`); setSelectedNode(null) },
+          },
+          { label: selectedNode?.name },
+        ]}
+        eyebrow={selectedNode?.full_label ?? `Node #${selectedNode?.id}`}
+        title={selectedNode?.name}
+        subtitle="Track pole mapping, span status, runs, and expected cable."
+        actions={
+          <>
+            {admin && (
+              <button
+                type="button"
+                onClick={() => {
+                  setAddForm(emptyAdd())
+                  setFormErr(null)
+                  setAddOpen(true)
+                }}
+                className={primaryBtnCls}
+                style={{ background: 'linear-gradient(135deg, #2E3791 0%, #4450C4 100%)' }}
+              >
+                <i className="bx bx-plus text-base" />
+                Add Span
+              </button>
+            )}
+
+            {/* View toggle */}
+            <div
+              className="flex overflow-hidden rounded-xl"
+              style={{ border: `1px solid ${BRAND.borderStrong}` }}
+            >
+              {(['list', 'map'] as const).map(v => (
+                <button
+                  key={v}
+                  type="button"
+                  onClick={() => setSpanView(v)}
+                  className="inline-flex h-10 items-center gap-1.5 px-3.5 text-xs font-black transition"
+                  style={{
+                    background: spanView === v ? 'linear-gradient(135deg, #2E3791 0%, #4450C4 100%)' : '#ffffff',
+                    color: spanView === v ? '#ffffff' : BRAND.muted,
+                  }}
+                >
+                  <i className={`bx text-base ${v === 'list' ? 'bx-list-ul' : 'bx-map-alt'}`} />
+                  {v === 'list' ? 'List' : 'Map'}
+                </button>
+              ))}
             </div>
+
+            <button
+              type="button"
+              onClick={() => { navigate(`/spans/${slugify(selectedArea?.name ?? '')}-${selectedArea?.id}`); setSelectedNode(null) }}
+              className={secondaryBtnCls}
+              style={{ border: `1px solid ${BRAND.borderStrong}`, color: BRAND.dark }}
+            >
+              <i className="bx bx-arrow-back text-base" />
+              Back
+            </button>
+          </>
+        }
+      />
+
+      <div className="rounded-[24px] p-4" style={{ background: BRAND.panel, border: `1px solid ${BRAND.border}` }}>
+        <div className="overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+          <div className="grid min-w-[1080px] grid-cols-5 gap-4 xl:min-w-0">
+            <StatCard label="Total Spans" value={spanStats.total} icon="bx-git-branch" accent={BRAND_GRADIENTS[0]} />
+            <StatCard label="Pending" value={spanStats.pending} icon="bx-time-five" accent="linear-gradient(135deg, #ea580c, #f59e0b)" />
+            <StatCard label="In Progress" value={spanStats.ongoing} icon="bx-loader-circle" accent={BRAND_GRADIENTS[2]} />
+            <StatCard label="Completed" value={spanStats.done} icon="bx-check-circle" accent="linear-gradient(135deg, #059669, #0d9488)" />
+            <StatCard label="Exp. Cable" value={`${fmt(spanStats.cable)}m`} icon="bx-ruler" accent={BRAND_GRADIENTS[4]} />
+          </div>
+        </div>
+      </div>
+
+      <div
+        className="flex flex-wrap items-center justify-between gap-3 rounded-[20px] bg-white p-3"
+        style={{ border: `1px solid ${BRAND.border}`, boxShadow: '0 12px 30px -24px rgba(46,55,145,0.35)' }}
+      >
+        <div className="relative min-w-[260px] max-w-xl flex-1">
+          <i className="bx bx-search absolute left-4 top-1/2 -translate-y-1/2 text-[#8E96C5]" />
+          <input
+            type="text"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Search span or pole..."
+            className="h-10 w-full rounded-xl bg-white pl-10 pr-4 text-sm font-semibold outline-none"
+            style={{ border: `1px solid ${BRAND.border}`, color: BRAND.textDark }}
+          />
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setStatusFilter('')}
+            className="h-10 rounded-xl px-3.5 text-xs font-black transition"
+            style={{
+              background: !statusFilter ? 'linear-gradient(135deg, #2E3791 0%, #4450C4 100%)' : '#ffffff',
+              color: !statusFilter ? '#ffffff' : BRAND.muted,
+              border: !statusFilter ? '1px solid transparent' : `1px solid ${BRAND.border}`,
+            }}
+          >
+            All
+          </button>
+
+          {STATUSES.map(s => (
+            <button
+              key={s}
+              type="button"
+              onClick={() => setStatusFilter(s === statusFilter ? '' : s)}
+              className="inline-flex h-10 items-center gap-1.5 rounded-xl px-3.5 text-xs font-black transition"
+              style={{
+                background: statusFilter === s ? STATUS_CFG[s].bar : '#ffffff',
+                color: statusFilter === s ? '#ffffff' : STATUS_CFG[s].text,
+                border: statusFilter === s ? '1px solid transparent' : `1px solid ${STATUS_CFG[s].border}`,
+              }}
+            >
+              <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: statusFilter === s ? '#ffffff' : STATUS_CFG[s].dot }} />
+              {STATUS_CFG[s].label}
+            </button>
+          ))}
+
+          <span className="rounded-xl px-3 py-2 text-xs font-black" style={{ backgroundColor: BRAND.softer, color: BRAND.muted, border: `1px solid ${BRAND.border}` }}>
+            {filtered.length} results
+          </span>
+        </div>
+      </div>
+
+      {spanView === 'map' ? (
+        <div
+          className="overflow-hidden rounded-[20px]"
+          style={{ height: 640, border: `1px solid ${BRAND.border}`, boxShadow: '0 12px 30px -24px rgba(46,55,145,0.35)' }}
+        >
+          <LeafletSpanMap
+            poles={poles}
+            spans={spans}
+            savedPairs={savedPairs}
+            onPairSelected={(from, to) => {
+              setAddForm(f => ({ ...f, from_pole_id: String(from.id), to_pole_id: String(to.id) }))
+              setFormErr(null)
+              setAddOpen(true)
+            }}
+          />
+        </div>
+      ) : spansLoading ? (
+        <div className="flex items-center justify-center py-20">
+          <div className="text-center">
+            <div className="mx-auto h-10 w-10 animate-spin rounded-full border-2 border-t-transparent" style={{ borderColor: BRAND.blue, borderTopColor: 'transparent' }} />
+            <p className="mt-4 text-sm font-bold" style={{ color: BRAND.muted }}>Loading spans...</p>
+          </div>
+        </div>
+      ) : filtered.length === 0 ? (
+        <EmptyState
+          icon="bx-git-branch"
+          title="No spans found"
+          text={search || statusFilter ? 'Try changing the search keyword or status filter.' : 'Declare the first span for this node.'}
+          action={
+            admin && (
+              <button
+                type="button"
+                onClick={() => {
+                  setAddForm(emptyAdd())
+                  setFormErr(null)
+                  setAddOpen(true)
+                }}
+                className={primaryBtnCls}
+                style={{ background: 'linear-gradient(135deg, #2E3791 0%, #4450C4 100%)' }}
+              >
+                <i className="bx bx-plus" />
+                Declare First Span
+              </button>
+            )
+          }
+        />
+      ) : (
+        <div className="overflow-hidden rounded-[20px] bg-white" style={{ border: `1px solid ${BRAND.border}`, boxShadow: '0 12px 30px -24px rgba(46,55,145,0.35)' }}>
+          <div className="flex items-center justify-between gap-3 border-b px-4 py-3" style={{ borderColor: BRAND.border }}>
             <div>
-              <label className={lCls}>
-                From Pole
-                {polesLoading && <i className="bx bx-loader-alt ml-1.5 animate-spin text-[10px] text-slate-400" />}
-              </label>
-              <div className="relative">
-                <select
-                  required
-                  value={addForm.from_pole_id}
-                  onChange={e => setAddForm(p => ({ ...p, from_pole_id: Number(e.target.value) || '' }))}
-                  disabled={!addForm.node_id || polesLoading}
-                  className={sCls}
-                >
-                  <option value="">Select pole</option>
-                  {nodePoles.map(p => (
-                    <option key={p.id} value={p.id}>{p.pole?.pole_code ?? `Pole #${p.id}`} (Seq {p.sequence})</option>
+              <p className="text-[10px] font-black uppercase tracking-[0.16em]" style={{ color: BRAND.muted2 }}>Span Inventory</p>
+              <h3 className="mt-1 text-lg font-black" style={{ color: BRAND.textDark }}>{selectedNode?.name}</h3>
+            </div>
+            <span className="rounded-xl px-3 py-2 text-xs font-black" style={{ backgroundColor: BRAND.soft, color: BRAND.blue, border: `1px solid ${BRAND.borderStrong}` }}>
+              Showing {filtered.length} {filtered.length === 1 ? 'span' : 'spans'}
+            </span>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[980px] text-sm">
+              <thead>
+                <tr style={{ background: BRAND.blue }}>
+                  {['Span Code', 'From Pole', 'To Pole', 'Length', 'Runs', 'Exp. Cable', 'Status', ...(admin ? ['Actions'] : [])].map(h => (
+                    <th key={h} className="px-4 py-3 text-center text-[10px] font-black uppercase tracking-[0.16em] text-white/80 first:text-left">
+                      {h}
+                    </th>
                   ))}
-                </select>
-                <i className="bx bx-chevron-down pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-base text-slate-400" />
+                </tr>
+              </thead>
+
+              <tbody>
+                {filtered.map((span, index) => {
+                  const cfg = STATUS_CFG[span.status] ?? STATUS_CFG.pending
+
+                  return (
+                    <tr
+                      key={span.id}
+                      className="transition hover:bg-[#F8F9FF]"
+                      style={{ backgroundColor: index % 2 === 0 ? '#ffffff' : BRAND.softer }}
+                    >
+                      <td className="border-b px-4 py-3 align-middle" style={{ borderColor: '#ECEEFF' }}>
+                        <div className="flex items-center gap-3">
+                          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl text-white" style={{ background: cfg.bar }}>
+                            <i className="bx bx-git-branch text-lg" />
+                          </div>
+                          <div>
+                            <p className="font-mono text-sm font-black" style={{ color: BRAND.blue }}>
+                              {span.span_code ?? <span className="font-sans text-slate-400">No code</span>}
+                            </p>
+                            <p className="mt-0.5 text-[10px] font-bold uppercase tracking-wider" style={{ color: BRAND.muted2 }}>Span #{span.id}</p>
+                          </div>
+                        </div>
+                      </td>
+
+                      <td className="border-b px-4 py-3 text-center align-middle" style={{ borderColor: '#ECEEFF' }}>
+                        <PolePill value={poleCode(span.from_pole)} />
+                      </td>
+
+                      <td className="border-b px-4 py-3 text-center align-middle" style={{ borderColor: '#ECEEFF' }}>
+                        <PolePill value={poleCode(span.to_pole)} />
+                      </td>
+
+                      <td className="border-b px-4 py-3 text-center align-middle" style={{ borderColor: '#ECEEFF' }}>
+                        <p className="font-mono text-sm font-black" style={{ color: BRAND.textDark }}>{formatMeters(span.strand_length)}</p>
+                      </td>
+
+                      <td className="border-b px-4 py-3 text-center align-middle" style={{ borderColor: '#ECEEFF' }}>
+                        <p className="font-mono text-sm font-black" style={{ color: BRAND.textDark }}>{span.number_of_runs ?? '—'}</p>
+                      </td>
+
+                      <td className="border-b px-4 py-3 text-center align-middle" style={{ borderColor: '#ECEEFF' }}>
+                        <p className="font-mono text-sm font-black" style={{ color: BRAND.textDark }}>{expectedCable(span.strand_length, span.number_of_runs)}</p>
+                      </td>
+
+                      <td className="border-b px-4 py-3 text-center align-middle" style={{ borderColor: '#ECEEFF' }}>
+                        <StatusChip status={span.status} />
+                      </td>
+
+                      {admin && (
+                        <td className="border-b px-4 py-3 text-center align-middle" style={{ borderColor: '#ECEEFF' }}>
+                          <div className="inline-flex items-center gap-1 rounded-xl bg-[#F7F8FF] p-1" style={{ border: `1px solid ${BRAND.border}` }}>
+                            <button
+                              type="button"
+                              onClick={() => openEdit(span)}
+                              title="Edit"
+                              className="rounded-lg p-2 transition hover:text-white"
+                              style={{ color: BRAND.blue }}
+                            >
+                              <i className="bx bx-edit text-base" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSelected(span)
+                                setFormErr(null)
+                                setDelOpen(true)
+                              }}
+                              title="Delete"
+                              className="rounded-lg p-2 text-red-500 transition hover:bg-red-600 hover:text-white"
+                            >
+                              <i className="bx bx-trash text-base" />
+                            </button>
+                          </div>
+                        </td>
+                      )}
+                    </tr>
+                  )
+                })}
+              </tbody>
+
+              <tfoot>
+                <tr style={{ backgroundColor: BRAND.panel }}>
+                  <td colSpan={admin ? 8 : 7} className="px-4 py-3 text-center text-[10px] font-black uppercase tracking-[0.16em]" style={{ color: BRAND.muted }}>
+                    Live filter active — {filtered.length} displayed
+                  </td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        </div>
+      )}
+    </>
+  )
+
+  return (
+    <PageShell>
+      {!selectedArea && renderSites()}
+      {selectedArea && !selectedNode && renderNodes()}
+      {selectedArea && selectedNode && renderSpans()}
+
+      <Modal open={addOpen} title="Declare New Span" sub={`Node: ${selectedNode?.name}`} onClose={closeModal} wide>
+        <form onSubmit={handleAdd} className="space-y-5">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            {(['from_pole_id', 'to_pole_id'] as const).map(k => (
+              <div key={k}>
+                <label className={labelCls}>{k === 'from_pole_id' ? 'From Pole *' : 'To Pole *'}</label>
+                <div className="relative">
+                  <select
+                    required
+                    value={addForm[k]}
+                    onChange={e => setAddForm(f => ({ ...f, [k]: e.target.value }))}
+                    className={selectCls}
+                    style={{ border: `1px solid ${BRAND.border}`, color: BRAND.textDark }}
+                  >
+                    <option value="">Select pole...</option>
+                    {poles.map(p => <option key={p.id} value={p.id}>{p.pole_code}</option>)}
+                  </select>
+                  <Chevron />
+                </div>
               </div>
-            </div>
+            ))}
+          </div>
+
+          <div>
+            <label className={labelCls}>
+              Span Code
+              {addForm.span_code && addForm.span_code === autoSpanCodeRef.current && (
+                <span className="ml-2 rounded-full px-2 py-0.5 text-[9px] font-black uppercase tracking-wider" style={{ background: BRAND.soft, color: BRAND.blue, border: `1px solid ${BRAND.borderStrong}` }}>
+                  Auto
+                </span>
+              )}
+            </label>
+            <input
+              value={addForm.span_code}
+              onChange={e => {
+                autoSpanCodeRef.current = ''
+                setAddForm(f => ({ ...f, span_code: e.target.value }))
+              }}
+              placeholder="Auto-generated from poles"
+              className={inputCls}
+              style={{ border: `1px solid ${BRAND.border}`, color: BRAND.textDark }}
+            />
+          </div>
+
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div>
-              <label className={lCls}>To Pole</label>
-              <div className="relative">
-                <select
-                  required
-                  value={addForm.to_pole_id}
-                  onChange={e => setAddForm(p => ({ ...p, to_pole_id: Number(e.target.value) || '' }))}
-                  disabled={!addForm.node_id || polesLoading}
-                  className={sCls}
-                >
-                  <option value="">Select pole</option>
-                  {nodePoles.filter(p => p.id !== addForm.from_pole_id).map(p => (
-                    <option key={p.id} value={p.id}>{p.pole?.pole_code ?? `Pole #${p.id}`} (Seq {p.sequence})</option>
-                  ))}
-                </select>
-                <i className="bx bx-chevron-down pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-base text-slate-400" />
-              </div>
+              <label className={labelCls}>Strand Length (m)</label>
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={addForm.strand_length}
+                onChange={e => setAddForm(f => ({ ...f, strand_length: e.target.value }))}
+                placeholder="0.00"
+                className={inputCls}
+                style={{ border: `1px solid ${BRAND.border}`, color: BRAND.textDark }}
+              />
             </div>
+
             <div>
-              <label className={lCls}>Span Code <span className="normal-case text-slate-300">(optional)</span></label>
-              <input value={addForm.span_code} onChange={e => setAddForm(p => ({ ...p, span_code: e.target.value }))} placeholder="e.g. SP-001" className={iCls} />
-            </div>
-            <div>
-              <label className={lCls}>Length (meters) <span className="normal-case text-slate-300">(optional)</span></label>
-              <input type="number" step="any" min="0" value={addForm.length_meters} onChange={e => setAddForm(p => ({ ...p, length_meters: e.target.value }))} placeholder="e.g. 50" className={iCls} />
+              <label className={labelCls}>Runs</label>
+              <input
+                type="number"
+                min="1"
+                value={addForm.number_of_runs}
+                onChange={e => setAddForm(f => ({ ...f, number_of_runs: e.target.value }))}
+                className={inputCls}
+                style={{ border: `1px solid ${BRAND.border}`, color: BRAND.textDark }}
+              />
             </div>
           </div>
-          {addError && <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-400">{addError}</div>}
-          <div className="flex justify-end gap-2 border-t border-[#e4eefb] pt-4 dark:border-[#263d5f]">
-            <button type="button" onClick={close} className={secondaryBtnCls}>Cancel</button>
-            <button type="submit" disabled={saving} className={`${primaryBtnCls} disabled:opacity-60`}>
-              {saving ? <span className="flex items-center gap-2"><i className="bx bx-loader-alt animate-spin text-base" /> Saving…</span> : 'Add Span'}
+
+          {addForm.strand_length && (
+            <div className="flex items-center justify-between rounded-2xl px-4 py-3" style={{ backgroundColor: BRAND.soft, border: `1px solid ${BRAND.borderStrong}` }}>
+              <span className="text-xs font-black uppercase tracking-wider" style={{ color: BRAND.blue }}>Expected Cable</span>
+              <span className="text-lg font-black" style={{ color: BRAND.blue }}>
+                {(parseFloat(addForm.strand_length || '0') * (parseInt(addForm.number_of_runs) || 1)).toFixed(1)}m
+              </span>
+            </div>
+          )}
+
+          {formErr && <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-bold text-red-600">{formErr}</div>}
+
+          <div className="flex justify-end gap-2 border-t pt-4" style={{ borderColor: BRAND.border }}>
+            <button type="button" onClick={closeModal} className={secondaryBtnCls} style={{ border: `1px solid ${BRAND.border}`, color: BRAND.dark }}>Cancel</button>
+            <button type="submit" disabled={saving} className={primaryBtnCls} style={{ background: 'linear-gradient(135deg, #2E3791 0%, #4450C4 100%)' }}>
+              {saving ? <><i className="bx bx-loader-alt animate-spin" />Saving...</> : <><i className="bx bx-check" />Declare Span</>}
             </button>
           </div>
         </form>
       </Modal>
 
-      {/* Edit modal */}
-      <Modal open={isEditOpen} title="Edit Span" subtitle={`Editing: ${selected?.span_code ?? `Span #${selected?.id}`}`} icon="bx bx-edit" onClose={close}>
-        <form onSubmit={handleEdit} className="space-y-4">
-          <div className="grid grid-cols-2 gap-4">
-            <div className="col-span-2">
-              <label className={lCls}>Span Code <span className="normal-case text-slate-300">(optional)</span></label>
-              <input value={editForm.span_code} onChange={e => setEditForm(p => ({ ...p, span_code: e.target.value }))} placeholder="e.g. SP-001" className={iCls} />
-            </div>
-            <div>
-              <label className={lCls}>Length (meters)</label>
-              <input type="number" step="any" min="0" value={editForm.length_meters} onChange={e => setEditForm(p => ({ ...p, length_meters: e.target.value }))} placeholder="e.g. 50" className={iCls} />
-            </div>
-            <div>
-              <label className={lCls}>Status</label>
-              <div className="relative">
-                <select value={editForm.status} onChange={e => setEditForm(p => ({ ...p, status: e.target.value as SpanStatus }))} className={sCls}>
-                  {statuses.filter(s => s !== 'all').map(s => (
-                    <option key={s} value={s}>{statusConfig[s].label}</option>
-                  ))}
-                </select>
-                <i className="bx bx-chevron-down pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-base text-slate-400" />
+      <Modal open={editOpen} title="Edit Span" sub={selected?.span_code ?? `Span #${selected?.id}`} onClose={closeModal} wide>
+        <form onSubmit={handleEdit} className="space-y-5">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            {[
+              { label: 'From Pole', code: poleCode(selected?.from_pole) },
+              { label: 'To Pole', code: poleCode(selected?.to_pole) },
+            ].map(({ label, code }) => (
+              <div key={label}>
+                <p className={labelCls}>{label}</p>
+                <div className="flex h-11 items-center rounded-xl bg-[#F7F8FF] px-4 font-mono text-sm font-black" style={{ border: `1px solid ${BRAND.border}`, color: BRAND.textDark }}>{code}</div>
               </div>
+            ))}
+          </div>
+
+          <div>
+            <label className={labelCls}>Span Code</label>
+            <input
+              value={editForm.span_code}
+              onChange={e => setEditForm(f => ({ ...f, span_code: e.target.value }))}
+              placeholder="SP-001"
+              className={inputCls}
+              style={{ border: `1px solid ${BRAND.border}`, color: BRAND.textDark }}
+            />
+          </div>
+
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div>
+              <label className={labelCls}>Strand Length (m)</label>
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={editForm.strand_length}
+                onChange={e => setEditForm(f => ({ ...f, strand_length: e.target.value }))}
+                className={inputCls}
+                style={{ border: `1px solid ${BRAND.border}`, color: BRAND.textDark }}
+              />
+            </div>
+
+            <div>
+              <label className={labelCls}>Runs</label>
+              <input
+                type="number"
+                min="1"
+                value={editForm.number_of_runs}
+                onChange={e => setEditForm(f => ({ ...f, number_of_runs: e.target.value }))}
+                className={inputCls}
+                style={{ border: `1px solid ${BRAND.border}`, color: BRAND.textDark }}
+              />
             </div>
           </div>
-          {formError && <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-400">{formError}</div>}
-          <div className="flex justify-end gap-2 border-t border-[#e4eefb] pt-4 dark:border-[#263d5f]">
-            <button type="button" onClick={close} className={secondaryBtnCls}>Cancel</button>
-            <button type="submit" disabled={saving} className={`${primaryBtnCls} disabled:opacity-60`}>
-              {saving ? <span className="flex items-center gap-2"><i className="bx bx-loader-alt animate-spin text-base" /> Saving…</span> : 'Save Changes'}
+
+          {editForm.strand_length && (
+            <div className="flex items-center justify-between rounded-2xl px-4 py-3" style={{ backgroundColor: BRAND.soft, border: `1px solid ${BRAND.borderStrong}` }}>
+              <span className="text-xs font-black uppercase tracking-wider" style={{ color: BRAND.blue }}>Expected Cable</span>
+              <span className="text-lg font-black" style={{ color: BRAND.blue }}>
+                {(parseFloat(editForm.strand_length || '0') * (parseInt(editForm.number_of_runs) || 1)).toFixed(1)}m
+              </span>
+            </div>
+          )}
+
+          <div>
+            <label className={labelCls}>Status</label>
+            <div className="relative">
+              <select
+                value={editForm.status}
+                onChange={e => setEditForm(f => ({ ...f, status: e.target.value as SpanStatus }))}
+                className={selectCls}
+                style={{ border: `1px solid ${BRAND.border}`, color: BRAND.textDark }}
+              >
+                {STATUSES.map(s => <option key={s} value={s}>{STATUS_CFG[s].label}</option>)}
+              </select>
+              <Chevron />
+            </div>
+          </div>
+
+          {formErr && <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-bold text-red-600">{formErr}</div>}
+
+          <div className="flex justify-end gap-2 border-t pt-4" style={{ borderColor: BRAND.border }}>
+            <button type="button" onClick={closeModal} className={secondaryBtnCls} style={{ border: `1px solid ${BRAND.border}`, color: BRAND.dark }}>Cancel</button>
+            <button type="submit" disabled={saving} className={primaryBtnCls} style={{ background: 'linear-gradient(135deg, #2E3791 0%, #4450C4 100%)' }}>
+              {saving ? <><i className="bx bx-loader-alt animate-spin" />Saving...</> : <><i className="bx bx-save" />Update Span</>}
             </button>
           </div>
         </form>
       </Modal>
 
-      {/* Delete modal */}
-      <Modal open={isDelOpen} title="Delete Span?" subtitle="This action cannot be undone." icon="bx bx-trash" onClose={close} widthClass="max-w-md" danger>
+      <Modal open={delOpen && !!selected} title="Delete Span?" sub="This action cannot be undone." onClose={closeModal} danger>
         <div className="space-y-5">
-          <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4 dark:border-zinc-700 dark:bg-zinc-800/70">
+          <div className="rounded-2xl bg-[#F7F8FF] p-4" style={{ border: `1px solid ${BRAND.border}` }}>
             <dl className="grid grid-cols-2 gap-3 text-sm">
-              {([
-                ['Span Code', selected?.span_code ?? '—'],
-                ['Status',    selected ? (statusConfig[selected.status]?.label ?? selected.status) : '—'],
-                ['From Pole', selected?.from_pole?.pole?.pole_code ?? '—'],
-                ['To Pole',   selected?.to_pole?.pole?.pole_code ?? '—'],
-              ] as [string, string][]).map(([k, v]) => (
-                <div key={k}>
-                  <dt className="text-[11px] font-semibold uppercase tracking-wider text-slate-400 dark:text-zinc-500">{k}</dt>
-                  <dd className="mt-1 font-medium text-slate-800 dark:text-zinc-200">{v}</dd>
+              {[
+                ['Span', selected?.span_code ?? `SPAN-${selected?.id}`],
+                ['From Pole', poleCode(selected?.from_pole)],
+                ['To Pole', poleCode(selected?.to_pole)],
+                ['Status', selected?.status ? STATUS_CFG[selected.status].label : '—'],
+              ].map(([k, v]) => (
+                <div key={String(k)}>
+                  <dt className="text-[10px] font-black uppercase tracking-[0.18em]" style={{ color: BRAND.muted2 }}>{k}</dt>
+                  <dd className="mt-1 font-black" style={{ color: BRAND.textDark }}>{v}</dd>
                 </div>
               ))}
             </dl>
           </div>
-          {formError && <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600">{formError}</div>}
+
+          {formErr && <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-bold text-red-600">{formErr}</div>}
+
           <div className="flex gap-3">
-            <button onClick={handleDelete} disabled={saving} className={`${dangerBtnCls} flex-1 disabled:opacity-60`}>{saving ? 'Deleting…' : 'Yes, Delete'}</button>
-            <button onClick={close} className={`${secondaryBtnCls} flex-1`}>Cancel</button>
+            <button type="button" onClick={handleDelete} disabled={saving} className={`${dangerBtnCls} flex-1`}>
+              {saving ? <><i className="bx bx-loader-alt animate-spin" />Deleting...</> : <><i className="bx bx-trash" />Yes, Delete</>}
+            </button>
+
+            <button type="button" onClick={closeModal} className={`${secondaryBtnCls} flex-1`} style={{ border: `1px solid ${BRAND.border}`, color: BRAND.dark }}>Cancel</button>
           </div>
         </div>
       </Modal>
-    </>
+    </PageShell>
   )
 }

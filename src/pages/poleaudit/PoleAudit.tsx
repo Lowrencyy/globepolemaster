@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { getToken, SKYCABLE_API } from '../../lib/auth'
 import { cacheGet, cacheSet } from '../../lib/cache'
+import { slugify } from '../../lib/utils'
 
 type PoleStatus = 'pending' | 'in_progress' | 'cleared'
 type NodeStatus = 'pending' | 'in_progress' | 'completed'
@@ -269,7 +270,7 @@ export default function PoleAudit() {
               </div>
             </div>
             <Link
-              to={`/sites/${selectedNode.area?.id ?? ''}/nodes/${selectedNode.id}`}
+              to={`/${slugify(selectedNode.area?.name ?? '')}-${selectedNode.area?.id ?? ''}/${slugify(selectedNode.full_label ?? selectedNode.name ?? '')}-${selectedNode.id}/poles`}
               className="flex items-center gap-1.5 text-xs font-semibold text-violet-600 hover:text-violet-700 dark:text-violet-400"
             >
               View Node <i className="bx bx-right-arrow-alt" />

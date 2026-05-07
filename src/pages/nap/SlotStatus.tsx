@@ -1,8 +1,26 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-
+import { getToken, GLOBE_API } from '../../lib/auth'
 import PsgcCascade from '../../components/PsgcCascade'
 
+// ── Backend types ─────────────────────────────────────────────────────────────
+type ApiPortStatus = 'active' | 'inactive' | 'free'
+type ApiBoxStatus  = 'active' | 'inactive' | 'for_removal'
+
+interface ApiBarangay { code: string; name: string; city_code: string }
+interface ApiPole     { id: number; pole_code: string; lat: string | null; lng: string | null; barangay: ApiBarangay }
+interface ApiNapBox   {
+  id: number; pole_id: number; nap_code: string
+  port_count: '8' | '12' | '16' | '32'; status: ApiBoxStatus
+  pole?: ApiPole
+}
+interface ApiNapPort {
+  id: number; nap_box_id: number; port_number: number; status: ApiPortStatus
+  subscriber_name: string | null; account_number: string | null; subscriber_id: string | null
+}
+interface ApiListResponse { data: ApiNapBox[]; last_page: number; current_page: number; total: number; meta?: { current_page: number; last_page: number; per_page: number; total: number } }
+
+// ── UI types (kept identical) ─────────────────────────────────────────────────
 type SlotStatus = 'occupied' | 'available' | 'reserved' | 'damaged'
 
 interface Slot {
@@ -15,7 +33,7 @@ interface Slot {
 interface NapBox {
   id: string
   tag: string
-  type: '8-port' | '16-port' | '24-port'
+  type: '8-port' | '12-port' | '16-port' | '24-port' | '32-port'
   owner: string
   region: string
   province: string
@@ -26,35 +44,47 @@ interface NapBox {
   slots: Slot[]
 }
 
-function makeSlots(total: number, used: number, overrides: { no: number; status: SlotStatus; sub?: string }[] = []): Slot[] {
-  return Array.from({ length: total }, (_, i) => {
-    const n = i + 1
-    const ov = overrides.find(o => o.no === n)
-    if (ov) return { number: n, status: ov.status, subscriber: ov.sub }
-    const occ = n <= used
-    return {
-      number: n,
-      status: occ ? 'occupied' : 'available',
-      subscriber: occ ? `SUB-${String(n).padStart(3, '0')}` : undefined,
-      account_no: occ ? `ACC-${String(n * 7 + 1000).padStart(6, '0')}` : undefined,
-    }
-  })
+// ── Mapping helpers ───────────────────────────────────────────────────────────
+const PORT_TO_SLOT: Record<ApiPortStatus, SlotStatus> = {
+  active:   'occupied',
+  inactive: 'reserved',
+  free:     'available',
 }
 
-const BOXES: NapBox[] = [
-  { id: 'NAP-0001', tag: 'NTAG-001', type: '16-port', owner: 'Globe',    region: 'NCR', province: 'Metro Manila', city: 'Makati', barangay: 'Sta. Cruz',     pole_id: 'PL-8812', box_status: 'active',          slots: makeSlots(16, 12, [{ no: 7, status: 'reserved', sub: 'Reserved - Globe' }, { no: 14, status: 'damaged' }]) },
-  { id: 'NAP-0002', tag: 'NTAG-002', type: '8-port',  owner: 'Globe',    region: 'NCR', province: 'Metro Manila', city: 'Makati', barangay: 'Bangkal',       pole_id: 'PL-8801', box_status: 'active',          slots: makeSlots(8, 5) },
-  { id: 'NAP-0003', tag: 'NTAG-003', type: '24-port', owner: 'Meralco',  region: 'NCR', province: 'Metro Manila', city: 'Makati', barangay: 'Palanan',       pole_id: 'PL-7703', box_status: 'active',          slots: makeSlots(24, 24) },
-  { id: 'NAP-0004', tag: 'NTAG-004', type: '16-port', owner: 'PLDT',     region: 'NCR', province: 'Metro Manila', city: 'Makati', barangay: 'Pio del Pilar', pole_id: 'PL-7654', box_status: 'inactive',        slots: makeSlots(16, 0) },
-  { id: 'NAP-0005', tag: 'NTAG-005', type: '8-port',  owner: 'Globe',    region: 'NCR', province: 'Metro Manila', city: 'Makati', barangay: 'Comembo',       pole_id: 'PL-8790', box_status: 'damaged',         slots: makeSlots(8, 3, [{ no: 5, status: 'damaged' }, { no: 6, status: 'damaged' }]) },
-  { id: 'NAP-0006', tag: 'NTAG-006', type: '16-port', owner: 'Converge', region: 'NCR', province: 'Metro Manila', city: 'Makati', barangay: 'Pembo',         pole_id: 'PL-7621', box_status: 'active',          slots: makeSlots(16, 9) },
-  { id: 'NAP-0007', tag: 'NTAG-007', type: '24-port', owner: 'Globe',    region: 'NCR', province: 'Metro Manila', city: 'Taguig', barangay: 'Ususan',        pole_id: 'PL-6998', box_status: 'active',          slots: makeSlots(24, 18) },
-  { id: 'NAP-0008', tag: 'NTAG-008', type: '8-port',  owner: 'Globe',    region: 'NCR', province: 'Metro Manila', city: 'Taguig', barangay: 'Ibayo',         pole_id: 'PL-6540', box_status: 'for_replacement', slots: makeSlots(8, 8) },
-  { id: 'NAP-0009', tag: 'NTAG-009', type: '16-port', owner: 'PLDT',     region: 'NCR', province: 'Metro Manila', city: 'Taguig', barangay: 'Central',       pole_id: 'PL-5802', box_status: 'active',          slots: makeSlots(16, 11) },
-  { id: 'NAP-0010', tag: 'NTAG-010', type: '24-port', owner: 'Meralco',  region: 'NCR', province: 'Metro Manila', city: 'Pasig',  barangay: 'Ugong',         pole_id: 'PL-5210', box_status: 'active',          slots: makeSlots(24, 7) },
-]
+const BOX_STATUS_MAP: Record<ApiBoxStatus, NapBox['box_status']> = {
+  active:      'active',
+  inactive:    'inactive',
+  for_removal: 'for_replacement',
+}
 
-// ── Slot color config ────────────────────────────────────────────────────────
+function mapApiBox(apiBox: ApiNapBox, ports: ApiNapPort[]): NapBox {
+  const total = parseInt(apiBox.port_count)
+  const slots: Slot[] = Array.from({ length: total }, (_, i) => {
+    const portNum = i + 1
+    const port = ports.find(p => p.port_number === portNum)
+    return {
+      number: portNum,
+      status: port ? (PORT_TO_SLOT[port.status] ?? 'available') : 'available',
+      subscriber: port?.subscriber_name ?? undefined,
+      account_no: port?.account_number ?? undefined,
+    }
+  })
+  return {
+    id:         apiBox.nap_code,
+    tag:        apiBox.nap_code,
+    type:       `${apiBox.port_count}-port` as NapBox['type'],
+    owner:      'Globe',
+    region:     '',
+    province:   '',
+    city:       '',
+    barangay:   apiBox.pole?.barangay?.name ?? '',
+    pole_id:    apiBox.pole?.pole_code ?? String(apiBox.pole_id),
+    box_status: BOX_STATUS_MAP[apiBox.status] ?? 'active',
+    slots,
+  }
+}
+
+// ── Slot color config (unchanged) ─────────────────────────────────────────────
 const SLOT_COLOR: Record<SlotStatus, { chassis: string; body: string; ferrule: string; glow: string; label: string; pill: string }> = {
   occupied:  { chassis: '#450a0a', body: '#dc2626', ferrule: '#fee2e2', glow: '0 0 8px 3px #dc262688', label: 'Occupied',  pill: 'bg-red-100 text-red-700 ring-red-200' },
   available: { chassis: '#14532d', body: '#16a34a', ferrule: '#bbf7d0', glow: '0 0 8px 3px #16a34a88', label: 'Free',      pill: 'bg-green-100 text-green-700 ring-green-200' },
@@ -66,7 +96,7 @@ const BOX_STATUS_LABEL: Record<NapBox['box_status'], string> = {
   active: 'Active', inactive: 'Inactive', damaged: 'Damaged', for_replacement: 'For Replacement',
 }
 
-// ── Single fiber port ────────────────────────────────────────────────────────
+// ── Single fiber port (unchanged) ─────────────────────────────────────────────
 function FiberPort({ slot, hovered, onHover }: { slot: Slot; hovered: Slot | null; onHover: (s: Slot | null) => void }) {
   const cfg = SLOT_COLOR[slot.status]
   const isHov = hovered?.number === slot.number
@@ -91,12 +121,13 @@ function FiberPort({ slot, hovered, onHover }: { slot: Slot; hovered: Slot | nul
   )
 }
 
-// ── NAP Box panel card ───────────────────────────────────────────────────────
+// ── NAP Box panel card (unchanged layout, fixed cols) ─────────────────────────
 function NapPanelCard({ box }: { box: NapBox }) {
   const [hovered, setHovered] = useState<Slot | null>(null)
   const navigate = useNavigate()
 
-  const cols = box.type === '8-port' ? 4 : box.type === '16-port' ? 8 : 12
+  const total = parseInt(box.type)
+  const cols = Math.ceil(total / 2)
   const row1 = box.slots.slice(0, cols)
   const row2 = box.slots.slice(cols)
 
@@ -116,11 +147,11 @@ function NapPanelCard({ box }: { box: NapBox }) {
         <div className="flex items-center gap-2.5">
           <div>
             <div className="flex items-center gap-2">
-              <button onClick={() => navigate(`/nap/boxes/${box.id}`)} className="font-mono text-sm font-bold text-white hover:text-violet-300 transition underline-offset-2 hover:underline">{box.id}</button>
+              <button onClick={e => { e.stopPropagation(); navigate(`/nap/boxes/${box.id}`) }} className="font-mono text-sm font-bold text-white hover:text-violet-300 transition underline-offset-2 hover:underline">{box.id}</button>
               <span className="text-white/40 text-xs">{box.tag}</span>
             </div>
             <p className="text-white/50 text-[11px] mt-0.5">
-              <i className="mdi mdi-map-marker mr-1" />{box.barangay}, {box.city} · Pole: {box.pole_id}
+              <i className="mdi mdi-map-marker mr-1" />{box.barangay || '—'} · Pole: {box.pole_id}
             </p>
           </div>
         </div>
@@ -138,11 +169,11 @@ function NapPanelCard({ box }: { box: NapBox }) {
         <div style={{ background: 'linear-gradient(180deg,#222 0%,#161616 100%)', borderRadius: 8, padding: '10px 14px', boxShadow: '0 4px 20px rgba(0,0,0,0.4),inset 0 1px 0 rgba(255,255,255,0.06)' }}>
           <div style={{ height: 3, background: '#2a2a2a', borderRadius: 2, marginBottom: 8 }} />
           <div className="flex flex-col gap-1.5">
-            <div className="flex gap-1.5 justify-center">
+            <div className="flex gap-1.5 justify-center flex-wrap">
               {row1.map(s => <FiberPort key={s.number} slot={s} hovered={hovered} onHover={setHovered} />)}
             </div>
             {row2.length > 0 && (
-              <div className="flex gap-1.5 justify-center">
+              <div className="flex gap-1.5 justify-center flex-wrap">
                 {row2.map(s => <FiberPort key={s.number} slot={s} hovered={hovered} onHover={setHovered} />)}
               </div>
             )}
@@ -196,32 +227,76 @@ function NapPanelCard({ box }: { box: NapBox }) {
   )
 }
 
-// ── Page ─────────────────────────────────────────────────────────────────────
+// ── Page ──────────────────────────────────────────────────────────────────────
 export default function SlotStatus() {
+  const [boxes, setBoxes]                     = useState<NapBox[]>([])
+  const [loading, setLoading]                 = useState(true)
+  const [error, setError]                     = useState<string | null>(null)
   const [filterOwner, setFilterOwner]         = useState('all')
   const [filterBoxStatus, setFilterBoxStatus] = useState('all')
   const [search, setSearch]                   = useState('')
   const [loc, setLoc] = useState({ region: '', province: '', city: '', barangay: '' })
 
-  const owners = ['all', ...Array.from(new Set(BOXES.map(b => b.owner)))]
+  useEffect(() => {
+    const token = getToken()
+    const headers: Record<string, string> = {
+      Accept: 'application/json',
+      'ngrok-skip-browser-warning': '1',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    }
 
-  const filtered = useMemo(() => BOXES.filter(b => {
+    const fetchAll = async () => {
+      setLoading(true)
+      setError(null)
+      try {
+        // Step 1: load all pages of NAP boxes
+        let allBoxes: ApiNapBox[] = []
+        let page = 1
+        let lastPage = 1
+        do {
+          const res = await fetch(`${GLOBE_API}/poles/0/nap-boxes?page=${page}`, { headers })
+          const data: ApiListResponse = await res.json()
+          allBoxes = [...allBoxes, ...data.data]
+          lastPage = data.meta?.last_page ?? data.last_page ?? 1
+          page++
+        } while (page <= lastPage)
+
+        // Step 2: load ports for all boxes in parallel
+        const portsResults = await Promise.all(
+          allBoxes.map(b =>
+            fetch(`${GLOBE_API}/nap-boxes/${b.id}/ports`, { headers })
+              .then(r => r.json() as Promise<ApiNapPort[]>)
+              .catch(() => [] as ApiNapPort[])
+          )
+        )
+
+        setBoxes(allBoxes.map((b, i) => mapApiBox(b, portsResults[i] ?? [])))
+      } catch (e) {
+        setError((e as Error).message ?? 'Failed to load NAP boxes')
+      } finally {
+        setLoading(false)
+      }
+    }
+
+    fetchAll()
+  }, [])
+
+  const owners = useMemo(() => ['all', ...Array.from(new Set(boxes.map(b => b.owner)))], [boxes])
+
+  const filtered = useMemo(() => boxes.filter(b => {
     const q = search.toLowerCase()
-    const matchQ = !q || b.id.toLowerCase().includes(q) || b.city.toLowerCase().includes(q) || b.barangay.toLowerCase().includes(q) || b.pole_id.toLowerCase().includes(q)
+    const matchQ = !q || b.id.toLowerCase().includes(q) || b.barangay.toLowerCase().includes(q) || b.pole_id.toLowerCase().includes(q)
     const matchO = filterOwner === 'all' || b.owner === filterOwner
     const matchS = filterBoxStatus === 'all' || b.box_status === filterBoxStatus
-    const matchR = !loc.region   || b.region   === loc.region
-    const matchP = !loc.province || b.province === loc.province
-    const matchC = !loc.city     || b.city     === loc.city
-    const matchB = !loc.barangay || b.barangay === loc.barangay
-    return matchQ && matchO && matchS && matchR && matchP && matchC && matchB
-  }), [search, filterOwner, filterBoxStatus, loc])
+    const matchB = !loc.barangay || b.barangay.toLowerCase().includes(loc.barangay.toLowerCase())
+    return matchQ && matchO && matchS && matchB
+  }), [search, filterOwner, filterBoxStatus, loc, boxes])
 
-  const totalSlots = BOXES.reduce((s, b) => s + b.slots.length, 0)
-  const occupied   = BOXES.reduce((s, b) => s + b.slots.filter(sl => sl.status === 'occupied').length, 0)
-  const available  = BOXES.reduce((s, b) => s + b.slots.filter(sl => sl.status === 'available').length, 0)
-  const damaged    = BOXES.reduce((s, b) => s + b.slots.filter(sl => sl.status === 'damaged').length, 0)
-  const reserved   = BOXES.reduce((s, b) => s + b.slots.filter(sl => sl.status === 'reserved').length, 0)
+  const totalSlots = useMemo(() => boxes.reduce((s, b) => s + b.slots.length, 0), [boxes])
+  const occupied   = useMemo(() => boxes.reduce((s, b) => s + b.slots.filter(sl => sl.status === 'occupied').length, 0), [boxes])
+  const available  = useMemo(() => boxes.reduce((s, b) => s + b.slots.filter(sl => sl.status === 'available').length, 0), [boxes])
+  const damaged    = useMemo(() => boxes.reduce((s, b) => s + b.slots.filter(sl => sl.status === 'damaged').length, 0), [boxes])
+  const reserved   = useMemo(() => boxes.reduce((s, b) => s + b.slots.filter(sl => sl.status === 'reserved').length, 0), [boxes])
 
   const statCards = [
     { label: 'Total Slots',  value: totalSlots, icon: 'mdi mdi-grid',           accent: 'from-violet-500 to-indigo-500', ring: 'ring-violet-200 dark:ring-violet-500/20' },
@@ -229,7 +304,7 @@ export default function SlotStatus() {
     { label: 'Free Slots',   value: available,  icon: 'mdi mdi-circle-outline', accent: 'from-green-500 to-emerald-400', ring: 'ring-green-200 dark:ring-green-500/20' },
     { label: 'Reserved',     value: reserved,   icon: 'mdi mdi-clock-outline',  accent: 'from-amber-400 to-orange-400',  ring: 'ring-amber-200 dark:ring-amber-500/20' },
     { label: 'Damaged',      value: damaged,    icon: 'mdi mdi-alert-circle',   accent: 'from-yellow-400 to-yellow-300', ring: 'ring-yellow-200 dark:ring-yellow-500/20' },
-    { label: 'Utilization',  value: `${Math.round((occupied / totalSlots) * 100)}%`, icon: 'mdi mdi-percent', accent: 'from-pink-500 to-rose-400', ring: 'ring-pink-200 dark:ring-pink-500/20' },
+    { label: 'Utilization',  value: totalSlots > 0 ? `${Math.round((occupied / totalSlots) * 100)}%` : '0%', icon: 'mdi mdi-percent', accent: 'from-pink-500 to-rose-400', ring: 'ring-pink-200 dark:ring-pink-500/20' },
   ]
 
   const selCls = "h-9 rounded-full border border-slate-200 dark:border-zinc-600 bg-white dark:bg-zinc-800 px-4 pr-8 text-xs font-medium text-slate-600 dark:text-zinc-300 appearance-none outline-none cursor-pointer transition hover:border-violet-300"
@@ -245,7 +320,9 @@ export default function SlotStatus() {
               <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-zinc-500 leading-tight">{c.label}</p>
               <i className={`${c.icon} text-lg text-slate-300 dark:text-zinc-600`} />
             </div>
-            <p className="text-[26px] font-bold leading-none text-slate-800 dark:text-zinc-100">{c.value}</p>
+            <p className="text-[26px] font-bold leading-none text-slate-800 dark:text-zinc-100">
+              {loading ? <span className="inline-block h-7 w-10 animate-pulse rounded bg-slate-100 dark:bg-zinc-700" /> : c.value}
+            </p>
           </div>
         ))}
       </div>
@@ -320,7 +397,17 @@ export default function SlotStatus() {
       </div>
 
       {/* Panel grid */}
-      {filtered.length === 0 ? (
+      {loading ? (
+        <div className="py-20 text-center text-slate-400 dark:text-zinc-500">
+          <i className="mdi mdi-loading mdi-spin text-4xl block mb-2" />
+          Loading NAP boxes and port data…
+        </div>
+      ) : error ? (
+        <div className="py-20 text-center text-red-500">
+          <i className="mdi mdi-alert-circle text-4xl block mb-2" />
+          {error}
+        </div>
+      ) : filtered.length === 0 ? (
         <div className="py-20 text-center text-slate-400 dark:text-zinc-500">
           <i className="mdi mdi-server-off text-4xl block mb-2" />
           No NAP boxes match your filters.

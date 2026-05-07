@@ -5,11 +5,10 @@ import { SKYCABLE_API, getToken } from '../../lib/auth'
 import { cacheGet, cacheSet } from '../../lib/cache'
 import { idFromSlug, slugify } from '../../lib/utils'
 
-type Site = {
+type Area = {
   id: number
   name: string
-  address?: string
-  area?: { id: number; name: string }
+  nodes_count?: number
 }
 
 export default function SiteDetail() {
@@ -18,12 +17,12 @@ export default function SiteDetail() {
 
   const siteId = idFromSlug(siteSlug) || Number(siteSlug)
 
-  const [site, setSite] = useState<Site | null>(null)
+  const [site, setSite] = useState<Area | null>(null)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     if (!siteId) return
-    const hit = cacheGet<Site>(`sitedetail_${siteId}`)
+    const hit = cacheGet<Area>(`sitedetail_${siteId}`)
     if (hit) { setSite(hit); setLoading(false) }
     const token = getToken()
     fetch(`${SKYCABLE_API}/areas/${siteId}`, {
@@ -34,7 +33,7 @@ export default function SiteDetail() {
       },
     })
       .then(r => r.json())
-      .then((data: Site) => { setSite(data); cacheSet(`sitedetail_${siteId}`, data) })
+      .then((data: Area) => { setSite(data); cacheSet(`sitedetail_${siteId}`, data) })
       .catch(() => {})
       .finally(() => setLoading(false))
   }, [siteId])
@@ -62,9 +61,9 @@ export default function SiteDetail() {
           <h4 className="text-[18px] font-semibold text-slate-900 dark:text-slate-100">
             {loading ? '…' : site?.name} — Nodes
           </h4>
-          {site?.area && (
+          {site?.nodes_count !== undefined && (
             <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">
-              {site.area.name}{site.address ? ` · ${site.address}` : ''}
+              {site.nodes_count} node{site.nodes_count !== 1 ? 's' : ''} in this area
             </p>
           )}
         </div>

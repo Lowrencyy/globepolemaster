@@ -1,219 +1,173 @@
 import { useEffect, useRef, useState } from 'react'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
+import { getToken, SKYCABLE_API } from '../../lib/auth'
+import { cacheGet, cacheSet } from '../../lib/cache'
 
-// Fix leaflet default marker icon paths broken by bundlers
-import markerIcon2x from 'leaflet/dist/images/marker-icon-2x.png'
-import markerIcon from 'leaflet/dist/images/marker-icon.png'
-import markerShadow from 'leaflet/dist/images/marker-shadow.png'
+type PoleStatus = 'pending' | 'in_progress' | 'cleared'
+type BaseTile   = 'satellite' | 'osm' | 'dark'
 
-delete (L.Icon.Default.prototype as any)._getIconUrl
-L.Icon.Default.mergeOptions({ iconUrl: markerIcon, iconRetinaUrl: markerIcon2x, shadowUrl: markerShadow })
-
-// ── Types ────────────────────────────────────────────────────────────────────
-
-type PoleStatus = 'audited' | 'in_progress' | 'not_audited' | 'pending' | 'completed'
-type Owner = 'Globe' | 'Meralco' | 'PLDT' | 'Converge'
-
-interface Pole {
-  id: string
-  tag: string
-  owner: Owner
-  region: string
-  city: string
-  barangay: string
-  lat: number
-  lng: number
-  status: PoleStatus
-  remarks: string
+interface PoleEntry {
+  id: number
+  pole_code: string
+  lat: number | null
+  lng: number | null
+  has_gps: boolean
+  skycable_status: PoleStatus
+  barangay?: string | null
+  city?: string | null
+  province?: string | null
+  node?: string | null
+  area?: string | null
 }
 
-// ── Sample data ──────────────────────────────────────────────────────────────
-
-const poles: Pole[] = [
-  { id: 'PL-8812', tag: 'TAG-0012', owner: 'Meralco',  region: 'NCR', city: 'Makati', barangay: 'Sta. Cruz',     lat: 14.5547, lng: 121.0244, status: 'audited',     remarks: '' },
-  { id: 'PL-8801', tag: 'TAG-0009', owner: 'Globe',    region: 'NCR', city: 'Makati', barangay: 'Bangkal',       lat: 14.5510, lng: 121.0190, status: 'in_progress', remarks: 'Partial audit' },
-  { id: 'PL-7703', tag: 'TAG-0033', owner: 'Meralco',  region: 'NCR', city: 'Makati', barangay: 'Palanan',       lat: 14.5488, lng: 121.0201, status: 'not_audited', remarks: '' },
-  { id: 'PL-7654', tag: 'TAG-0041', owner: 'PLDT',     region: 'NCR', city: 'Makati', barangay: 'Pio del Pilar', lat: 14.5501, lng: 121.0155, status: 'audited',     remarks: '' },
-  { id: 'PL-8790', tag: 'TAG-0055', owner: 'Meralco',  region: 'NCR', city: 'Makati', barangay: 'Comembo',       lat: 14.5533, lng: 121.0222, status: 'pending',     remarks: 'Scheduled next week' },
-  { id: 'PL-7621', tag: 'TAG-0062', owner: 'Converge', region: 'NCR', city: 'Makati', barangay: 'Pembo',         lat: 14.5499, lng: 121.0265, status: 'not_audited', remarks: '' },
-  { id: 'PL-6998', tag: 'TAG-0078', owner: 'Meralco',  region: 'NCR', city: 'Taguig', barangay: 'Ususan',        lat: 14.5321, lng: 121.0521, status: 'audited',     remarks: '' },
-  { id: 'PL-6540', tag: 'TAG-0091', owner: 'Globe',    region: 'NCR', city: 'Taguig', barangay: 'Ibayo',         lat: 14.5299, lng: 121.0488, status: 'in_progress', remarks: '' },
-  { id: 'PL-5802', tag: 'TAG-0104', owner: 'PLDT',     region: 'NCR', city: 'Taguig', barangay: 'Central',       lat: 14.5277, lng: 121.0501, status: 'completed',   remarks: 'Fully cleared' },
-  { id: 'PL-5210', tag: 'TAG-0118', owner: 'Meralco',  region: 'NCR', city: 'Pasig',  barangay: 'Ugong',         lat: 14.5701, lng: 121.0712, status: 'not_audited', remarks: '' },
-  { id: 'PL-4988', tag: 'TAG-0125', owner: 'Meralco',  region: 'NCR', city: 'Pasig',  barangay: 'Kapasigan',     lat: 14.5688, lng: 121.0699, status: 'pending',     remarks: '' },
-  { id: 'PL-4421', tag: 'TAG-0139', owner: 'Converge', region: 'NCR', city: 'Pasig',  barangay: 'Pineda',        lat: 14.5643, lng: 121.0655, status: 'audited',     remarks: '' },
-]
-
-// ── Config ───────────────────────────────────────────────────────────────────
-
-const statusColor: Record<PoleStatus, string> = {
-  audited:     '#10b981',
-  in_progress: '#8b5cf6',
-  not_audited: '#9ca3af',
+const STATUS_COLOR: Record<PoleStatus, string> = {
   pending:     '#f59e0b',
-  completed:   '#3b82f6',
+  in_progress: '#8b5cf6',
+  cleared:     '#10b981',
 }
 
-const statusLabel: Record<PoleStatus, string> = {
-  audited:     'Audited',
-  in_progress: 'In Progress',
-  not_audited: 'Not Audited',
+const STATUS_LABEL: Record<PoleStatus, string> = {
   pending:     'Pending',
-  completed:   'Completed',
+  in_progress: 'In Progress',
+  cleared:     'Cleared',
 }
-
-const ownerColor: Record<Owner, string> = {
-  Globe:    '#0ea5e9',
-  Meralco:  '#f59e0b',
-  PLDT:     '#22c55e',
-  Converge: '#f43f5e',
-}
-
-function makeIcon(color: string, size = 14) {
-  const svg = `
-    <svg xmlns="http://www.w3.org/2000/svg" width="${size + 8}" height="${size + 8}" viewBox="0 0 ${size + 8} ${size + 8}">
-      <circle cx="${(size + 8) / 2}" cy="${(size + 8) / 2}" r="${size / 2 + 1}" fill="white" opacity="0.85"/>
-      <circle cx="${(size + 8) / 2}" cy="${(size + 8) / 2}" r="${size / 2}" fill="${color}"/>
-    </svg>`
-  return L.divIcon({
-    html: svg,
-    className: '',
-    iconSize: [size + 8, size + 8],
-    iconAnchor: [(size + 8) / 2, (size + 8) / 2],
-    popupAnchor: [0, -((size + 8) / 2 + 4)],
-  })
-}
-
-// ── GeoJSON export helper ─────────────────────────────────────────────────────
-
-function polesToGeoJSON(list: Pole[]) {
-  return {
-    type: 'FeatureCollection',
-    features: list.map(p => ({
-      type: 'Feature',
-      properties: { id: p.id, tag: p.tag, owner: p.owner, status: p.status, city: p.city, barangay: p.barangay, remarks: p.remarks },
-      geometry: { type: 'Point', coordinates: [p.lng, p.lat] },
-    })),
-  }
-}
-
-// ── Component ─────────────────────────────────────────────────────────────────
-
-type ColorMode = 'status' | 'owner'
-type BaseTile  = 'osm' | 'satellite' | 'dark'
 
 const TILES: Record<BaseTile, { url: string; attr: string; label: string }> = {
-  osm:       { url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',                       attr: '© OpenStreetMap contributors', label: 'Streets' },
   satellite: { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', attr: '© Esri', label: 'Satellite' },
-  dark:      { url: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',            attr: '© CartoDB', label: 'Dark' },
+  osm:       { url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',                                           attr: '© OpenStreetMap contributors', label: 'Streets' },
+  dark:      { url: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',                                attr: '© CartoDB', label: 'Dark' },
+}
+
+function authHeaders() {
+  return { Authorization: `Bearer ${getToken()}`, Accept: 'application/json', 'ngrok-skip-browser-warning': '1' }
+}
+
+function makeIcon(color: string) {
+  const html = `<div style="width:22px;height:22px;border-radius:50%;background:${color};border:3px solid white;box-shadow:0 2px 8px rgba(0,0,0,0.35)"></div>`
+  return L.divIcon({ html, className: '', iconSize: [22, 22], iconAnchor: [11, 11], popupAnchor: [0, -14] })
 }
 
 export default function PoleMapView() {
-  const mapRef    = useRef<HTMLDivElement>(null)
-  const mapObj    = useRef<L.Map | null>(null)
-  const layerRef  = useRef<L.LayerGroup | null>(null)
-  const tileRef   = useRef<L.TileLayer | null>(null)
+  const mapRef   = useRef<HTMLDivElement>(null)
+  const mapObj   = useRef<L.Map | null>(null)
+  const layerRef = useRef<L.LayerGroup | null>(null)
+  const tileRef  = useRef<L.TileLayer | null>(null)
 
-  const [colorMode, setColorMode]     = useState<ColorMode>('status')
-  const [baseTile, setBaseTile]       = useState<BaseTile>('satellite')
+  const [poles, setPoles]           = useState<PoleEntry[]>([])
+  const [loading, setLoading]       = useState(true)
+  const [baseTile, setBaseTile]     = useState<BaseTile>('satellite')
   const [filterStatus, setFilterStatus] = useState<PoleStatus | 'all'>('all')
-  const [filterOwner, setFilterOwner]   = useState<Owner | 'all'>('all')
-  const [selected, setSelected]       = useState<Pole | null>(null)
-  const [poleCount, setPoleCount]     = useState(poles.length)
+  const [filterGps, setFilterGps]   = useState<'all' | 'gps' | 'no_gps'>('all')
+  const [search, setSearch]         = useState('')
+  const [selected, setSelected]     = useState<PoleEntry | null>(null)
 
-  // ── Init map ──────────────────────────────────────────────────────────────
+  // fetch all poles (with + without GPS)
+  useEffect(() => {
+    const cached = cacheGet<PoleEntry[]>('pole_map_all')
+    if (cached) {
+      setPoles(cached)
+      setLoading(false)
+      return
+    }
+
+    setLoading(true)
+    fetch(`${SKYCABLE_API}/poles/all`, { headers: authHeaders() })
+      .then(r => r.json())
+      .then(d => {
+        if (Array.isArray(d)) {
+          setPoles(d)
+          cacheSet('pole_map_all', d)
+        }
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false))
+  }, [])
+
+  // init map
   useEffect(() => {
     if (!mapRef.current || mapObj.current) return
-
     const map = L.map(mapRef.current, {
-      center: [14.5490, 121.0300],
-      zoom: 14,
-      zoomControl: false,
+      center: [12.5, 122.0], zoom: 6, zoomControl: false,
     })
-
     L.control.zoom({ position: 'bottomright' }).addTo(map)
-
-    tileRef.current = L.tileLayer(TILES.osm.url, { attribution: TILES.osm.attr, maxZoom: 19 }).addTo(map)
+    tileRef.current = L.tileLayer(TILES.satellite.url, { attribution: TILES.satellite.attr, maxZoom: 20 }).addTo(map)
     layerRef.current = L.layerGroup().addTo(map)
-
     mapObj.current = map
     return () => { map.remove(); mapObj.current = null }
   }, [])
 
-  // ── Swap base tile ────────────────────────────────────────────────────────
+  // swap tile
   useEffect(() => {
     if (!mapObj.current) return
-    if (tileRef.current) { tileRef.current.remove() }
+    tileRef.current?.remove()
     const t = TILES[baseTile]
-    tileRef.current = L.tileLayer(t.url, { attribution: t.attr, maxZoom: 19 }).addTo(mapObj.current)
+    tileRef.current = L.tileLayer(t.url, { attribution: t.attr, maxZoom: 20 }).addTo(mapObj.current)
   }, [baseTile])
 
-  // ── Redraw markers ────────────────────────────────────────────────────────
+  // draw markers (only poles with GPS)
   useEffect(() => {
     if (!mapObj.current || !layerRef.current) return
     layerRef.current.clearLayers()
 
-    const visible = poles.filter(p =>
-      (filterStatus === 'all' || p.status === filterStatus) &&
-      (filterOwner  === 'all' || p.owner  === filterOwner)
-    )
-    setPoleCount(visible.length)
+    const mappable = filteredPoles.filter(p => p.has_gps && p.lat != null && p.lng != null)
 
-    visible.forEach(pole => {
-      const color = colorMode === 'status' ? statusColor[pole.status] : ownerColor[pole.owner]
-      const marker = L.marker([pole.lat, pole.lng], { icon: makeIcon(color) })
+    mappable.forEach(pin => {
+      const color  = STATUS_COLOR[pin.skycable_status] ?? STATUS_COLOR.pending
+      const marker = L.marker([pin.lat!, pin.lng!], { icon: makeIcon(color) })
 
       marker.bindPopup(`
         <div style="min-width:200px;font-family:system-ui,sans-serif">
-          <div style="font-weight:700;font-size:14px;margin-bottom:6px;color:#1e293b">${pole.id}</div>
+          <div style="font-weight:900;font-size:14px;font-family:monospace;color:#1e293b;margin-bottom:8px">${pin.pole_code}</div>
           <table style="width:100%;border-collapse:collapse;font-size:12px">
-            <tr><td style="color:#64748b;padding:2px 0">Tag</td><td style="font-weight:600;text-align:right">${pole.tag}</td></tr>
-            <tr><td style="color:#64748b;padding:2px 0">Owner</td><td style="font-weight:600;text-align:right"><span style="color:${ownerColor[pole.owner]}">${pole.owner}</span></td></tr>
-            <tr><td style="color:#64748b;padding:2px 0">Location</td><td style="font-weight:600;text-align:right">${pole.barangay}, ${pole.city}</td></tr>
-            <tr><td style="color:#64748b;padding:2px 0">Status</td><td style="text-align:right"><span style="background:${statusColor[pole.status]}22;color:${statusColor[pole.status]};border-radius:9999px;padding:1px 8px;font-weight:600">${statusLabel[pole.status]}</span></td></tr>
-            ${pole.remarks ? `<tr><td style="color:#64748b;padding:2px 0">Remarks</td><td style="font-weight:600;text-align:right">${pole.remarks}</td></tr>` : ''}
-            <tr><td style="color:#64748b;padding:2px 0">Lat / Lng</td><td style="font-weight:600;text-align:right;font-family:monospace">${pole.lat}, ${pole.lng}</td></tr>
+            ${pin.area   ? `<tr><td style="color:#64748b;padding:2px 0;width:56px">Area</td><td style="font-weight:600;text-align:right">${pin.area}</td></tr>` : ''}
+            ${pin.node   ? `<tr><td style="color:#64748b;padding:2px 0">Node</td><td style="font-weight:600;text-align:right">${pin.node}</td></tr>` : ''}
+            ${pin.city   ? `<tr><td style="color:#64748b;padding:2px 0">Location</td><td style="font-weight:600;text-align:right">${[pin.barangay, pin.city].filter(Boolean).join(', ')}</td></tr>` : ''}
+            <tr><td style="color:#64748b;padding:2px 0">Status</td><td style="text-align:right">
+              <span style="background:${color}22;color:${color};border-radius:999px;padding:2px 8px;font-weight:700;font-size:11px">
+                ${STATUS_LABEL[pin.skycable_status] ?? pin.skycable_status}
+              </span>
+            </td></tr>
+            <tr><td style="color:#64748b;padding:2px 0">Coords</td><td style="font-weight:600;text-align:right;font-family:monospace;font-size:11px">${pin.lat}, ${pin.lng}</td></tr>
           </table>
         </div>
-      `, { maxWidth: 280 })
+      `, { maxWidth: 260 })
 
-      marker.on('click', () => setSelected(pole))
+      marker.on('click', () => setSelected(pin))
       marker.addTo(layerRef.current!)
     })
-  }, [colorMode, filterStatus, filterOwner])
 
-  // ── GeoJSON helpers ───────────────────────────────────────────────────────
-  const getVisibleGeoJSON = () => {
-    const visible = poles.filter(p =>
-      (filterStatus === 'all' || p.status === filterStatus) &&
-      (filterOwner  === 'all' || p.owner  === filterOwner)
-    )
-    return polesToGeoJSON(visible)
+    if (mappable.length > 0 && mapObj.current) {
+      try {
+        const bounds = L.latLngBounds(mappable.map(p => [p.lat!, p.lng!]))
+        mapObj.current.fitBounds(bounds, { padding: [40, 40], maxZoom: 14 })
+      } catch { /* ignore */ }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [poles, filterStatus, search, filterGps])
+
+  const filteredPoles = poles.filter(p => {
+    const matchStatus = filterStatus === 'all' || p.skycable_status === filterStatus
+    const matchGps    = filterGps === 'all' || (filterGps === 'gps' ? p.has_gps : !p.has_gps)
+    const matchSearch = !search.trim() || p.pole_code.toLowerCase().includes(search.trim().toLowerCase())
+    return matchStatus && matchGps && matchSearch
+  })
+
+  const withGps    = poles.filter(p => p.has_gps).length
+  const withoutGps = poles.filter(p => !p.has_gps).length
+
+  const counts = {
+    all:         poles.length,
+    pending:     poles.filter(p => p.skycable_status === 'pending').length,
+    in_progress: poles.filter(p => p.skycable_status === 'in_progress').length,
+    cleared:     poles.filter(p => p.skycable_status === 'cleared').length,
   }
 
-  const downloadGeoJSON = () => {
-    const blob = new Blob([JSON.stringify(getVisibleGeoJSON(), null, 2)], { type: 'application/json' })
-    const a = document.createElement('a')
-    a.href = URL.createObjectURL(blob)
-    a.download = 'poles.geojson'
-    a.click()
-    URL.revokeObjectURL(a.href)
-  }
-
-  const openInGeoJSONio = () => {
-    const encoded = encodeURIComponent(JSON.stringify(getVisibleGeoJSON()))
-    window.open(`https://geojson.io/#data=data:application/json,${encoded}`, '_blank')
-  }
-
-  // ── Fly to selected ───────────────────────────────────────────────────────
-  const flyTo = (p: Pole) => {
-    mapObj.current?.flyTo([p.lat, p.lng], 17, { duration: 1 })
+  const flyTo = (p: PoleEntry) => {
+    if (!p.has_gps || p.lat == null || p.lng == null) return
+    mapObj.current?.flyTo([p.lat, p.lng], 18, { duration: 1.2 })
     setSelected(p)
   }
-
-  const statuses: (PoleStatus | 'all')[] = ['all', 'audited', 'in_progress', 'not_audited', 'pending', 'completed']
-  const owners: (Owner | 'all')[] = ['all', 'Globe', 'Meralco', 'PLDT', 'Converge']
 
   return (
     <div className="flex flex-col gap-4">
@@ -221,145 +175,192 @@ export default function PoleMapView() {
       {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h4 className="text-lg font-bold text-slate-800 dark:text-zinc-100">Pole Map View</h4>
-          <p className="text-xs text-slate-400 dark:text-zinc-500 mt-0.5">GeoJSON · {poleCount} poles visible</p>
+          <h4 className="text-lg font-bold text-slate-800 dark:text-zinc-100">Pole Map</h4>
+          <p className="mt-0.5 text-xs text-slate-400 dark:text-zinc-500">
+            {loading
+              ? 'Loading…'
+              : `${poles.length} total · ${withGps} with GPS · ${withoutGps} no GPS`}
+          </p>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
           {/* Base tile toggle */}
-          <div className="flex rounded-xl border border-slate-200 dark:border-zinc-600 overflow-hidden text-xs font-semibold">
+          <div className="flex overflow-hidden rounded-xl border border-slate-200 text-xs font-semibold dark:border-zinc-600">
             {(Object.keys(TILES) as BaseTile[]).map(k => (
               <button key={k} onClick={() => setBaseTile(k)}
-                className={`px-3 py-1.5 transition ${baseTile === k ? 'bg-violet-600 text-white' : 'bg-white dark:bg-zinc-800 text-slate-500 dark:text-zinc-400 hover:bg-slate-50 dark:hover:bg-zinc-700'}`}>
+                className={`px-3 py-1.5 transition ${baseTile === k ? 'bg-blue-600 text-white' : 'bg-white text-slate-500 hover:bg-slate-50 dark:bg-zinc-800 dark:text-zinc-400 dark:hover:bg-zinc-700'}`}>
                 {TILES[k].label}
               </button>
             ))}
           </div>
 
-          {/* Color mode */}
-          <div className="flex rounded-xl border border-slate-200 dark:border-zinc-600 overflow-hidden text-xs font-semibold">
-            {(['status', 'owner'] as ColorMode[]).map(m => (
-              <button key={m} onClick={() => setColorMode(m)}
-                className={`px-3 py-1.5 capitalize transition ${colorMode === m ? 'bg-violet-600 text-white' : 'bg-white dark:bg-zinc-800 text-slate-500 dark:text-zinc-400 hover:bg-slate-50 dark:hover:bg-zinc-700'}`}>
-                By {m}
-              </button>
-            ))}
-          </div>
-
           {/* Status filter */}
-          <select value={filterStatus} onChange={e => setFilterStatus(e.target.value as typeof filterStatus)}
-            className="h-8 rounded-xl border border-slate-200 dark:border-zinc-600 bg-white dark:bg-zinc-800 px-3 text-xs font-medium text-slate-600 dark:text-zinc-300 outline-none cursor-pointer">
-            {statuses.map(s => <option key={s} value={s}>{s === 'all' ? 'All Statuses' : statusLabel[s]}</option>)}
-          </select>
-
-          {/* Owner filter */}
-          <select value={filterOwner} onChange={e => setFilterOwner(e.target.value as typeof filterOwner)}
-            className="h-8 rounded-xl border border-slate-200 dark:border-zinc-600 bg-white dark:bg-zinc-800 px-3 text-xs font-medium text-slate-600 dark:text-zinc-300 outline-none cursor-pointer">
-            {owners.map(o => <option key={o} value={o}>{o === 'all' ? 'All Owners' : o}</option>)}
-          </select>
-
-          {/* Download GeoJSON */}
-          <button onClick={downloadGeoJSON}
-            className="h-8 rounded-xl border border-slate-200 dark:border-zinc-600 bg-white dark:bg-zinc-800 px-3 text-xs font-semibold text-slate-600 dark:text-zinc-300 hover:bg-slate-50 dark:hover:bg-zinc-700 transition flex items-center gap-1.5">
-            <i className="mdi mdi-download text-sm" />
-            Download GeoJSON
-          </button>
-
-          {/* Open in geojson.io */}
-          <button onClick={openInGeoJSONio}
-            className="h-8 rounded-xl bg-violet-600 px-3 text-xs font-semibold text-white shadow-lg shadow-violet-500/30 hover:bg-violet-700 transition flex items-center gap-1.5">
-            <i className="mdi mdi-open-in-new text-sm" />
-            Open in geojson.io
-          </button>
+          {(['all', 'pending', 'in_progress', 'cleared'] as const).map(s => (
+            <button key={s} onClick={() => setFilterStatus(s)}
+              className={[
+                'inline-flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-bold transition',
+                filterStatus === s
+                  ? 'border-blue-600 bg-blue-600 text-white'
+                  : 'border-slate-200 bg-white text-slate-500 hover:bg-slate-50 dark:border-zinc-600 dark:bg-zinc-800 dark:text-zinc-400',
+              ].join(' ')}
+            >
+              {s !== 'all' && <span className="h-2 w-2 rounded-full" style={{ background: STATUS_COLOR[s] }} />}
+              {s === 'all' ? `All (${counts.all})` : `${STATUS_LABEL[s]} (${counts[s]})`}
+            </button>
+          ))}
         </div>
       </div>
 
-      {/* Map + sidebar layout */}
-      <div className="flex gap-4" style={{ height: 'calc(100vh - 220px)', minHeight: 500 }}>
+      {/* Map + sidebar */}
+      <div className="flex gap-4" style={{ height: 'calc(100vh - 220px)', minHeight: 520 }}>
 
         {/* Map */}
-        <div className="flex-1 rounded-3xl overflow-hidden shadow-sm ring-1 ring-slate-100 dark:ring-zinc-700 relative">
-          <div ref={mapRef} className="w-full h-full" />
+        <div className="relative flex-1 overflow-hidden rounded-3xl shadow-sm ring-1 ring-slate-100 dark:ring-zinc-700">
+          {loading && (
+            <div className="absolute inset-0 z-1001 flex items-center justify-center bg-white/70 dark:bg-zinc-900/70 backdrop-blur-sm">
+              <div className="flex items-center gap-3 text-sm font-semibold text-slate-500 dark:text-zinc-400">
+                <div className="h-8 w-8 animate-spin rounded-full border-4 border-blue-100 border-t-blue-500" />
+                Loading poles…
+              </div>
+            </div>
+          )}
+          <div ref={mapRef} className="h-full w-full" />
 
-          {/* Legend overlay */}
-          <div className="absolute bottom-10 left-3 z-[1000] rounded-2xl bg-white/90 dark:bg-zinc-800/90 backdrop-blur-sm shadow-lg ring-1 ring-slate-100 dark:ring-zinc-700 p-3 text-xs">
-            <p className="font-bold text-slate-500 dark:text-zinc-400 uppercase tracking-wider mb-2">
-              {colorMode === 'status' ? 'Status' : 'Owner'}
-            </p>
-            {colorMode === 'status'
-              ? Object.entries(statusColor).map(([k, c]) => (
-                  <div key={k} className="flex items-center gap-2 mb-1">
-                    <span className="h-2.5 w-2.5 rounded-full shrink-0" style={{ background: c }} />
-                    <span className="text-slate-600 dark:text-zinc-300">{statusLabel[k as PoleStatus]}</span>
-                  </div>
-                ))
-              : Object.entries(ownerColor).map(([k, c]) => (
-                  <div key={k} className="flex items-center gap-2 mb-1">
-                    <span className="h-2.5 w-2.5 rounded-full shrink-0" style={{ background: c }} />
-                    <span className="text-slate-600 dark:text-zinc-300">{k}</span>
-                  </div>
-                ))
-            }
+          {/* Legend */}
+          <div className="absolute bottom-10 left-3 z-1000 rounded-2xl bg-white/90 p-3 text-xs shadow-lg ring-1 ring-slate-100 backdrop-blur-sm dark:bg-zinc-800/90 dark:ring-zinc-700">
+            <p className="mb-2 font-black uppercase tracking-wider text-slate-400 dark:text-zinc-500">Status</p>
+            {(Object.entries(STATUS_COLOR) as [PoleStatus, string][]).map(([k, c]) => (
+              <div key={k} className="mb-1 flex items-center gap-2">
+                <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: c }} />
+                <span className="text-slate-600 dark:text-zinc-300">{STATUS_LABEL[k]}</span>
+              </div>
+            ))}
           </div>
         </div>
 
-        {/* Pole list panel */}
-        <div className="w-72 shrink-0 rounded-3xl bg-white dark:bg-zinc-800 shadow-sm ring-1 ring-slate-100 dark:ring-zinc-700 flex flex-col overflow-hidden">
-          <div className="px-4 py-3 border-b border-slate-100 dark:border-zinc-700">
-            <p className="text-sm font-bold text-slate-700 dark:text-zinc-200">Poles</p>
-            <p className="text-[11px] text-slate-400 dark:text-zinc-500">{poleCount} visible — click to fly</p>
+        {/* Sidebar */}
+        <div className="flex w-72 shrink-0 flex-col overflow-hidden rounded-3xl bg-white shadow-sm ring-1 ring-slate-100 dark:bg-zinc-800 dark:ring-zinc-700">
+          {/* Search + GPS filter */}
+          <div className="border-b border-slate-100 p-3 dark:border-zinc-700 space-y-2">
+            <div className="relative">
+              <i className="bx bx-search absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                placeholder="Search pole code…"
+                className="h-9 w-full rounded-xl border border-slate-200 bg-slate-50 pl-8 pr-3 text-xs font-medium text-slate-700 outline-none placeholder:text-slate-400 focus:border-blue-400 focus:ring-2 focus:ring-blue-400/20 dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-200"
+              />
+            </div>
+
+            {/* GPS filter pills */}
+            <div className="flex gap-1.5">
+              {([
+                { key: 'all',    label: `All (${poles.length})` },
+                { key: 'gps',    label: `GPS (${withGps})` },
+                { key: 'no_gps', label: `No GPS (${withoutGps})` },
+              ] as const).map(f => (
+                <button key={f.key} onClick={() => setFilterGps(f.key)}
+                  className={[
+                    'flex-1 rounded-lg py-1 text-[10px] font-bold transition',
+                    filterGps === f.key
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-slate-100 text-slate-500 hover:bg-slate-200 dark:bg-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-600',
+                  ].join(' ')}>
+                  {f.label}
+                </button>
+              ))}
+            </div>
+
+            <p className="text-[11px] text-slate-400 dark:text-zinc-500">
+              {filteredPoles.length} pole{filteredPoles.length !== 1 ? 's' : ''}
+              {filteredPoles.filter(p => p.has_gps).length > 0
+                ? ` · ${filteredPoles.filter(p => p.has_gps).length} on map`
+                : ''}
+            </p>
           </div>
 
-          <div className="flex-1 overflow-y-auto divide-y divide-slate-50 dark:divide-zinc-700/50">
-            {poles
-              .filter(p =>
-                (filterStatus === 'all' || p.status === filterStatus) &&
-                (filterOwner  === 'all' || p.owner  === filterOwner)
-              )
-              .map(p => {
-                const color = colorMode === 'status' ? statusColor[p.status] : ownerColor[p.owner]
-                const isSelected = selected?.id === p.id
-                return (
-                  <button key={p.id} onClick={() => flyTo(p)}
-                    className={`w-full text-left px-4 py-2.5 flex items-start gap-2.5 transition ${isSelected ? 'bg-violet-50 dark:bg-violet-500/10' : 'hover:bg-slate-50 dark:hover:bg-zinc-700/40'}`}>
-                    <span className="mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: color }} />
-                    <div className="min-w-0">
-                      <p className={`text-xs font-bold font-mono ${isSelected ? 'text-violet-600 dark:text-violet-400' : 'text-slate-700 dark:text-zinc-200'}`}>{p.id}</p>
-                      <p className="text-[11px] text-slate-400 dark:text-zinc-500 truncate">{p.barangay}, {p.city}</p>
-                      <p className="text-[11px] font-medium" style={{ color }}>{p.owner} · {statusLabel[p.status]}</p>
+          {/* List — ALL poles, GPS badge for those without */}
+          <div className="flex-1 divide-y divide-slate-50 overflow-y-auto dark:divide-zinc-700/50">
+            {loading ? (
+              <div className="flex items-center justify-center py-16 text-slate-400 text-sm gap-2">
+                <div className="h-5 w-5 animate-spin rounded-full border-2 border-blue-100 border-t-blue-500" />
+                Loading…
+              </div>
+            ) : filteredPoles.length === 0 ? (
+              <div className="flex flex-col items-center justify-center gap-2 py-16 text-slate-400 dark:text-zinc-500">
+                <i className="bx bx-map-alt text-3xl" />
+                <p className="text-xs font-semibold">No poles found</p>
+              </div>
+            ) : filteredPoles.map(p => {
+              const color      = STATUS_COLOR[p.skycable_status] ?? STATUS_COLOR.pending
+              const isSelected = selected?.id === p.id
+              const canFly     = p.has_gps
+              return (
+                <button key={p.id}
+                  onClick={() => canFly && flyTo(p)}
+                  className={[
+                    'w-full px-4 py-3 text-left flex items-start gap-2.5 transition',
+                    isSelected ? 'bg-blue-50 dark:bg-blue-500/10' : 'hover:bg-slate-50 dark:hover:bg-zinc-700/40',
+                    !canFly ? 'opacity-60 cursor-default' : 'cursor-pointer',
+                  ].join(' ')}
+                >
+                  <span className="mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: color }} />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center justify-between gap-1">
+                      <p className={`font-mono text-xs font-black truncate ${isSelected ? 'text-blue-600 dark:text-blue-400' : 'text-slate-700 dark:text-zinc-200'}`}>
+                        {p.pole_code}
+                      </p>
+                      {!canFly && (
+                        <span className="shrink-0 rounded-full bg-slate-100 px-1.5 py-0.5 text-[9px] font-bold text-slate-400 dark:bg-zinc-700 dark:text-zinc-500">
+                          No GPS
+                        </span>
+                      )}
                     </div>
-                  </button>
-                )
-              })}
+                    <p className="truncate text-[11px] text-slate-400 dark:text-zinc-500">
+                      {[p.barangay, p.city].filter(Boolean).join(', ') || p.area || p.node || '—'}
+                    </p>
+                    <p className="text-[11px] font-semibold" style={{ color }}>
+                      {STATUS_LABEL[p.skycable_status] ?? p.skycable_status}
+                    </p>
+                  </div>
+                </button>
+              )
+            })}
           </div>
 
           {/* Selected detail */}
-          {selected && (
-            <div className="border-t border-slate-100 dark:border-zinc-700 p-4 bg-slate-50/50 dark:bg-zinc-700/20">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-xs font-bold text-slate-700 dark:text-zinc-200">{selected.id}</span>
-                <button onClick={() => setSelected(null)} className="text-slate-400 hover:text-slate-600 dark:hover:text-zinc-200">
-                  <i className="mdi mdi-close text-base" />
+          {selected && selected.has_gps && (
+            <div className="border-t border-slate-100 bg-slate-50/60 p-4 dark:border-zinc-700 dark:bg-zinc-700/20">
+              <div className="mb-3 flex items-center justify-between">
+                <span className="font-mono text-xs font-black text-slate-700 dark:text-zinc-200">{selected.pole_code}</span>
+                <button onClick={() => setSelected(null)} className="text-slate-400 transition hover:text-slate-600 dark:hover:text-zinc-200">
+                  <i className="bx bx-x text-lg" />
                 </button>
               </div>
-              <div className="grid grid-cols-2 gap-1.5 text-[11px]">
+              <div className="grid grid-cols-2 gap-x-3 gap-y-2 text-[11px]">
                 {[
-                  ['Tag',    selected.tag],
-                  ['Owner',  selected.owner],
-                  ['City',   selected.city],
-                  ['Brgy',   selected.barangay],
-                  ['Status', statusLabel[selected.status]],
-                  ['Coords', `${selected.lat}, ${selected.lng}`],
+                  ['Status',   STATUS_LABEL[selected.skycable_status] ?? selected.skycable_status],
+                  ['Area',     selected.area ?? '—'],
+                  ['Node',     selected.node ?? '—'],
+                  ['Province', selected.province ?? '—'],
+                  ['City',     selected.city ?? '—'],
+                  ['Barangay', selected.barangay ?? '—'],
                 ].map(([k, v]) => (
                   <div key={k}>
-                    <span className="text-slate-400 dark:text-zinc-500">{k}</span>
+                    <p className="text-slate-400 dark:text-zinc-500">{k}</p>
                     <p className="font-semibold text-slate-700 dark:text-zinc-200 truncate">{v}</p>
                   </div>
                 ))}
+                <div className="col-span-2">
+                  <p className="text-slate-400 dark:text-zinc-500">Coordinates</p>
+                  <p className="font-mono font-semibold text-slate-700 dark:text-zinc-200">{selected.lat}, {selected.lng}</p>
+                </div>
               </div>
-              {selected.remarks && (
-                <p className="mt-2 text-[11px] text-slate-500 dark:text-zinc-400 italic">"{selected.remarks}"</p>
-              )}
+              <a href={`https://maps.google.com/?q=${selected.lat},${selected.lng}`} target="_blank" rel="noopener noreferrer"
+                className="mt-3 flex items-center justify-center gap-1.5 rounded-xl bg-blue-600 px-3 py-2 text-xs font-bold text-white transition hover:bg-blue-700">
+                <i className="bx bx-map-pin" />
+                Open in Google Maps
+              </a>
             </div>
           )}
         </div>

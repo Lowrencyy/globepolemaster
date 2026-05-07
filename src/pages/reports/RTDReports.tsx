@@ -103,28 +103,16 @@ function nodeStatusStyle(status: string) {
 export default function RTDReports() {
   const navigate = useNavigate()
 
-  const cachedAreas = cacheGet<Area[]>('rtd_areas')
-
-  const [areas, setAreas] = useState<Area[]>(() => cachedAreas ?? [])
-  const [areasLoading, setAreasLoading] = useState(() => !cachedAreas)
-  const [areasRefreshing, setAreasRefreshing] = useState(false)
+  const [areas, setAreas] = useState<Area[]>(() => cacheGet<Area[]>('rtd_areas') ?? [])
+  const [areasLoading, setAreasLoading] = useState(() => !cacheGet<Area[]>('rtd_areas'))
 
   const [selectedArea, setSelectedArea] = useState<Area | null>(null)
   const [nodes, setNodes] = useState<SkycableNode[]>([])
   const [nodesLoading, setNodesLoading] = useState(false)
-  const [nodesRefreshing, setNodesRefreshing] = useState(false)
   const [search, setSearch] = useState('')
 
   useEffect(() => {
-    const hit = cacheGet<Area[]>('rtd_areas')
-
-    if (hit) {
-      setAreas(hit)
-      setAreasLoading(false)
-      setAreasRefreshing(true)
-    } else {
-      setAreasLoading(true)
-    }
+    if (cacheGet<Area[]>('rtd_areas')) return
 
     fetch(`${SKYCABLE_API}/areas`, { headers: headers() })
       .then(r => r.json())
@@ -134,10 +122,7 @@ export default function RTDReports() {
         setAreas(list)
       })
       .catch(() => {})
-      .finally(() => {
-        setAreasLoading(false)
-        setAreasRefreshing(false)
-      })
+      .finally(() => setAreasLoading(false))
   }, [])
 
   function selectArea(area: Area) {
@@ -149,13 +134,11 @@ export default function RTDReports() {
 
     if (hit) {
       setNodes(hit)
-      setNodesLoading(false)
-      setNodesRefreshing(true)
-    } else {
-      setNodes([])
-      setNodesLoading(true)
-      setNodesRefreshing(false)
+      return
     }
+
+    setNodes([])
+    setNodesLoading(true)
 
     fetch(`${SKYCABLE_API}/nodes?area_id=${area.id}`, { headers: headers() })
       .then(r => r.json())
@@ -165,10 +148,7 @@ export default function RTDReports() {
         setNodes(list)
       })
       .catch(() => {})
-      .finally(() => {
-        setNodesLoading(false)
-        setNodesRefreshing(false)
-      })
+      .finally(() => setNodesLoading(false))
   }
 
   function backToSites() {
@@ -422,7 +402,7 @@ export default function RTDReports() {
                     value: areas.length,
                     icon: 'bx bx-data',
                     accent: BRAND_GRADIENTS[3],
-                    helper: areasRefreshing ? 'updating' : 'ready',
+                    helper: 'ready',
                   },
                   {
                     label: 'Reports',
@@ -474,19 +454,6 @@ export default function RTDReports() {
             </div>
           </div>
 
-          {areasRefreshing && areas.length > 0 && (
-            <div
-              className="inline-flex w-fit items-center gap-2 rounded-xl px-4 py-2 text-xs font-bold"
-              style={{
-                backgroundColor: BRAND.soft,
-                color: BRAND.blue,
-                border: `1px solid ${BRAND.borderStrong}`,
-              }}
-            >
-              <i className="bx bx-refresh animate-spin text-sm" />
-              Updating cached sites...
-            </div>
-          )}
 
           {areasLoading && areas.length === 0 ? (
             <div className="flex items-center justify-center py-20">
@@ -731,20 +698,6 @@ export default function RTDReports() {
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
-              {nodesRefreshing && (
-                <span
-                  className="hidden items-center gap-2 rounded-xl px-3 py-2 text-xs font-bold sm:inline-flex"
-                  style={{
-                    backgroundColor: BRAND.soft,
-                    color: BRAND.blue,
-                    border: `1px solid ${BRAND.borderStrong}`,
-                  }}
-                >
-                  <i className="bx bx-refresh animate-spin text-sm" />
-                  Updating cache...
-                </span>
-              )}
-
               <span
                 className="rounded-xl px-3 py-2 text-xs font-black"
                 style={{

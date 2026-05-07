@@ -22,6 +22,7 @@ type PsgcCascadeProps = {
   }) => void
   inputClass?: string
   labelClass?: string
+  required?: boolean
 }
 
 const PSGC_BASE = 'https://psgc.gitlab.io/api'
@@ -50,6 +51,7 @@ export default function PsgcCascade({
   onChange,
   inputClass = defaultInputClass,
   labelClass = defaultLabelClass,
+  required = false,
 }: PsgcCascadeProps) {
   const [regions, setRegions] = useState<PsgcItem[]>([])
   const [provinces, setProvinces] = useState<PsgcItem[]>([])
@@ -251,7 +253,7 @@ export default function PsgcCascade({
           onChange={(e) => handleRegionChange(e.target.value)}
           className={inputClass}
           disabled={loadingRegions}
-          required
+          required={required}
         >
           <option value="">Select Region</option>
           {regions.map((item) => (
@@ -269,7 +271,7 @@ export default function PsgcCascade({
           onChange={(e) => handleProvinceChange(e.target.value)}
           className={inputClass}
           disabled={!region || loadingProvinces}
-          required
+          required={required}
         >
           <option value="">Select Province</option>
           {provinces.map((item) => (
@@ -287,7 +289,7 @@ export default function PsgcCascade({
           onChange={(e) => handleCityChange(e.target.value)}
           className={inputClass}
           disabled={!province || loadingCities}
-          required
+          required={required}
         >
           <option value="">Select City / Municipality</option>
           {cities.map((item) => (
@@ -305,7 +307,7 @@ export default function PsgcCascade({
           onChange={(e) => handleBarangayChange(e.target.value)}
           className={inputClass}
           disabled={!city || loadingBarangays}
-          required
+          required={required}
         >
           <option value="">Select Barangay</option>
           {barangays.map((item) => (

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { getToken, SKYCABLE_API } from '../../lib/auth'
+import { getToken, SKYCABLE_API, API_BASE } from '../../lib/auth'
 import { cacheGet, cacheSet } from '../../lib/cache'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -25,9 +25,72 @@ interface TeardownLog {
     length_meters: number | string
     status: string
     node: { id: number; name: string } | null
+    fromPole: { id: number; pole: { id: number; pole_code: string } | null } | null
+    toPole:   { id: number; pole: { id: number; pole_code: string } | null } | null
   } | null
   team: { id: number; name: string } | null
   lineman: { id: number; first_name: string; last_name: string } | null
+  photos: Array<{ id: number; photo_type: string; image_path: string }>
+}
+
+function imgUrl(path: string) {
+  return `${API_BASE}/api/v1/files/${path}`
+}
+
+function SafeImage({ src, alt, className, style, onClick }: {
+  src: string | null
+  alt?: string
+  className?: string
+  style?: React.CSSProperties
+  onClick?: (e: React.MouseEvent) => void
+}) {
+  const [blobUrl, setBlobUrl] = useState<string | null>(null)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    if (!src) return
+    let alive = true
+    setLoading(true)
+
+    fetch(src, {
+      headers: { 'ngrok-skip-browser-warning': '1' }
+    })
+      .then(r => r.blob())
+      .then(blob => {
+        if (!alive) return
+        const url = URL.createObjectURL(blob)
+        setBlobUrl(url)
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (alive) setLoading(false)
+      })
+
+    return () => {
+      alive = false
+      if (blobUrl) URL.revokeObjectURL(blobUrl)
+    }
+  }, [src])
+
+  if (!src) return null
+
+  if (loading) {
+    return (
+      <div className={`${className} flex items-center justify-center bg-zinc-100 animate-pulse`}>
+        <div className="w-5 h-5 border-2 border-zinc-300 border-t-zinc-500 rounded-full animate-spin" />
+      </div>
+    )
+  }
+
+  return (
+    <img
+      src={blobUrl || ''}
+      alt={alt}
+      className={className}
+      style={style}
+      onClick={onClick}
+    />
+  )
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -152,12 +215,34 @@ export default function TeardownLogs() {
                 onClick={() => navigate(`/reports/teardown-logs/${log.id}`)}
                 className="card dark:bg-zinc-800 dark:border-zinc-700 cursor-pointer hover:ring-2 hover:ring-violet-400/60 hover:shadow-lg hover:shadow-violet-500/10 transition-all group"
               >
-                {/* Photo placeholder strip */}
-                <div className="h-[88px] rounded-t-[inherit] bg-gradient-to-br from-zinc-100 to-zinc-200 dark:from-zinc-700 dark:to-zinc-800 flex items-center justify-center overflow-hidden">
-                  <svg className="text-zinc-300 dark:text-zinc-600 w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 15.75l5.159-5.159a2.25 2.25 0 013.182 0l5.159 5.159m-1.5-1.5l1.409-1.409a2.25 2.25 0 013.182 0l2.909 2.909M3 20.25h18M9.75 9.75a2.25 2.25 0 100-4.5 2.25 2.25 0 000 4.5z" />
-                  </svg>
-                </div>
+                {/* Span strip — from pole → to pole */}
+                {(() => {
+                  const fromPole = log.span?.fromPole || (log.span as any)?.from_pole;
+                  const toPole   = log.span?.toPole   || (log.span as any)?.to_pole;
+                  const fromCode = fromPole?.pole?.pole_code
+                  const toCode   = toPole?.pole?.pole_code
+                  const thumb    = log.photos?.find(p => ['from_before','to_before','from_after'].includes(p.photo_type))
+
+                  return thumb ? (
+                    <div className="h-22 rounded-t-[inherit] overflow-hidden relative">
+                      <SafeImage src={imgUrl(thumb.image_path)} alt="" className="h-full w-full object-cover" />
+                      <div className="absolute inset-0 bg-linear-to-t from-black/60 via-transparent to-transparent" />
+                      {(fromCode || toCode) && (
+                        <div className="absolute bottom-2 left-3 right-3 flex items-center gap-1.5">
+                          <span className="rounded-md bg-black/70 px-1.5 py-0.5 font-mono text-[10px] font-bold text-blue-300 backdrop-blur truncate">{fromCode ?? '?'}</span>
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-white/60"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+                          <span className="rounded-md bg-black/70 px-1.5 py-0.5 font-mono text-[10px] font-bold text-violet-300 backdrop-blur truncate">{toCode ?? '?'}</span>
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="h-22 rounded-t-[inherit] bg-[#0d1117] flex items-center justify-center gap-2 px-4 overflow-hidden">
+                      <span className="rounded-lg bg-blue-500/15 px-2.5 py-1.5 font-mono text-[11px] font-black text-blue-400 truncate max-w-[40%]">{fromCode ?? '—'}</span>
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-zinc-500"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+                      <span className="rounded-lg bg-violet-500/15 px-2.5 py-1.5 font-mono text-[11px] font-black text-violet-400 truncate max-w-[40%]">{toCode ?? '—'}</span>
+                    </div>
+                  )
+                })()}
 
                 {/* Card body */}
                 <div className="p-3.5">

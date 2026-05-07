@@ -19,10 +19,14 @@ import TeamDetail from './pages/subcontractors/TeamDetail'
 import SubcontractorTeams from './pages/subcontractors/SubcontractorTeams'
 import LoadingScreen from './pages/LoadingScreen'
 import Sitelist from './pages/sites/Sitelist'
+import SiteNodes from './pages/sites/SiteNodes'
 import SiteDetail from './pages/sites/SiteDetail'
 import NodeDetail from './pages/nodes/NodeDetail'
+import NodePolesSpans from './pages/nodes/NodePolesSpans'
 import NodeSpans from './pages/nodes/NodeSpans'
 import NodePolesList from './pages/nodes/NodePolesList'
+import PoleDetail from './pages/nodes/PoleDetail'
+import TeardownSubmit from './pages/teardown/TeardownSubmit'
 import Users from './pages/users/Users'
 import Profile from './pages/users/Profile'
 import SpanList from './pages/spans/SpanList'
@@ -129,7 +133,23 @@ function NodePolesListPage() {
   return <Layout><NodePolesList /></Layout>
 }
 
+function PoleDetailPage() {
+  return <Layout><PoleDetail /></Layout>
+}
 
+
+
+function SiteNodesPage() {
+  return <Layout><SiteNodes /></Layout>
+}
+
+function NodePolesSpansPage() {
+  return <Layout><NodePolesSpans /></Layout>
+}
+
+function TeardownSubmitPage() {
+  return <Layout><TeardownSubmit /></Layout>
+}
 
 function AllNapBoxesPage() {
   return <Layout><AllNapBoxes /></Layout>
@@ -198,12 +218,18 @@ export default function App() {
         <Route path="/subcontractors/teams" element={<ProtectedRoute><TeamsPage /></ProtectedRoute>} />
         <Route path="/subcontractors/users" element={<ProtectedRoute><SubconUsersPage /></ProtectedRoute>} />
         <Route path='/sites' element={<ProtectedRoute><SitelistPage/></ProtectedRoute>}/>
-        <Route path='/sites/:siteSlug' element={<ProtectedRoute><SiteDetailPage /></ProtectedRoute>} />
-        <Route path='/sites/:siteSlug/nodes/:nodeSlug' element={<ProtectedRoute><NodeDetailPage /></ProtectedRoute>} />
-        <Route path='/sites/:siteSlug/nodes/:nodeSlug/spans' element={<ProtectedRoute><NodeSpansPage /></ProtectedRoute>} />
-        <Route path='/sites/:siteSlug/nodes/:nodeSlug/poles' element={<ProtectedRoute><NodePolesListPage /></ProtectedRoute>} />
+        <Route path='/sites/:siteId/nodes' element={<ProtectedRoute><SiteNodesPage /></ProtectedRoute>} />
+        <Route path='/sites/:siteId/nodes/:nodeId' element={<ProtectedRoute><NodePolesSpansPage /></ProtectedRoute>} />
+        <Route path='/sites/:siteId/nodes/:nodeId/teardown' element={<ProtectedRoute><TeardownSubmitPage /></ProtectedRoute>} />
+        <Route path='/:siteSlug' element={<ProtectedRoute><SiteDetailPage /></ProtectedRoute>} />
+        <Route path='/:siteSlug/:nodeSlug' element={<ProtectedRoute><NodeDetailPage /></ProtectedRoute>} />
+        <Route path='/:siteSlug/:nodeSlug/spans' element={<ProtectedRoute><NodeSpansPage /></ProtectedRoute>} />
+        <Route path='/:siteSlug/:nodeSlug/poles' element={<ProtectedRoute><NodePolesListPage /></ProtectedRoute>} />
+        <Route path='/:siteSlug/:nodeSlug/:poleCode' element={<ProtectedRoute><PoleDetailPage /></ProtectedRoute>} />
         <Route path='/users' element={<ProtectedRoute><UsersPage/></ProtectedRoute>}/>
         <Route path='/spans' element={<ProtectedRoute><SpanListPage/></ProtectedRoute>}/>
+        <Route path='/spans/:spanSiteSlug' element={<ProtectedRoute><SpanListPage/></ProtectedRoute>}/>
+        <Route path='/spans/:spanSiteSlug/:spanNodeSlug' element={<ProtectedRoute><SpanListPage/></ProtectedRoute>}/>
         <Route path='/dailyreports' element={<ProtectedRoute><DailyReportPage/></ProtectedRoute>}/>
         <Route path='/reports/daily/:nodeId' element={<ProtectedRoute><NodeDailyReportPage/></ProtectedRoute>}/>
         <Route path='/reports/rtd' element={<ProtectedRoute><RTDReportsPage/></ProtectedRoute>}/>

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import FieldCoverageMap, { TILE_LAYERS } from '../components/FieldCoverageMap'
 import type { MapView } from '../components/FieldCoverageMap'
-import { getToken, SKYCABLE_API } from '../lib/auth'
+import { getToken, SKYCABLE_API, GLOBE_API } from '../lib/auth'
 import { cacheGet, cacheSet } from '../lib/cache'
 
 declare const ApexCharts: any
@@ -94,16 +94,38 @@ function initCharts() {
   }
 }
 
-// ── Static mock data ──────────────────────────────────────────────────────────
+// ── NAP survey API types ──────────────────────────────────────────────────────
 
-const napSurveys = [
-  { id: 'NAP-0021', pole: 'PL-8812', area: 'Brgy. Sta. Cruz, Makati',       surveyedBy: 'J. Santos',    total: 12, used: 9,  free: 2, inactive: 1, utilization: 75,  status: 'complete', date: 'Apr 17, 2026' },
-  { id: 'NAP-0019', pole: 'PL-7703', area: 'Brgy. Palanan, Makati',          surveyedBy: 'R. Cruz',      total: 8,  used: 5,  free: 3, inactive: 0, utilization: 63,  status: 'complete', date: 'Apr 16, 2026' },
-  { id: 'NAP-0018', pole: 'PL-8801', area: 'Brgy. Bangkal, Makati',          surveyedBy: 'M. Reyes',     total: 16, used: 14, free: 1, inactive: 1, utilization: 88,  status: 'flagged',  date: 'Apr 15, 2026' },
-  { id: 'NAP-0016', pole: 'PL-7654', area: 'Brgy. Pio del Pilar, Makati',    surveyedBy: 'A. Dela Cruz', total: 12, used: 6,  free: 6, inactive: 0, utilization: 50,  status: 'pending',  date: 'Apr 14, 2026' },
-  { id: 'NAP-0015', pole: 'PL-8790', area: 'Brgy. Comembo, Makati',          surveyedBy: 'J. Santos',    total: 8,  used: 4,  free: 3, inactive: 1, utilization: 50,  status: 'complete', date: 'Apr 13, 2026' },
-  { id: 'NAP-0013', pole: 'PL-7621', area: 'Brgy. Pembo, Makati',            surveyedBy: 'R. Cruz',      total: 16, used: 16, free: 0, inactive: 0, utilization: 100, status: 'flagged',  date: 'Apr 12, 2026' },
-]
+interface ApiNapBoxSurvey {
+  id: number
+  nap_code: string
+  port_count: string
+  status: 'active' | 'inactive' | 'for_removal'
+  updated_at: string
+  pole?: {
+    pole_code: string
+    barangay?: { name: string; city_code: string }
+  }
+}
+
+interface ApiNapPort {
+  port_number: number
+  status: 'active' | 'inactive' | 'free'
+  subscriber_name: string | null
+}
+
+interface NapSurveyRow {
+  id: string
+  pole: string
+  area: string
+  total: number
+  used: number
+  free: number
+  inactive: number
+  utilization: number
+  boxStatus: 'active' | 'inactive' | 'for_removal'
+  date: string
+}
 
 const validationQueue = [
   { id: 'TD-0041', submittedBy: 'J. Santos',    pole: 'PL-8812', span: 'SP-1032', evidence: { before: true,  after: true,  tag: true,  gps: true  }, date: 'Apr 17, 2026' },
@@ -111,17 +133,16 @@ const validationQueue = [
   { id: 'TD-0033', submittedBy: 'M. Reyes',     pole: 'PL-6998', span: 'SP-0875', evidence: { before: true,  after: false, tag: true,  gps: true  }, date: 'Apr 15, 2026' },
   { id: 'TD-0029', submittedBy: 'A. Dela Cruz', pole: 'PL-6540', span: 'SP-0820', evidence: { before: true,  after: true,  tag: true,  gps: false }, date: 'Apr 14, 2026' },
 ]
-
 const surveyBadge: Record<string, string> = {
-  complete: 'bg-green-500/40 text-green-500 dark:bg-green-500/30',
-  pending:  'bg-yellow-500/40 text-yellow-500 dark:bg-yellow-500/30',
-  flagged:  'bg-red-500/40 text-red-500 dark:bg-red-500/30',
+  active:      'bg-green-500/15 text-green-600 ring-1 ring-green-500/20 dark:text-green-400',
+  inactive:    'bg-gray-500/15 text-gray-600 ring-1 ring-gray-500/20 dark:text-gray-400',
+  for_removal: 'bg-red-500/15 text-red-600 ring-1 ring-red-500/20 dark:text-red-400',
 }
 
 const surveyLabel: Record<string, string> = {
-  complete: 'Complete',
-  pending:  'Pending',
-  flagged:  'Flagged',
+  active:      'Active',
+  inactive:    'Inactive',
+  for_removal: 'For Removal',
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -186,13 +207,15 @@ const h = () => ({
 
 export default function Dashboard() {
   const navigate = useNavigate()
-  const [mapView, setMapView]     = useState<MapView>('satellite')
-  const [surveyTab, setSurveyTab] = useState<'all' | 'complete' | 'pending' | 'flagged'>('all')
-  const [nodes, setNodes]         = useState<NodeStat[]>(() => cacheGet<NodeStat[]>('dashboard_nodes') ?? [])
-  const [teardowns, setTeardowns] = useState<TeardownLog[]>(() => cacheGet<TeardownLog[]>('dashboard_tdlogs') ?? [])
-  const [tdLoading, setTdLoading] = useState(() => !cacheGet<TeardownLog[]>('dashboard_tdlogs'))
-  const [pulse, setPulse]         = useState(false)
-  const [dailyDate, setDailyDate] = useState(() => new Date().toISOString().slice(0, 10))
+  const [mapView, setMapView]         = useState<MapView>('satellite')
+  const [surveyTab, setSurveyTab]     = useState<'all' | 'active' | 'inactive' | 'for_removal'>('all')
+  const [nodes, setNodes]             = useState<NodeStat[]>(() => cacheGet<NodeStat[]>('dashboard_nodes') ?? [])
+  const [teardowns, setTeardowns]     = useState<TeardownLog[]>(() => cacheGet<TeardownLog[]>('dashboard_tdlogs') ?? [])
+  const [tdLoading, setTdLoading]     = useState(() => !cacheGet<TeardownLog[]>('dashboard_tdlogs'))
+  const [pulse, setPulse]             = useState(false)
+  const [dailyDate, setDailyDate]     = useState(() => new Date().toISOString().slice(0, 10))
+  const [napSurveys, setNapSurveys]   = useState<NapSurveyRow[]>([])
+  const [napSurveyLoading, setNapSurveyLoading] = useState(true)
 
   useEffect(() => {
     const timer = setTimeout(initCharts, 100)
@@ -221,9 +244,55 @@ export default function Dashboard() {
       .finally(() => { if (!silent) setTdLoading(false) })
   }
 
+  async function fetchNapSurveys() {
+    setNapSurveyLoading(true)
+    try {
+      const headers = { Accept: 'application/json', 'ngrok-skip-browser-warning': '1', Authorization: `Bearer ${getToken()}` }
+      const res = await fetch(`${GLOBE_API}/poles/0/nap-boxes?per_page=20`, { headers })
+      const data = await res.json()
+      const boxes: ApiNapBoxSurvey[] = Array.isArray(data) ? data : (data?.data ?? [])
+
+      const portsResults = await Promise.all(
+        boxes.map((b: ApiNapBoxSurvey) =>
+          fetch(`${GLOBE_API}/nap-boxes/${b.id}/ports`, { headers })
+            .then(r => r.json() as Promise<ApiNapPort[]>)
+            .catch(() => [] as ApiNapPort[])
+        )
+      )
+
+      const rows: NapSurveyRow[] = boxes.map((b: ApiNapBoxSurvey, i: number) => {
+        const ports: ApiNapPort[] = Array.isArray(portsResults[i]) ? portsResults[i] : []
+        const total    = parseInt(b.port_count) || 0
+        const used     = ports.filter(p => p.status === 'active').length
+        const inactive = ports.filter(p => p.status === 'inactive').length
+        const free     = total - used - inactive
+        const util     = total > 0 ? Math.round((used / total) * 100) : 0
+        const barangay = b.pole?.barangay?.name ?? ''
+        return {
+          id:         b.nap_code,
+          pole:       b.pole?.pole_code ?? `Pole #${b.id}`,
+          area:       barangay,
+          total,
+          used,
+          free:       Math.max(free, 0),
+          inactive,
+          utilization: util,
+          boxStatus:  b.status,
+          date:       new Date(b.updated_at).toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: 'numeric' }),
+        }
+      })
+      setNapSurveys(rows)
+    } catch (_) {
+      // silently fail — table stays empty
+    } finally {
+      setNapSurveyLoading(false)
+    }
+  }
+
   useEffect(() => {
     fetchNodes()
     fetchTeardowns()
+    fetchNapSurveys()
     const iv = setInterval(() => fetchTeardowns(true), 30_000)
     return () => clearInterval(iv)
   }, [])
@@ -237,8 +306,11 @@ export default function Dashboard() {
     return { total, completed, inProgress, pct, pendingTd }
   }, [nodes, teardowns])
 
-  const recentTeardowns  = useMemo(() => teardowns.slice(0, 20), [teardowns])
-  const filteredSurveys  = surveyTab === 'all' ? napSurveys : napSurveys.filter(s => s.status === surveyTab)
+  const recentTeardowns = useMemo(() => teardowns.slice(0, 20), [teardowns])
+  const filteredSurveys = useMemo(
+    () => surveyTab === 'all' ? napSurveys : napSurveys.filter(s => s.boxStatus === surveyTab),
+    [napSurveys, surveyTab]
+  )
 
   const dailyApproved = useMemo(
     () => teardowns.filter(l => l.status === 'backend_approved' && l.created_at.slice(0, 10) === dailyDate),
@@ -493,124 +565,200 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Row 4 — NAP Box Latest Survey */}
+      {/* Row 4 — NAP Box Latest Survey + Validation Queue */}
       <div className="grid grid-cols-12 gap-6 gap-y-0 2xl:gap-6 mt-4">
-        <div className="col-span-12">
-          <div className="card dark:bg-zinc-800 dark:border-zinc-600">
+        {/* NAP Box Latest Survey */}
+        <div className="col-span-12 xl:col-span-6">
+          <div className="card dark:bg-zinc-800 dark:border-zinc-600 card-h-100 overflow-hidden">
             <div className="nav-tabs border-b-tabs">
-              <div className="flex pb-0 border-b card-body border-gray-50 dark:border-zinc-700 items-center">
-                <div className="grow">
+              <div className="flex flex-wrap gap-3 pb-0 border-b card-body border-gray-50 dark:border-zinc-700 items-center">
+                <div className="grow min-w-0">
                   <h5 className="text-gray-800 text-15 dark:text-gray-100">NAP Box Latest Survey</h5>
                   <p className="text-xs text-gray-500 dark:text-zinc-400 mt-0.5">Most recent pole survey submissions</p>
                 </div>
-                <ul className="flex nav" role="tablist">
-                  {([['all','All'],['complete','Complete'],['pending','Pending'],['flagged','Flagged']] as const).map(([v, l]) => (
+
+                <ul className="flex flex-wrap gap-1 nav" role="tablist">
+                  {([['all', 'All'], ['active', 'Active'], ['inactive', 'Inactive'], ['for_removal', 'For Removal']] as const).map(([v, l]) => (
                     <li key={v} className="nav-item">
-                      <a onClick={() => setSurveyTab(v)}
-                        className={`inline-block px-4 pb-3 font-medium dark:text-gray-100 cursor-pointer ${surveyTab === v ? 'active' : ''}`}>
+                      <button
+                        type="button"
+                        onClick={() => setSurveyTab(v)}
+                        className={`rounded-full px-3 py-1.5 text-xs font-semibold transition-colors ${
+                          surveyTab === v
+                            ? 'bg-violet-600 text-white shadow-sm'
+                            : 'bg-gray-100 text-gray-500 hover:bg-violet-50 hover:text-violet-600 dark:bg-zinc-700 dark:text-zinc-300 dark:hover:bg-violet-500/20'
+                        }`}
+                      >
                         {l}
-                      </a>
+                      </button>
                     </li>
                   ))}
                 </ul>
               </div>
-              <div className="py-3">
-                <div className="px-3" data-simplebar style={{ maxHeight: 352 }}>
-                  <table className="table w-full">
-                    <thead>
-                      <tr className="border-b border-gray-50 dark:border-zinc-700">
-                        {['NAP Box','Pole','Area','Surveyed By','Slots','Utilization','Date','Status'].map(h => (
-                          <th key={h} className="p-3 text-left text-xs font-medium text-gray-600 dark:text-zinc-400">{h}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {filteredSurveys.map(row => (
-                        <tr key={row.id} className="border-b border-gray-50/60 dark:border-zinc-700/60 last:border-0">
-                          <td className="p-3 font-mono font-medium text-violet-500 text-sm">{row.id}</td>
-                          <td className="p-3 text-sm text-gray-700 dark:text-gray-100">{row.pole}</td>
-                          <td className="p-3 text-xs text-gray-600 dark:text-zinc-100 max-w-35 truncate">{row.area}</td>
-                          <td className="p-3 text-xs text-gray-600 dark:text-zinc-100 whitespace-nowrap">{row.surveyedBy}</td>
-                          <td className="p-3">
-                            <div className="flex gap-1 text-[10px] font-medium">
-                              <span className="px-1.5 py-0.5 rounded bg-violet-500/20 text-violet-500">{row.used}U</span>
-                              <span className="px-1.5 py-0.5 rounded bg-green-500/20 text-green-500">{row.free}F</span>
-                              {row.inactive > 0 && <span className="px-1.5 py-0.5 rounded bg-red-500/20 text-red-400">{row.inactive}X</span>}
-                            </div>
-                          </td>
-                          <td className="p-3">
-                            <div className="flex items-center gap-2 min-w-20">
-                              <div className="grow h-1.5 rounded-full bg-gray-200 dark:bg-zinc-600">
-                                <div
-                                  className={`h-1.5 rounded-full ${row.utilization >= 90 ? 'bg-red-500' : row.utilization >= 60 ? 'bg-violet-500' : 'bg-green-500'}`}
-                                  style={{ width: `${row.utilization}%` }}
-                                />
-                              </div>
-                              <span className="text-[11px] font-medium text-gray-700 dark:text-zinc-100 whitespace-nowrap">{row.utilization}%</span>
-                            </div>
-                          </td>
-                          <td className="p-3 text-xs text-gray-600 dark:text-zinc-100 whitespace-nowrap">{row.date}</td>
-                          <td className="p-3">
-                            <span className={`text-[10px] py-[1px] px-2 rounded font-medium ${surveyBadge[row.status] ?? ''}`}>
-                              {surveyLabel[row.status] ?? row.status}
-                            </span>
-                          </td>
+
+              <div className="p-3">
+                <div className="overflow-hidden rounded-xl border border-gray-100 bg-white/60 dark:border-zinc-700 dark:bg-zinc-800/40">
+                  <div className="w-full overflow-x-auto" style={{ maxHeight: 390 }}>
+                    {napSurveyLoading ? (
+                      <div className="flex items-center justify-center py-16">
+                        <div className="w-7 h-7 border-2 border-violet-500 border-t-transparent rounded-full animate-spin" />
+                      </div>
+                    ) : filteredSurveys.length === 0 ? (
+                      <div className="flex flex-col items-center justify-center py-14 text-gray-400 dark:text-zinc-500">
+                        <i className="bx bx-box text-3xl mb-2" />
+                        <p className="text-sm">No NAP boxes found.</p>
+                      </div>
+                    ) : (
+                    <table className="w-full min-w-[900px] border-separate border-spacing-0">
+                      <thead>
+                        <tr>
+                          {['NAP Box', 'Pole', 'Area', 'Slots', 'Utilization', 'Last Updated', 'Status'].map(col => (
+                            <th
+                              key={col}
+                              className="sticky top-0 z-10 whitespace-nowrap bg-gray-50/95 px-4 py-3 text-left text-[11px] font-bold uppercase tracking-wide text-gray-500 backdrop-blur dark:bg-zinc-900/90 dark:text-zinc-400"
+                            >
+                              {col}
+                            </th>
+                          ))}
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                      </thead>
+
+                      <tbody>
+                        {filteredSurveys.map(row => (
+                          <tr
+                            key={row.id}
+                            className="group border-b border-gray-100/80 transition-colors last:border-0 hover:bg-violet-50/50 dark:border-zinc-700/70 dark:hover:bg-violet-900/10"
+                          >
+                            <td className="px-4 py-3 align-middle whitespace-nowrap font-mono text-sm font-bold text-violet-500">{row.id}</td>
+                            <td className="px-4 py-3 align-middle whitespace-nowrap font-mono text-sm font-bold text-gray-700 dark:text-zinc-100">{row.pole}</td>
+                            <td className="px-4 py-3 align-middle max-w-44 truncate text-xs text-gray-600 dark:text-zinc-300">{row.area || '—'}</td>
+
+                            <td className="px-4 py-3 align-middle">
+                              <div className="flex flex-nowrap gap-1 whitespace-nowrap text-[10px] font-bold">
+                                <span className="rounded-full bg-violet-500/15 px-2 py-1 text-violet-500">{row.used} used</span>
+                                <span className="rounded-full bg-green-500/15 px-2 py-1 text-green-500">{row.free} free</span>
+                                {row.inactive > 0 && (
+                                  <span className="rounded-full bg-amber-500/15 px-2 py-1 text-amber-500">{row.inactive} inactive</span>
+                                )}
+                              </div>
+                            </td>
+
+                            <td className="px-4 py-3 align-middle">
+                              <div className="flex items-center gap-2 min-w-24">
+                                <div className="h-2 grow overflow-hidden rounded-full bg-gray-200 dark:bg-zinc-600">
+                                  <div
+                                    className={`h-2 rounded-full ${
+                                      row.utilization >= 90
+                                        ? 'bg-red-500'
+                                        : row.utilization >= 60
+                                          ? 'bg-violet-500'
+                                          : 'bg-green-500'
+                                    }`}
+                                    style={{ width: `${row.utilization}%` }}
+                                  />
+                                </div>
+                                <span className="whitespace-nowrap text-[11px] font-bold text-gray-700 dark:text-zinc-100">
+                                  {row.utilization}%
+                                </span>
+                              </div>
+                            </td>
+
+                            <td className="px-4 py-3 align-middle whitespace-nowrap text-xs text-gray-600 dark:text-zinc-300">{row.date}</td>
+
+                            <td className="px-4 py-3 align-middle">
+                              <span className={`inline-flex rounded-full px-2.5 py-1 text-[10px] font-bold ${surveyBadge[row.boxStatus] ?? ''}`}>
+                                {surveyLabel[row.boxStatus] ?? row.boxStatus}
+                              </span>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    )}
+                  </div>
                 </div>
               </div>
             </div>
           </div>
         </div>
-      </div>
 
-      {/* Row 5 — Validation Queue */}
-      <div className="grid grid-cols-1 gap-6 gap-y-0 2xl:gap-6 mt-4">
-        <div className="card dark:bg-zinc-800 dark:border-zinc-600">
-          <div className="nav-tabs border-b-tabs">
-            <div className="flex pb-0 border-b card-body border-gray-50 dark:border-zinc-700">
-              <h5 className="grow mr-2 text-gray-800 text-15 dark:text-gray-100">Validation Queue</h5>
-              <span className="text-[10px] py-[1px] px-2 rounded font-medium bg-yellow-500/40 text-yellow-500 dark:bg-yellow-500/30 self-center">
-                {validationQueue.length} pending
-              </span>
-            </div>
-            <div className="py-3">
-              <div className="px-3" data-simplebar style={{ maxHeight: 352 }}>
-                <table className="table w-full">
-                  <thead>
-                    <tr className="border-b border-gray-50 dark:border-zinc-700">
-                      {['Ticket','Submitted By','Pole','Span','Before','After','Pole Tag','GPS Map','Date','Action'].map(h => (
-                        <th key={h} className="p-3 text-left text-xs font-medium text-gray-600 dark:text-zinc-400">{h}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {validationQueue.map(row => (
-                      <tr key={row.id}>
-                        <td className="p-3 font-medium text-violet-500 text-sm">{row.id}</td>
-                        <td className="p-3 text-sm text-gray-700 dark:text-gray-100">{row.submittedBy}</td>
-                        <td className="p-3 text-sm text-gray-700 dark:text-gray-100">{row.pole}</td>
-                        <td className="p-3 text-sm text-gray-700 dark:text-gray-100">{row.span}</td>
-                        {(['before','after','tag','gps'] as const).map(ev => (
-                          <td key={ev} className="p-3 text-center">
-                            {row.evidence[ev]
-                              ? <i className="bx bx-check-circle text-green-500 text-lg"></i>
-                              : <i className="bx bx-x-circle text-red-500 text-lg"></i>}
-                          </td>
+        {/* Validation Queue */}
+        <div className="col-span-12 xl:col-span-6">
+          <div className="card dark:bg-zinc-800 dark:border-zinc-600 card-h-100 overflow-hidden">
+            <div className="nav-tabs border-b-tabs">
+              <div className="flex pb-0 border-b card-body border-gray-50 dark:border-zinc-700 items-center gap-3">
+                <div className="grow min-w-0">
+                  <h5 className="text-gray-800 text-15 dark:text-gray-100">Validation Queue</h5>
+                  <p className="text-xs text-gray-500 dark:text-zinc-400 mt-0.5">Evidence review before backend approval</p>
+                </div>
+
+                <span className="shrink-0 rounded-full bg-yellow-500/15 px-2.5 py-1 text-xs font-bold text-yellow-600 ring-1 ring-yellow-500/20 dark:text-yellow-400">
+                  {validationQueue.length} pending
+                </span>
+              </div>
+
+              <div className="p-3">
+                <div className="overflow-hidden rounded-xl border border-gray-100 bg-white/60 dark:border-zinc-700 dark:bg-zinc-800/40">
+                  <div className="overflow-x-auto" data-simplebar style={{ maxHeight: 390 }}>
+                    <table className="w-full min-w-[880px] border-separate border-spacing-0">
+                      <thead>
+                        <tr>
+                          {['Ticket', 'Submitted By', 'Pole', 'Span', 'Before', 'After', 'Pole Tag', 'GPS Map', 'Date', 'Action'].map(h => (
+                            <th
+                              key={h}
+                              className={`sticky top-0 z-10 bg-gray-50/95 px-4 py-3 text-left text-[11px] font-bold uppercase tracking-wide text-gray-500 backdrop-blur dark:bg-zinc-900/90 dark:text-zinc-400 ${
+                                ['Before', 'After', 'Pole Tag', 'GPS Map'].includes(h) ? 'text-center' : ''
+                              }`}
+                            >
+                              {h}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+
+                      <tbody>
+                        {validationQueue.map(row => (
+                          <tr
+                            key={row.id}
+                            className="group border-b border-gray-100/80 transition-colors last:border-0 hover:bg-violet-50/50 dark:border-zinc-700/70 dark:hover:bg-violet-900/10"
+                          >
+                            <td className="px-4 py-3 align-middle font-mono text-sm font-bold text-violet-500">{row.id}</td>
+                            <td className="px-4 py-3 align-middle whitespace-nowrap text-sm font-semibold text-gray-700 dark:text-zinc-100">{row.submittedBy}</td>
+                            <td className="px-4 py-3 align-middle font-mono text-xs text-gray-700 dark:text-zinc-100">{row.pole}</td>
+                            <td className="px-4 py-3 align-middle font-mono text-xs text-gray-700 dark:text-zinc-100">{row.span}</td>
+
+                            {(['before', 'after', 'tag', 'gps'] as const).map(ev => (
+                              <td key={ev} className="px-4 py-3 align-middle text-center">
+                                {row.evidence[ev] ? (
+                                  <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-green-500/10 text-green-500">
+                                    <i className="bx bx-check text-lg"></i>
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-red-500/10 text-red-500">
+                                    <i className="bx bx-x text-lg"></i>
+                                  </span>
+                                )}
+                              </td>
+                            ))}
+
+                            <td className="px-4 py-3 align-middle whitespace-nowrap text-xs text-gray-600 dark:text-zinc-300">{row.date}</td>
+
+                            <td className="px-4 py-3 align-middle">
+                              <div className="flex gap-1.5 whitespace-nowrap">
+                                <button className="rounded-full bg-green-500 px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-green-600">
+                                  Approve
+                                </button>
+                                <button className="rounded-full bg-red-500 px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-red-600">
+                                  Reject
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
                         ))}
-                        <td className="p-3 text-xs text-gray-600 dark:text-zinc-100 whitespace-nowrap">{row.date}</td>
-                        <td className="p-3">
-                          <div className="flex gap-1">
-                            <button className="px-2 py-1 text-xs rounded bg-green-500 text-white border-transparent btn hover:bg-green-600">Approve</button>
-                            <button className="px-2 py-1 text-xs rounded bg-red-500 text-white border-transparent btn hover:bg-red-600">Reject</button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
               </div>
             </div>
           </div>

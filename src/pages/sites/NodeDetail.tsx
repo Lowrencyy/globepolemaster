@@ -25,7 +25,7 @@ export default function NodeDetail() {
         <svg className="h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
           <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
         </svg>
-        <Link to={`/sites/${regionSlug}`} className="hover:text-indigo-600 dark:hover:text-indigo-400 transition">
+        <Link to={`/${regionSlug}`} className="hover:text-indigo-600 dark:hover:text-indigo-400 transition">
           {regionLabel}
         </Link>
         <svg className="h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>

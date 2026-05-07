@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { getToken, SKYCABLE_API } from '../../lib/auth'
+import { getToken, SKYCABLE_API, API_BASE } from '../../lib/auth'
 import { cacheGet, cacheSet } from '../../lib/cache'
 
 declare const L: any
@@ -26,6 +26,12 @@ interface TeardownDetail {
   duration_minutes: number | null
   expected_cable: number | string
   actual_cable: number | string
+  nodes_collected: number | string
+  amplifiers_collected: number | string
+  extenders_collected: number | string
+  tsc_collected: number | string
+  powersupply_collected: number | string
+  ps_housing_collected: number | string
   status: string
   offline_mode: boolean
   notes: string | null
@@ -41,7 +47,10 @@ interface TeardownDetail {
   span: {
     id: number
     span_code: string | null
-    length_meters: number | string
+    length_meters: number | string | null
+    strand_length: number | string | null
+    number_of_runs: number | string | null
+    actual_cable: number | string | null
     status: string
     node_id: number
     fromPole: {
@@ -61,6 +70,17 @@ interface TeardownDetail {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+function spanLengthM(span: TeardownDetail['span']): number | null {
+  if (!span) return null
+  const ac = Number(span.actual_cable ?? 0)
+  if (ac > 0) return ac
+  const sl = Number(span.strand_length ?? 0)
+  const runs = Number(span.number_of_runs ?? 1)
+  if (sl > 0) return sl * runs
+  const lm = Number(span.length_meters ?? 0)
+  return lm > 0 ? lm : null
+}
 
 function fmt(n: string | number | null | undefined, dec = 2) {
   return Number(n ?? 0)
@@ -90,9 +110,58 @@ function statusTone(ok: boolean) {
     : 'bg-orange-100 text-orange-800 border border-orange-200 dark:bg-orange-900/25 dark:text-orange-300 dark:border-orange-800/60'
 }
 
-const COMP_LABELS: Record<string, string> = {
-  node: 'Node', amplifier: 'Amplifier', extender: 'Extender',
-  tsc: 'TSC', cable: 'Cable', powersupply: 'Power Supply', powersupply_case: 'PS Case',
+
+function SafeImage({ src, alt, className, style, onClick }: {
+  src: string
+  alt?: string
+  className?: string
+  style?: React.CSSProperties
+  onClick?: (e: React.MouseEvent) => void
+}) {
+  const [blobUrl, setBlobUrl] = useState<string | null>(null)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    let alive = true
+    setLoading(true)
+
+    fetch(src, {
+      headers: { 'ngrok-skip-browser-warning': '1' }
+    })
+      .then(r => r.blob())
+      .then(blob => {
+        if (!alive) return
+        const url = URL.createObjectURL(blob)
+        setBlobUrl(url)
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (alive) setLoading(false)
+      })
+
+    return () => {
+      alive = false
+      if (blobUrl) URL.revokeObjectURL(blobUrl)
+    }
+  }, [src])
+
+  if (loading) {
+    return (
+      <div className={`${className} flex items-center justify-center bg-zinc-100 dark:bg-zinc-800 animate-pulse`}>
+        <div className="w-5 h-5 border-2 border-zinc-300 border-t-zinc-500 rounded-full animate-spin" />
+      </div>
+    )
+  }
+
+  return (
+    <img
+      src={blobUrl || ''}
+      alt={alt}
+      className={className}
+      style={style}
+      onClick={onClick}
+    />
+  )
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -140,10 +209,13 @@ export default function TeardownLogDetail() {
     if (!log || !mapRef.current || mapInstance.current) return
     if (typeof L === 'undefined') return
 
-    const fromLat = Number(log.span?.fromPole?.pole?.lat ?? 0)
-    const fromLng = Number(log.span?.fromPole?.pole?.lng ?? 0)
-    const toLat   = Number(log.span?.toPole?.pole?.lat ?? 0)
-    const toLng   = Number(log.span?.toPole?.pole?.lng ?? 0)
+    const fromPole = log.span?.fromPole || (log.span as any)?.from_pole
+    const toPole   = log.span?.toPole   || (log.span as any)?.to_pole
+
+    const fromLat = Number(fromPole?.pole?.lat ?? 0)
+    const fromLng = Number(fromPole?.pole?.lng ?? 0)
+    const toLat   = Number(toPole?.pole?.lat ?? 0)
+    const toLng   = Number(toPole?.pole?.lng ?? 0)
     const hasGps  = (fromLat && fromLng) || (toLat && toLng)
     if (!hasGps) return
 
@@ -186,9 +258,20 @@ export default function TeardownLogDetail() {
     }
 
     if (fromLat && fromLng && toLat && toLng) {
+      const spanLenVal = spanLengthM(log.span)
       const line = L.polyline([[fromLat, fromLng], [toLat, toLng]], {
         color: '#2563eb', weight: 5, opacity: 0.88, dashArray: '10 8',
       }).addTo(map)
+
+      if (spanLenVal !== null) {
+        line.bindTooltip(
+          `<div style="background:#1e3a5f;color:#93c5fd;font-weight:800;font-size:12px;padding:5px 10px;border-radius:8px;border:1px solid #2563eb40">
+            ${spanLenVal.toLocaleString()} m
+          </div>`,
+          { permanent: true, direction: 'center', className: 'span-length-tooltip', offset: [0, 0] }
+        )
+      }
+
       lineRef.current = line
     }
 
@@ -225,9 +308,11 @@ export default function TeardownLogDetail() {
     )
   }
 
-  const fromCode   = log.span?.fromPole?.pole?.pole_code ?? '?'
-  const toCode     = log.span?.toPole?.pole?.pole_code   ?? '?'
-  const spanCode   = log.span?.span_code ?? `Log #${log.id}`
+  const fromPole   = log.span?.fromPole || (log.span as any)?.from_pole
+  const toPole     = log.span?.toPole   || (log.span as any)?.to_pole
+  const fromCode   = fromPole?.pole?.pole_code ?? (fromPole as any)?.pole?.pole_code ?? '?'
+  const toCode     = toPole?.pole?.pole_code   ?? (toPole as any)?.pole?.pole_code   ?? '?'
+  const spanCode   = log.span?.span_code ?? (log.span as any)?.span_code ?? `Log #${log.id}`
   const cableCol   = Number(log.actual_cable ?? 0)
   const cableExp   = Number(log.expected_cable ?? 0)
   const cablePct   = cableExp > 0 ? Math.min(100, Math.round((cableCol / cableExp) * 100)) : cableCol > 0 ? 100 : 0
@@ -235,22 +320,27 @@ export default function TeardownLogDetail() {
 
   const linemanName = log.lineman ? `${log.lineman.first_name} ${log.lineman.last_name}` : '—'
   const teamName    = log.team?.name ?? '—'
-  const statusUpper = (log.status ?? 'pending').replace(/_/g, ' ').toUpperCase()
+  const statusUpper = (log.status ?? 'pending').replace(/_/g, ' ').toUpperCase().replace('CLEARED', 'COMPLETED')
 
-  const fromLat = Number(log.span?.fromPole?.pole?.lat ?? 0)
-  const fromLng = Number(log.span?.fromPole?.pole?.lng ?? 0)
-  const toLat   = Number(log.span?.toPole?.pole?.lat ?? 0)
-  const toLng   = Number(log.span?.toPole?.pole?.lng ?? 0)
-  const hasGps  = (fromLat && fromLng) || (toLat && toLng)
+  const fromLat  = Number(fromPole?.pole?.lat ?? 0)
+  const fromLng  = Number(fromPole?.pole?.lng ?? 0)
+  const toLat    = Number(toPole?.pole?.lat ?? 0)
+  const toLng    = Number(toPole?.pole?.lng ?? 0)
+  const hasGps   = (fromLat && fromLng) || (toLat && toLng)
+  const spanLen  = spanLengthM(log.span)
 
   const imgFor = (type: string) => log.photos?.find(p => p.photo_type === type)?.image_path ?? null
-  const imgUrl = (path: string) => `${SKYCABLE_API.replace('/api/v1/skycable', '')}/api/files/${path}`
+  const imgUrl = (path: string | null | undefined) => {
+    if (!path) return ''
+    return `${API_BASE}/api/v1/files/${path}`
+  }
 
   // Components from span (exclude cable — shown separately)
   const spanComponents = (log.span?.components ?? []).filter(c => c.component_type !== 'cable')
 
   return (
     <div className="flex flex-col gap-5 pb-10">
+      <style>{`.span-length-tooltip{background:transparent!important;border:none!important;box-shadow:none!important;padding:0!important}.span-length-tooltip::before{display:none!important}`}</style>
       <button
         onClick={() => navigate('/reports/teardown-logs')}
         className="inline-flex items-center gap-2 self-start rounded-2xl border border-zinc-200 bg-white px-4 py-2.5 text-sm font-semibold text-zinc-700 shadow-sm transition hover:-translate-y-px hover:shadow-md dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200"
@@ -290,26 +380,32 @@ export default function TeardownLogDetail() {
               )}
             </div>
 
-            <div>
-              <div className="flex items-center gap-3">
-                <span className="text-4xl font-black tracking-tight text-white xl:text-5xl">{fromCode}</span>
-                <span className="flex items-center justify-center rounded-2xl bg-white/8 px-3 py-1.5">
-                  <svg width="22" height="22" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5} className="text-zinc-400">
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M5 12h14M13 6l6 6-6 6" />
-                  </svg>
-                </span>
-                <span className="text-4xl font-black tracking-tight text-white xl:text-5xl">{toCode}</span>
-              </div>
-
-              <div className="mt-3 flex flex-wrap items-center gap-2">
-                <span className="rounded-xl bg-white/6 px-2.5 py-1 text-xs font-semibold text-zinc-400">{spanCode}</span>
-                {log.span?.length_meters && (
-                  <span className="rounded-xl bg-white/6 px-2.5 py-1 text-xs font-semibold text-zinc-400">
-                    {Number(log.span.length_meters).toLocaleString()} m span
+              <div>
+                <div className="flex items-center gap-3">
+                  <span className="text-4xl font-black tracking-tight text-white xl:text-5xl">{fromCode}</span>
+                  <span className="flex items-center justify-center rounded-2xl bg-white/8 px-3 py-1.5">
+                    <svg width="22" height="22" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5} className="text-zinc-400">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M5 12h14M13 6l6 6-6 6" />
+                    </svg>
                   </span>
-                )}
+                  <span className="text-4xl font-black tracking-tight text-white xl:text-5xl">{toCode}</span>
+                </div>
+
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <span className="rounded-xl bg-white/6 px-2.5 py-1 text-xs font-semibold text-zinc-400">{spanCode}</span>
+                  {spanLen !== null && (
+                    <span className="rounded-xl bg-white/6 px-2.5 py-1 text-xs font-semibold text-zinc-400">
+                      {spanLen.toLocaleString()} m cable
+                    </span>
+                  )}
+                  {log.captured_lat && log.captured_lng && (
+                    <span className="rounded-xl bg-emerald-500/20 px-2.5 py-1 text-xs font-bold text-emerald-400 ring-1 ring-emerald-500/30">
+                      <i className="bx bx-map-pin mr-1" />
+                      {Number(log.captured_lat).toFixed(6)}, {Number(log.captured_lng).toFixed(6)}
+                    </span>
+                  )}
+                </div>
               </div>
-            </div>
           </div>
 
           <div className="grid grid-cols-2 gap-px border-t border-white/6 xl:border-l xl:border-t-0 xl:grid-cols-1 xl:w-64">
@@ -376,9 +472,9 @@ export default function TeardownLogDetail() {
                       <span className="text-sm font-bold text-zinc-700 dark:text-zinc-200">Live span map</span>
                     </div>
                     <div className="flex items-center gap-2">
-                      {log.span?.length_meters && (
+                      {spanLen !== null && (
                         <span className="rounded-xl bg-white px-2.5 py-1 text-[11px] font-semibold text-zinc-600 shadow-sm dark:bg-zinc-900 dark:text-zinc-300">
-                          {Number(log.span.length_meters).toLocaleString()} m
+                          {spanLen.toLocaleString()} m cable
                         </span>
                       )}
                       <button
@@ -391,10 +487,27 @@ export default function TeardownLogDetail() {
                   </div>
                   <div className="relative">
                     <div ref={mapRef} className="h-[320px] w-full xl:h-[400px]" />
-                    <div className="pointer-events-none absolute left-3 top-3 flex flex-wrap gap-2">
+
+                    {/* Span route summary — top center */}
+                    <div className="pointer-events-none absolute left-1/2 top-3 -translate-x-1/2">
+                      <div className="inline-flex items-center gap-1.5 rounded-2xl bg-black/70 px-3 py-1.5 backdrop-blur shadow-lg">
+                        <span className="rounded-lg bg-blue-500/30 px-2 py-0.5 font-mono text-[11px] font-bold text-blue-300">{fromCode}</span>
+                        <span className="text-zinc-500">→</span>
+                        {spanLen !== null && (
+                          <span className="rounded-lg bg-emerald-500/25 px-2 py-0.5 text-[11px] font-bold text-emerald-300">{spanLen.toLocaleString()} m</span>
+                        )}
+                        <span className="text-zinc-500">→</span>
+                        <span className="rounded-lg bg-violet-500/30 px-2 py-0.5 font-mono text-[11px] font-bold text-violet-300">{toCode}</span>
+                      </div>
+                    </div>
+
+                    {/* From/To labels — top left */}
+                    <div className="pointer-events-none absolute left-3 top-12 flex flex-col gap-1.5">
                       <MapChip tone="blue">From: {fromCode}</MapChip>
                       <MapChip tone="violet">To: {toCode}</MapChip>
                     </div>
+
+                    {/* GPS coordinates — bottom */}
                     <div className="absolute bottom-3 left-3 right-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                       <div className="rounded-xl bg-black/65 px-3 py-2 text-xs font-medium text-white backdrop-blur">
                         {fromLat && fromLng ? `From ${fromLat.toFixed(6)}, ${fromLng.toFixed(6)}` : 'From GPS unavailable'}
@@ -431,39 +544,54 @@ export default function TeardownLogDetail() {
           </div>
 
           <div className="grid gap-3 p-5">
-            {spanComponents.length === 0 && (
-              <p className="text-sm text-zinc-400 dark:text-zinc-500 text-center py-6">No component data for this span.</p>
-            )}
-            {spanComponents.map(comp => {
-              const col  = Number(comp.actual_count ?? 0)
-              const exp  = Number(comp.expected_count ?? 0)
-              const ok   = col >= exp
-              const short = Math.max(0, exp - col)
-              const label = COMP_LABELS[comp.component_type] ?? comp.component_type
+            {(() => {
+              const hardware = [
+                { type: 'node',      label: 'Node',        val: Number(log.nodes_collected ?? 0) },
+                { type: 'amplifier', label: 'Amplifier',   val: Number(log.amplifiers_collected ?? 0) },
+                { type: 'extender',  label: 'Extender',    val: Number(log.extenders_collected ?? 0) },
+                { type: 'tsc',       label: 'TSC',         val: Number(log.tsc_collected ?? 0) },
+                { type: 'powersupply', label: 'Power Supply', val: Number(log.powersupply_collected ?? 0) },
+                { type: 'powersupply_case', label: 'PS Housing', val: Number(log.ps_housing_collected ?? 0) },
+              ].filter(h => h.val > 0 || spanComponents.some(c => c.component_type === h.type))
 
-              return (
-                <div
-                  key={comp.id}
-                  className="grid items-center gap-3 rounded-[22px] border border-zinc-200 bg-gradient-to-r from-white to-zinc-50 px-4 py-4 shadow-sm dark:border-zinc-700 dark:from-zinc-900 dark:to-zinc-800 sm:grid-cols-[52px_minmax(0,1fr)_90px_120px]"
-                >
-                  <div className={`flex h-11 w-11 items-center justify-center rounded-2xl text-sm font-black ${ok ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300' : 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-300'}`}>
-                    {label.charAt(0)}
+              if (hardware.length === 0 && spanComponents.length === 0) {
+                return <p className="text-sm text-zinc-400 dark:text-zinc-500 text-center py-6">No component data recorded.</p>
+              }
+
+              return hardware.map(h => {
+                const spanComp = spanComponents.find(c => c.component_type === h.type)
+                const exp      = Number(spanComp?.expected_count ?? 0)
+                const col      = h.val
+                const ok       = exp > 0 ? col >= exp : true
+                const short    = Math.max(0, exp - col)
+                const unit     = spanComp?.unit ?? 'pcs'
+
+                return (
+                  <div
+                    key={h.type}
+                    className="grid items-center gap-3 rounded-[22px] border border-zinc-200 bg-gradient-to-r from-white to-zinc-50 px-4 py-4 shadow-sm dark:border-zinc-700 dark:from-zinc-900 dark:to-zinc-800 sm:grid-cols-[52px_minmax(0,1fr)_90px_120px]"
+                  >
+                    <div className={`flex h-11 w-11 items-center justify-center rounded-2xl text-sm font-black ${ok ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300' : 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-300'}`}>
+                      {h.label.charAt(0)}
+                    </div>
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-black text-zinc-900 dark:text-zinc-100">{h.label}</div>
+                      <div className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
+                        {exp > 0 ? `Expected ${exp} ${unit}` : 'Not in span design'}
+                      </div>
+                    </div>
+                    <div className="text-right text-lg font-black text-zinc-900 dark:text-zinc-100">
+                      {col} <span className="text-zinc-400">{exp > 0 ? `/ ${exp}` : ''}</span>
+                    </div>
+                    <div className="flex justify-end">
+                      <span className={`whitespace-nowrap rounded-full px-3 py-1.5 text-xs font-bold ${statusTone(ok)}`}>
+                        {exp > 0 ? (ok ? 'Complete' : `Short by ${short}`) : 'Recovered'}
+                      </span>
+                    </div>
                   </div>
-                  <div className="min-w-0">
-                    <div className="truncate text-sm font-black text-zinc-900 dark:text-zinc-100">{label}</div>
-                    <div className="text-xs font-medium text-zinc-500 dark:text-zinc-400">Expected {exp} {comp.unit}</div>
-                  </div>
-                  <div className="text-right text-lg font-black text-zinc-900 dark:text-zinc-100">
-                    {col} <span className="text-zinc-400">/ {exp}</span>
-                  </div>
-                  <div className="flex justify-end">
-                    <span className={`whitespace-nowrap rounded-full px-3 py-1.5 text-xs font-bold ${statusTone(ok)}`}>
-                      {ok ? 'Complete' : `Short by ${short}`}
-                    </span>
-                  </div>
-                </div>
-              )
-            })}
+                )
+              })
+            })()}
           </div>
         </section>
 
@@ -542,7 +670,7 @@ export default function TeardownLogDetail() {
               >
                 {src ? (
                   <>
-                    <img src={imgUrl(src)} alt="Bunching" className="w-full h-52 object-contain transition duration-300 group-hover:brightness-90" />
+                    <SafeImage src={imgUrl(src)} alt="Bunching" className="w-full h-52 object-contain transition duration-300 group-hover:brightness-90" />
                     <div className="absolute bottom-0 left-0 right-0 px-2.5 py-2 bg-gradient-to-t from-black/75 to-transparent">
                       <span className="text-[10px] font-black uppercase tracking-widest text-white">Bunching</span>
                     </div>
@@ -570,7 +698,7 @@ export default function TeardownLogDetail() {
             className="absolute right-5 top-5 flex h-11 w-11 items-center justify-center rounded-2xl bg-white/10 text-xl text-white transition hover:bg-white/20"
             onClick={() => setLightbox(null)}
           >×</button>
-          <img
+          <SafeImage
             src={lightbox}
             alt="Preview"
             className="max-h-[92vh] max-w-[94vw] rounded-3xl shadow-2xl"
@@ -635,7 +763,7 @@ function PolePhoPanel({
           >
             {src ? (
               <>
-                <img src={imgUrl(src)} alt={label} className="w-full h-44 object-contain transition duration-300 group-hover:brightness-90" />
+                <SafeImage src={imgUrl(src)} alt={label} className="w-full h-44 object-contain transition duration-300 group-hover:brightness-90" />
                 <div className="absolute bottom-0 left-0 right-0 px-2.5 py-2 bg-gradient-to-t from-black/75 to-transparent">
                   <span className="text-[10px] font-black uppercase tracking-widest text-white">{label}</span>
                 </div>

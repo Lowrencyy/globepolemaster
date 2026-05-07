@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { getToken, SKYCABLE_API } from '../../lib/auth'
 import { cacheGet, cacheSet } from '../../lib/cache'
@@ -16,209 +16,796 @@ interface SkycableNode {
   area: { id: number; name: string } | null
 }
 
-function headers() {
-  return { Authorization: `Bearer ${getToken()}`, Accept: 'application/json', 'ngrok-skip-browser-warning': '1' }
+const BRAND = {
+  blue: '#2E3791',
+  blue2: '#4450C4',
+  dark: '#1F276F',
+  textDark: '#0D123F',
+  soft: '#EEF1FF',
+  softer: '#F7F8FF',
+  panel: '#F4F6FF',
+  border: '#D8DCFF',
+  borderStrong: '#C9D0FF',
+  muted: '#6B73A8',
+  muted2: '#8E96C5',
 }
 
-function statusColor(s: string) {
-  if (s === 'completed')   return { dot: 'bg-emerald-500', text: 'text-emerald-600', bg: 'bg-emerald-50 dark:bg-emerald-500/10' }
-  if (s === 'in_progress') return { dot: 'bg-violet-500',  text: 'text-violet-600',  bg: 'bg-violet-50 dark:bg-violet-500/10'  }
-  return                          { dot: 'bg-amber-400',   text: 'text-amber-600',   bg: 'bg-amber-50 dark:bg-amber-500/10'   }
+const BRAND_GRADIENTS = [
+  'linear-gradient(135deg, #2E3791 0%, #4450C4 100%)',
+  'linear-gradient(135deg, #1F276F 0%, #2E3791 100%)',
+  'linear-gradient(135deg, #2E3791 0%, #5362D8 100%)',
+  'linear-gradient(135deg, #283184 0%, #4450C4 100%)',
+  'linear-gradient(135deg, #182060 0%, #2E3791 100%)',
+]
+
+function headers() {
+  return {
+    Authorization: `Bearer ${getToken()}`,
+    Accept: 'application/json',
+    'ngrok-skip-browser-warning': '1',
+  }
 }
+
+function fmt(n: number | string | null | undefined, dec = 1) {
+  return Number(n ?? 0)
+    .toFixed(dec)
+    .replace(/\B(?=(\d{3})+(?!\d))/g, ',')
+}
+
 function statusLabel(s: string) {
-  if (s === 'completed')   return 'Completed'
+  if (s === 'completed') return 'Completed'
   if (s === 'in_progress') return 'In Progress'
   return 'Pending'
 }
 
-const gradients = [
-  'from-blue-500 to-cyan-500', 'from-violet-500 to-purple-600',
-  'from-emerald-500 to-teal-500', 'from-orange-500 to-amber-500',
-  'from-rose-500 to-pink-500', 'from-indigo-500 to-blue-600',
-]
+function statusStyle(s: string) {
+  if (s === 'completed') {
+    return {
+      dot: '#10b981',
+      text: '#047857',
+      soft: '#ecfdf5',
+      border: '#a7f3d0',
+      bar: 'linear-gradient(90deg, #10b981, #14b8a6)',
+      icon: 'bx-check-circle',
+    }
+  }
+
+  if (s === 'in_progress') {
+    return {
+      dot: BRAND.blue,
+      text: BRAND.blue,
+      soft: BRAND.soft,
+      border: BRAND.borderStrong,
+      bar: 'linear-gradient(90deg, #2E3791, #5362D8)',
+      icon: 'bx-loader-circle',
+    }
+  }
+
+  return {
+    dot: '#f59e0b',
+    text: '#b45309',
+    soft: '#fffbeb',
+    border: '#fde68a',
+    bar: 'linear-gradient(90deg, #f59e0b, #f97316)',
+    icon: 'bx-time-five',
+  }
+}
+
+function StatCard({ label, value, icon, accent, helper }: { label: string; value: number | string; icon: string; accent: string; helper?: string }) {
+  return (
+    <div
+      className="relative overflow-hidden rounded-[20px] bg-white p-4"
+      style={{
+        border: `1px solid ${BRAND.border}`,
+        boxShadow: '0 12px 30px -24px rgba(46,55,145,0.35)',
+      }}
+    >
+      <div className="relative flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-[10px] font-black uppercase tracking-[0.16em]" style={{ color: BRAND.muted2 }}>
+            {label}
+          </p>
+
+          <p className="mt-2 truncate font-mono text-[28px] font-black leading-none" style={{ color: BRAND.textDark }}>
+            {value}
+          </p>
+
+          {helper && <p className="mt-2 text-[11px] font-bold" style={{ color: BRAND.muted2 }}>{helper}</p>}
+        </div>
+
+        <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl text-white" style={{ background: accent }}>
+          <i className={`bx ${icon} text-[22px]`} />
+        </div>
+      </div>
+    </div>
+  )
+}
 
 export default function VicinityReports() {
   const navigate = useNavigate()
-  const [areas, setAreas]               = useState<Area[]>(() => cacheGet<Area[]>('vic_areas') ?? [])
-  const [areasLoading, setAreasLoading] = useState(true)
+
+  const cachedAreas = cacheGet<Area[]>('vic_areas')
+
+  const [areas, setAreas] = useState<Area[]>(() => cachedAreas ?? [])
+  const [areasLoading, setAreasLoading] = useState(() => !cachedAreas)
+  const [areasRefreshing, setAreasRefreshing] = useState(false)
+
   const [selectedArea, setSelectedArea] = useState<Area | null>(null)
-  const [nodes, setNodes]               = useState<SkycableNode[]>([])
+  const [nodes, setNodes] = useState<SkycableNode[]>([])
   const [nodesLoading, setNodesLoading] = useState(false)
-  const [search, setSearch]             = useState('')
+  const [nodesRefreshing, setNodesRefreshing] = useState(false)
+  const [search, setSearch] = useState('')
 
   useEffect(() => {
     const hit = cacheGet<Area[]>('vic_areas')
-    if (hit) { setAreas(hit); setAreasLoading(false) }
+
+    if (hit) {
+      setAreas(hit)
+      setAreasLoading(false)
+      setAreasRefreshing(true)
+    } else {
+      setAreasLoading(true)
+    }
+
     fetch(`${SKYCABLE_API}/areas`, { headers: headers() })
       .then(r => r.json())
-      .then(data => { const list = Array.isArray(data) ? data : (data?.data ?? []); cacheSet('vic_areas', list); setAreas(list) })
+      .then(data => {
+        const list: Area[] = Array.isArray(data) ? data : data?.data ?? []
+        cacheSet('vic_areas', list)
+        setAreas(list)
+      })
       .catch(() => {})
-      .finally(() => setAreasLoading(false))
+      .finally(() => {
+        setAreasLoading(false)
+        setAreasRefreshing(false)
+      })
   }, [])
 
   function selectArea(area: Area) {
-    setSelectedArea(area); setSearch(''); setNodes([])
+    setSelectedArea(area)
+    setSearch('')
+
     const key = `vic_nodes_${area.id}`
     const hit = cacheGet<SkycableNode[]>(key)
-    if (hit) setNodes(hit)
-    setNodesLoading(true)
+
+    if (hit) {
+      setNodes(hit)
+      setNodesLoading(false)
+      setNodesRefreshing(true)
+    } else {
+      setNodes([])
+      setNodesLoading(true)
+      setNodesRefreshing(false)
+    }
+
     fetch(`${SKYCABLE_API}/nodes?area_id=${area.id}`, { headers: headers() })
       .then(r => r.json())
-      .then(data => { const list = Array.isArray(data) ? data : (data?.data ?? []); cacheSet(key, list); setNodes(list) })
+      .then(data => {
+        const list: SkycableNode[] = Array.isArray(data) ? data : data?.data ?? []
+        cacheSet(key, list)
+        setNodes(list)
+      })
       .catch(() => {})
-      .finally(() => setNodesLoading(false))
+      .finally(() => {
+        setNodesLoading(false)
+        setNodesRefreshing(false)
+      })
+  }
+
+  function backToSites() {
+    setSelectedArea(null)
+    setNodes([])
+    setSearch('')
+    setNodesLoading(false)
+    setNodesRefreshing(false)
   }
 
   const filtered = search.trim()
-    ? nodes.filter(n => n.name.toLowerCase().includes(search.toLowerCase()) || (n.full_label ?? '').toLowerCase().includes(search.toLowerCase()))
+    ? nodes.filter(
+        node =>
+          node.name.toLowerCase().includes(search.toLowerCase()) ||
+          (node.full_label ?? '').toLowerCase().includes(search.toLowerCase()) ||
+          (node.area?.name ?? '').toLowerCase().includes(search.toLowerCase())
+      )
     : nodes
 
-  return (
-    <div className="flex flex-col gap-6">
+  const siteStats = useMemo(() => {
+    const totalSites = areas.length
+    const totalNodes = areas.reduce((sum, area) => sum + Number(area.nodes_count ?? 0), 0)
+    const avgNodes = totalSites > 0 ? Math.round(totalNodes / totalSites) : 0
 
+    return { totalSites, totalNodes, avgNodes }
+  }, [areas])
+
+  const nodeStats = useMemo(() => {
+    const total = filtered.length
+    const completed = filtered.filter(node => node.status === 'completed').length
+    const inProgress = filtered.filter(node => node.status === 'in_progress').length
+    const pending = filtered.filter(node => node.status === 'pending').length
+    const expected = filtered.reduce((sum, node) => sum + Number(node.expected_cable ?? 0), 0)
+    const collected = filtered.reduce((sum, node) => sum + Number(node.actual_cable ?? 0), 0)
+    const recovery = expected > 0 ? Math.round((collected / expected) * 100) : 0
+
+    return { total, completed, inProgress, pending, expected, collected, recovery }
+  }, [filtered])
+
+  return (
+    <div className="flex flex-col gap-5 pb-10">
       {/* Header */}
-      <div className="relative overflow-hidden rounded-[28px] bg-[#0d1117] px-6 py-8 shadow-2xl border border-white/5">
-        <div className="pointer-events-none absolute -left-10 -top-10 h-56 w-56 rounded-full bg-sky-500/15 blur-3xl" />
-        <div className="pointer-events-none absolute -right-10 bottom-0 h-48 w-48 rounded-full bg-indigo-500/10 blur-3xl" />
-        <div className="relative flex items-start justify-between gap-4">
-          <div>
-            <span className="inline-flex items-center gap-2 rounded-full bg-sky-500/15 px-3 py-1 text-[11px] font-bold uppercase tracking-widest text-sky-400 ring-1 ring-sky-500/25 mb-3">
-              <span className="h-1.5 w-1.5 rounded-full bg-sky-400 animate-pulse" />
-              Reports
+      <div
+        className="relative overflow-hidden rounded-[28px] px-6 py-7"
+        style={{
+          background: `linear-gradient(135deg, #ffffff 0%, ${BRAND.softer} 40%, ${BRAND.soft} 100%)`,
+          border: `1px solid ${BRAND.borderStrong}`,
+          boxShadow: '0 24px 60px -38px rgba(46,55,145,0.38)',
+        }}
+      >
+        <div
+          className="pointer-events-none absolute -left-16 -top-20 h-64 w-64 rounded-full blur-3xl"
+          style={{ background: 'rgba(46,55,145,0.12)' }}
+        />
+
+        <div
+          className="pointer-events-none absolute -right-16 -bottom-20 h-64 w-64 rounded-full blur-3xl"
+          style={{ background: 'rgba(68,80,196,0.12)' }}
+        />
+
+        <div className="relative flex flex-wrap items-start justify-between gap-5">
+          <div className="min-w-0">
+            <span
+              className="inline-flex items-center gap-2 rounded-full px-3 py-1 text-[10px] font-black uppercase tracking-[0.22em]"
+              style={{
+                backgroundColor: BRAND.soft,
+                color: BRAND.blue,
+                border: `1px solid ${BRAND.borderStrong}`,
+              }}
+            >
+              <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: BRAND.blue }} />
+              Vicinity Reports
             </span>
-            <h2 className="text-3xl font-black tracking-tight text-white">Vicinity Maps</h2>
-            <p className="mt-1.5 text-sm text-zinc-400">
-              {selectedArea ? `Showing nodes under ${selectedArea.name}` : 'Select a site to view pole vicinity maps per node.'}
+
+            <h2
+              className="mt-3 text-3xl font-black tracking-[-0.05em]"
+              style={{ color: BRAND.blue }}
+            >
+              {selectedArea ? selectedArea.name : 'Vicinity Maps'}
+            </h2>
+
+            <p className="mt-2 text-sm font-semibold" style={{ color: BRAND.muted }}>
+              {selectedArea
+                ? 'Premium node map cards with progress, cable collection, and quick vicinity map access.'
+                : 'Select a site to view pole vicinity maps per node.'}
             </p>
           </div>
-          {selectedArea && (
-            <button onClick={() => { setSelectedArea(null); setNodes([]) }}
-              className="flex items-center gap-2 rounded-2xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm font-semibold text-zinc-300 hover:bg-white/10 transition">
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M19 12H5M12 5l-7 7 7 7" />
-              </svg>
-              All Sites
-            </button>
-          )}
+
+          <div className="flex flex-wrap items-center gap-2">
+            {selectedArea && (
+              <button
+                type="button"
+                onClick={backToSites}
+                className="inline-flex h-10 items-center gap-2 rounded-xl px-4 text-sm font-bold"
+                style={{
+                  background: '#ffffff',
+                  border: `1px solid ${BRAND.borderStrong}`,
+                  color: BRAND.dark,
+                }}
+              >
+                <i className="bx bx-arrow-back text-base" />
+                All Sites
+              </button>
+            )}
+          </div>
         </div>
       </div>
 
-      {/* Step 1: Area cards */}
+      {/* All Sites */}
       {!selectedArea && (
-        areasLoading && areas.length === 0 ? (
-          <div className="flex items-center justify-center py-20">
-            <div className="h-8 w-8 rounded-full border-2 border-sky-500 border-t-transparent animate-spin" />
+        <>
+          <div
+            className="rounded-[24px] p-4"
+            style={{
+              background: BRAND.panel,
+              border: `1px solid ${BRAND.border}`,
+            }}
+          >
+            <div className="overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+              <div className="grid min-w-[1080px] grid-cols-5 gap-4 xl:min-w-0">
+                {[
+                  {
+                    label: 'Total Sites',
+                    value: siteStats.totalSites,
+                    icon: 'bx-map',
+                    accent: BRAND_GRADIENTS[0],
+                    helper: 'available sites',
+                  },
+                  {
+                    label: 'Total Nodes',
+                    value: siteStats.totalNodes,
+                    icon: 'bx-git-branch',
+                    accent: BRAND_GRADIENTS[1],
+                    helper: 'site coverage',
+                  },
+                  {
+                    label: 'Average Nodes',
+                    value: siteStats.avgNodes,
+                    icon: 'bx-analyse',
+                    accent: BRAND_GRADIENTS[2],
+                    helper: 'per site',
+                  },
+                  {
+                    label: 'Cached',
+                    value: areas.length,
+                    icon: 'bx-data',
+                    accent: BRAND_GRADIENTS[3],
+                    helper: areasRefreshing ? 'updating' : 'ready',
+                  },
+                  {
+                    label: 'Reports',
+                    value: 'MAP',
+                    icon: 'bx-map-alt',
+                    accent: BRAND_GRADIENTS[4],
+                    helper: 'vicinity ready',
+                  },
+                ].map(card => <StatCard key={card.label} {...card} />)}
+              </div>
+            </div>
           </div>
-        ) : (
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
-            {areas.map((area, i) => (
-              <button key={area.id} onClick={() => selectArea(area)}
-                className="group text-left rounded-[22px] border border-zinc-200 bg-white p-5 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md hover:border-sky-300 dark:border-zinc-700 dark:bg-zinc-900 dark:hover:border-sky-500/40">
-                <div className={`h-10 w-10 rounded-2xl bg-gradient-to-br ${gradients[i % gradients.length]} flex items-center justify-center mb-3 shadow-sm`}>
-                  <svg className="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" />
-                  </svg>
+
+          {areasRefreshing && areas.length > 0 && (
+            <div
+              className="inline-flex w-fit items-center gap-2 rounded-xl px-4 py-2 text-xs font-bold"
+              style={{
+                backgroundColor: BRAND.soft,
+                color: BRAND.blue,
+                border: `1px solid ${BRAND.borderStrong}`,
+              }}
+            >
+              <i className="bx bx-refresh animate-spin text-sm" />
+              Updating cached sites...
+            </div>
+          )}
+
+          {areasLoading && areas.length === 0 ? (
+            <div className="flex items-center justify-center py-20">
+              <div className="text-center">
+                <div
+                  className="mx-auto h-10 w-10 animate-spin rounded-full border-2 border-t-transparent"
+                  style={{ borderColor: BRAND.blue, borderTopColor: 'transparent' }}
+                />
+                <p className="mt-4 text-sm font-bold" style={{ color: BRAND.muted }}>
+                  Loading sites...
+                </p>
+              </div>
+            </div>
+          ) : areas.length === 0 ? (
+            <div
+              className="flex flex-col items-center justify-center rounded-[24px] bg-white py-20"
+              style={{
+                color: BRAND.muted2,
+                border: `1px solid ${BRAND.border}`,
+              }}
+            >
+              <i className="bx bx-map text-5xl" />
+              <p className="mt-3 text-sm font-semibold">No sites found.</p>
+            </div>
+          ) : (
+            <div
+              className="rounded-[24px] p-4"
+              style={{
+                background: BRAND.panel,
+                border: `1px solid ${BRAND.border}`,
+              }}
+            >
+              <div className="overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                <div className="grid min-w-[1180px] grid-cols-5 gap-4 xl:min-w-0">
+                  {areas.map((area, index) => {
+                    const gradient = BRAND_GRADIENTS[index % BRAND_GRADIENTS.length]
+                    const nodeCount = Number(area.nodes_count ?? 0)
+
+                    return (
+                      <button
+                        key={area.id}
+                        type="button"
+                        onClick={() => selectArea(area)}
+                        className="group relative overflow-hidden rounded-[22px] bg-white p-5 text-left transition duration-300 hover:-translate-y-1"
+                        style={{
+                          border: `1px solid ${BRAND.border}`,
+                          boxShadow: '0 12px 30px -24px rgba(46,55,145,0.35)',
+                        }}
+                      >
+                        <div
+                          className="absolute inset-x-0 top-0 h-1"
+                          style={{ background: gradient }}
+                        />
+
+                        <div className="relative flex min-h-[190px] flex-col justify-between">
+                          <div>
+                            <div className="flex items-start justify-between gap-3">
+                              <div>
+                                <p
+                                  className="text-[10px] font-black uppercase tracking-[0.16em]"
+                                  style={{ color: BRAND.muted2 }}
+                                >
+                                  Site {index + 1}
+                                </p>
+
+                                <p
+                                  className="mt-3 line-clamp-2 text-xl font-black leading-tight tracking-[-0.04em]"
+                                  style={{ color: BRAND.textDark }}
+                                >
+                                  {area.name}
+                                </p>
+                              </div>
+
+                              <div
+                                className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl text-white"
+                                style={{ background: gradient }}
+                              >
+                                <i className="bx bx-map-pin text-[22px]" />
+                              </div>
+                            </div>
+
+                            <p
+                              className="mt-3 text-sm font-semibold leading-6"
+                              style={{ color: BRAND.muted }}
+                            >
+                              Open node vicinity maps and cable progress details.
+                            </p>
+                          </div>
+
+                          <div
+                            className="mt-5 flex items-end justify-between border-t pt-4"
+                            style={{ borderColor: BRAND.border }}
+                          >
+                            <div>
+                              <p
+                                className="text-[10px] font-black uppercase tracking-[0.16em]"
+                                style={{ color: BRAND.muted2 }}
+                              >
+                                Nodes
+                              </p>
+
+                              <p
+                                className="mt-1 font-mono text-3xl font-black leading-none"
+                                style={{ color: BRAND.textDark }}
+                              >
+                                {nodeCount}
+                              </p>
+                            </div>
+
+                            <span
+                              className="inline-flex items-center gap-1 rounded-full px-3 py-2 text-xs font-black transition"
+                              style={{
+                                backgroundColor: BRAND.soft,
+                                color: BRAND.blue,
+                              }}
+                            >
+                              View Map
+                              <i className="bx bx-right-arrow-alt text-base" />
+                            </span>
+                          </div>
+                        </div>
+                      </button>
+                    )
+                  })}
                 </div>
-                <p className="text-base font-black text-zinc-900 dark:text-zinc-100 leading-tight">{area.name}</p>
-                {area.nodes_count != null && (
-                  <p className="mt-1 text-[11px] font-semibold text-zinc-400 dark:text-zinc-500">{area.nodes_count} nodes</p>
-                )}
-                <p className="mt-3 text-xs font-bold text-sky-500 group-hover:underline">View map →</p>
-              </button>
-            ))}
-          </div>
-        )
+              </div>
+            </div>
+          )}
+        </>
       )}
 
-      {/* Step 2: Nodes table */}
+      {/* Selected Site */}
       {selectedArea && (
         <>
-          <div className="relative max-w-md">
-            <svg className="absolute left-3.5 top-1/2 -translate-y-1/2 text-zinc-400 w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-4.35-4.35M11 19a8 8 0 100-16 8 8 0 000 16z" />
-            </svg>
-            <input type="text" placeholder="Search node…" value={search} onChange={e => setSearch(e.target.value)}
-              className="w-full rounded-2xl border border-zinc-200 bg-white py-2.5 pl-10 pr-4 text-sm text-zinc-800 shadow-sm outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/20 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100" />
+          <div
+            className="rounded-[24px] p-4"
+            style={{
+              background: BRAND.panel,
+              border: `1px solid ${BRAND.border}`,
+            }}
+          >
+            <div className="overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+              <div className="grid min-w-[1180px] grid-cols-5 gap-4 xl:min-w-0">
+                {[
+                  {
+                    label: 'Total Nodes',
+                    value: nodeStats.total,
+                    icon: 'bx-git-branch',
+                    accent: BRAND_GRADIENTS[0],
+                  },
+                  {
+                    label: 'Completed',
+                    value: nodeStats.completed,
+                    icon: 'bx-check-circle',
+                    accent: 'linear-gradient(135deg, #059669, #0d9488)',
+                  },
+                  {
+                    label: 'In Progress',
+                    value: nodeStats.inProgress,
+                    icon: 'bx-loader-circle',
+                    accent: BRAND_GRADIENTS[2],
+                  },
+                  {
+                    label: 'Pending',
+                    value: nodeStats.pending,
+                    icon: 'bx-time-five',
+                    accent: 'linear-gradient(135deg, #ea580c, #f59e0b)',
+                  },
+                  {
+                    label: 'Recovery',
+                    value: `${nodeStats.recovery}%`,
+                    icon: 'bx-trending-up',
+                    accent:
+                      nodeStats.recovery >= 90
+                        ? 'linear-gradient(135deg, #059669, #0d9488)'
+                        : nodeStats.recovery >= 70
+                          ? 'linear-gradient(135deg, #ea580c, #f59e0b)'
+                          : 'linear-gradient(135deg, #e11d48, #be185d)',
+                  },
+                ].map(card => <StatCard key={card.label} {...card} />)}
+              </div>
+            </div>
+          </div>
+
+          <div
+            className="flex flex-wrap items-center justify-between gap-3 rounded-[20px] bg-white p-3"
+            style={{
+              border: `1px solid ${BRAND.border}`,
+              boxShadow: '0 12px 30px -24px rgba(46,55,145,0.35)',
+            }}
+          >
+            <div className="relative min-w-[280px] max-w-xl flex-1">
+              <i className="bx bx-search absolute left-4 top-1/2 -translate-y-1/2 text-[#8E96C5]" />
+
+              <input
+                type="text"
+                placeholder="Search node name, label, or area..."
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                className="h-10 w-full rounded-xl bg-white pl-10 pr-4 text-sm font-semibold outline-none"
+                style={{
+                  border: `1px solid ${BRAND.border}`,
+                  color: BRAND.textDark,
+                }}
+              />
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              {nodesRefreshing && (
+                <span
+                  className="hidden items-center gap-2 rounded-xl px-3 py-2 text-xs font-bold sm:inline-flex"
+                  style={{
+                    backgroundColor: BRAND.soft,
+                    color: BRAND.blue,
+                    border: `1px solid ${BRAND.borderStrong}`,
+                  }}
+                >
+                  <i className="bx bx-refresh animate-spin text-sm" />
+                  Updating cache...
+                </span>
+              )}
+
+              <span
+                className="rounded-xl px-3 py-2 text-xs font-black"
+                style={{
+                  backgroundColor: BRAND.softer,
+                  color: BRAND.muted,
+                  border: `1px solid ${BRAND.border}`,
+                }}
+              >
+                {filtered.length} results
+              </span>
+            </div>
           </div>
 
           {nodesLoading && nodes.length === 0 ? (
             <div className="flex items-center justify-center py-20">
-              <div className="h-8 w-8 rounded-full border-2 border-sky-500 border-t-transparent animate-spin" />
+              <div className="text-center">
+                <div
+                  className="mx-auto h-10 w-10 animate-spin rounded-full border-2 border-t-transparent"
+                  style={{ borderColor: BRAND.blue, borderTopColor: 'transparent' }}
+                />
+                <p className="mt-4 text-sm font-bold" style={{ color: BRAND.muted }}>
+                  Loading nodes...
+                </p>
+              </div>
             </div>
           ) : filtered.length === 0 ? (
-            <div className="text-center py-20 text-zinc-400 text-sm">
-              {search ? 'No nodes match your search.' : 'No nodes found in this site.'}
+            <div
+              className="flex flex-col items-center justify-center rounded-[24px] bg-white py-20"
+              style={{
+                color: BRAND.muted2,
+                border: `1px solid ${BRAND.border}`,
+              }}
+            >
+              <i className="bx bx-search-alt text-5xl" />
+              <p className="mt-3 text-sm font-semibold">
+                {search ? 'No nodes match your search.' : 'No nodes found in this site.'}
+              </p>
             </div>
           ) : (
-            <div className="overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-gray-100 dark:bg-zinc-800 dark:ring-zinc-700">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-[#e8f0fb] bg-[#f4f8ff] dark:border-[#1e3352] dark:bg-[#111d30]">
-                    <th className="w-10 px-4 py-3 text-center text-[11px] font-bold uppercase tracking-widest text-[#8aa8d4]">#</th>
-                    {['Node', 'Status', 'Progress', 'Cable Exp (m)', 'Collected (m)', ''].map(h => (
-                      <th key={h} className="whitespace-nowrap px-4 py-3 text-[11px] font-bold uppercase tracking-widest text-[#8aa8d4] text-left">{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {filtered.map((node, idx) => {
-                    const sc  = statusColor(node.status)
-                    const pct = Math.min(100, Math.round(node.progress_percentage ?? 0))
-                    return (
-                      <tr key={node.id} onClick={() => navigate(`/reports/vicinity/${node.id}`)}
-                        className="group border-b border-[#f0f5ff] transition-colors last:border-0 hover:bg-sky-50/50 dark:border-[#19304d]/60 dark:hover:bg-sky-900/10 cursor-pointer">
-                        <td className="px-4 py-3.5 text-center">
-                          <span className="text-[11px] font-bold tabular-nums text-[#b0c8e8]">{idx + 1}</span>
-                        </td>
-                        <td className="px-4 py-3.5">
-                          <div className="flex items-center gap-2.5">
-                            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-sky-50 dark:bg-sky-900/30">
-                              <svg className="w-4 h-4 text-sky-600 dark:text-sky-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                                <path strokeLinecap="round" strokeLinejoin="round" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" />
-                              </svg>
+            <div
+              className="rounded-[24px] p-4"
+              style={{
+                background: BRAND.panel,
+                border: `1px solid ${BRAND.border}`,
+              }}
+            >
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-2">
+                {filtered.map((node, index) => {
+                  const status = statusStyle(node.status)
+                  const gradient = BRAND_GRADIENTS[index % BRAND_GRADIENTS.length]
+                  const progress = Math.min(100, Math.round(node.progress_percentage ?? 0))
+                  const expected = Number(node.expected_cable ?? 0)
+                  const collected = Number(node.actual_cable ?? 0)
+                  const recovery = expected > 0 ? Math.round((collected / expected) * 100) : 0
+
+                  return (
+                    <button
+                      key={node.id}
+                      type="button"
+                      onClick={() => navigate(`/reports/vicinity/${node.id}`)}
+                      className="group relative overflow-hidden rounded-[22px] bg-white p-5 text-left transition duration-300 hover:-translate-y-1"
+                      style={{
+                        border: `1px solid ${BRAND.border}`,
+                        boxShadow: '0 12px 30px -24px rgba(46,55,145,0.35)',
+                      }}
+                    >
+                      <div className="absolute inset-x-0 top-0 h-1" style={{ background: status.bar }} />
+
+                      <div className="relative flex min-h-[230px] flex-col justify-between">
+                        <div>
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              {node.full_label && (
+                                <p
+                                  className="truncate text-[10px] font-black uppercase tracking-[0.16em]"
+                                  style={{ color: BRAND.blue }}
+                                >
+                                  {node.full_label}
+                                </p>
+                              )}
+
+                              <h3
+                                className="mt-2 line-clamp-2 text-xl font-black leading-tight tracking-[-0.04em]"
+                                style={{ color: BRAND.textDark }}
+                              >
+                                {node.name}
+                              </h3>
+
+                              <p className="mt-1 text-xs font-semibold" style={{ color: BRAND.muted2 }}>
+                                {node.area?.name ?? selectedArea.name}
+                              </p>
                             </div>
-                            <div>
-                              {node.full_label && <p className="text-[10px] font-black uppercase tracking-wider text-sky-600 font-mono leading-none mb-0.5">{node.full_label}</p>}
-                              <p className="text-[13px] font-bold text-zinc-800 dark:text-zinc-100">{node.name}</p>
+
+                            <div
+                              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl text-white"
+                              style={{ background: gradient }}
+                            >
+                              <i className="bx bx-map-alt text-[22px]" />
                             </div>
                           </div>
-                        </td>
-                        <td className="px-4 py-3.5">
-                          <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[10px] font-bold ${sc.bg} ${sc.text}`}>
-                            <span className={`h-1.5 w-1.5 rounded-full ${sc.dot}`} />
-                            {statusLabel(node.status)}
+
+                          <div className="mt-4 flex flex-wrap items-center gap-2">
+                            <span
+                              className="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[10px] font-black"
+                              style={{
+                                backgroundColor: status.soft,
+                                color: status.text,
+                                border: `1px solid ${status.border}`,
+                              }}
+                            >
+                              <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: status.dot }} />
+                              {statusLabel(node.status)}
+                            </span>
+
+                            <span
+                              className="inline-flex rounded-full px-2.5 py-1 text-[10px] font-black"
+                              style={{
+                                backgroundColor:
+                                  recovery >= 90
+                                    ? '#ecfdf5'
+                                    : recovery >= 70
+                                      ? '#fffbeb'
+                                      : '#fef2f2',
+                                color:
+                                  recovery >= 90
+                                    ? '#047857'
+                                    : recovery >= 70
+                                      ? '#b45309'
+                                      : '#b91c1c',
+                              }}
+                            >
+                              Recovery {recovery}%
+                            </span>
+                          </div>
+
+                          <div className="mt-5">
+                            <div className="mb-2 flex items-center justify-between gap-3">
+                              <p className="text-[10px] font-black uppercase tracking-[0.16em]" style={{ color: BRAND.muted2 }}>
+                                Progress
+                              </p>
+                              <p className="font-mono text-xs font-black" style={{ color: BRAND.textDark }}>
+                                {progress}%
+                              </p>
+                            </div>
+
+                            <div
+                              className="overflow-hidden rounded-full"
+                              style={{
+                                backgroundColor: '#ECEEFF',
+                                border: `1px solid ${BRAND.border}`,
+                              }}
+                            >
+                              <div
+                                className="h-2.5 rounded-full transition-all duration-700"
+                                style={{
+                                  width: progress === 0 ? '8px' : `${progress}%`,
+                                  minWidth: progress > 0 ? '28px' : '8px',
+                                  background: status.bar,
+                                }}
+                              />
+                            </div>
+                          </div>
+
+                          <div className="mt-5 grid grid-cols-2 gap-3">
+                            <div
+                              className="rounded-2xl px-3 py-3"
+                              style={{
+                                backgroundColor: BRAND.softer,
+                                border: `1px solid ${BRAND.border}`,
+                              }}
+                            >
+                              <p className="text-[10px] font-black uppercase tracking-[0.14em]" style={{ color: BRAND.muted2 }}>
+                                Expected
+                              </p>
+                              <p className="mt-1 font-mono text-lg font-black" style={{ color: BRAND.textDark }}>
+                                {fmt(expected)}m
+                              </p>
+                            </div>
+
+                            <div
+                              className="rounded-2xl px-3 py-3"
+                              style={{
+                                backgroundColor: BRAND.softer,
+                                border: `1px solid ${BRAND.border}`,
+                              }}
+                            >
+                              <p className="text-[10px] font-black uppercase tracking-[0.14em]" style={{ color: BRAND.muted2 }}>
+                                Collected
+                              </p>
+                              <p className="mt-1 font-mono text-lg font-black" style={{ color: BRAND.textDark }}>
+                                {fmt(collected)}m
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div
+                          className="mt-5 flex items-center justify-between border-t pt-4"
+                          style={{ borderColor: BRAND.border }}
+                        >
+                          <span className="text-xs font-bold" style={{ color: BRAND.muted }}>
+                            Open pole vicinity map
                           </span>
-                        </td>
-                        <td className="px-4 py-3.5">
-                          <div className="flex items-center gap-2 min-w-[100px]">
-                            <div className="flex-1 h-1.5 rounded-full bg-zinc-100 dark:bg-zinc-700 overflow-hidden">
-                              <div className={`h-full rounded-full ${pct >= 100 ? 'bg-emerald-500' : pct > 0 ? 'bg-violet-500' : 'bg-amber-400'}`} style={{ width: `${pct}%` }} />
-                            </div>
-                            <span className="text-[11px] font-bold tabular-nums text-zinc-500 w-8 text-right">{pct}%</span>
-                          </div>
-                        </td>
-                        <td className="px-4 py-3.5 text-right font-mono text-[12px] text-zinc-500 tabular-nums">{Number(node.expected_cable ?? 0).toFixed(1)}</td>
-                        <td className="px-4 py-3.5 text-right font-mono text-[12px] font-bold text-zinc-800 dark:text-zinc-100 tabular-nums">{Number(node.actual_cable ?? 0).toFixed(1)}</td>
-                        <td className="px-4 py-3.5">
-                          <span className="text-[11px] font-bold text-sky-500 group-hover:underline whitespace-nowrap">View Map →</span>
-                        </td>
-                      </tr>
-                    )
-                  })}
-                </tbody>
-                <tfoot>
-                  <tr className="border-t-2 border-zinc-200 dark:border-zinc-600 bg-zinc-50 dark:bg-zinc-800/60">
-                    <td colSpan={4} className="px-4 py-3 text-right text-[11px] font-black uppercase tracking-wider text-zinc-500">Totals</td>
-                    <td className="px-4 py-3 text-right font-mono text-[12px] font-bold text-zinc-600 tabular-nums">
-                      {filtered.reduce((s, n) => s + Number(n.expected_cable ?? 0), 0).toFixed(1)}
-                    </td>
-                    <td className="px-4 py-3 text-right font-mono text-[12px] font-black text-zinc-900 dark:text-zinc-100 tabular-nums">
-                      {filtered.reduce((s, n) => s + Number(n.actual_cable ?? 0), 0).toFixed(1)}
-                    </td>
-                    <td />
-                  </tr>
-                </tfoot>
-              </table>
+
+                          <span
+                            className="inline-flex items-center gap-1 rounded-full px-3 py-2 text-xs font-black transition"
+                            style={{
+                              backgroundColor: BRAND.soft,
+                              color: BRAND.blue,
+                            }}
+                          >
+                            View Map
+                            <i className="bx bx-right-arrow-alt text-base" />
+                          </span>
+                        </div>
+                      </div>
+                    </button>
+                  )
+                })}
+              </div>
             </div>
           )}
         </>

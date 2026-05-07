@@ -4,13 +4,21 @@ import { getToken, SKYCABLE_API, API_BASE } from '../../lib/auth'
 import { cacheGet, cacheSet } from '../../lib/cache'
 import { idFromSlug } from '../../lib/utils'
 
-interface PoleRow {
-  skycable_pole_id: number
-  sequence: number | null
-  pole_code: string | null
-  before: string | null
-  after: string | null
-  pole_tag: string | null
+interface PoleImage {
+  id: number
+  pole_id: number
+  pole_code: string
+  image_type: string
+  file_path: string
+  inventory_type: string
+}
+
+interface PoleGroup {
+  pole_code: string
+  inventory_type: string
+  before?: string | null
+  after?: string | null
+  pole_tag?: string | null
 }
 
 interface NodeInfo {
@@ -46,7 +54,63 @@ function authHeaders() {
 function imgUrl(path: string | null | undefined): string | null {
   if (!path) return null
   if (path.startsWith('http')) return path
-  return `${API_BASE}/api/files/${path}`
+  return `${API_BASE}/api/v1/files/${path}`
+}
+
+function SafeImage({ src, alt, className, style, onClick }: {
+  src: string | null
+  alt?: string
+  className?: string
+  style?: React.CSSProperties
+  onClick?: (e: React.MouseEvent) => void
+}) {
+  const [blobUrl, setBlobUrl] = useState<string | null>(null)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    if (!src) return
+    let alive = true
+    setLoading(true)
+
+    fetch(src, {
+      headers: { 'ngrok-skip-browser-warning': '1' }
+    })
+      .then(r => r.blob())
+      .then(blob => {
+        if (!alive) return
+        const url = URL.createObjectURL(blob)
+        setBlobUrl(url)
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (alive) setLoading(false)
+      })
+
+    return () => {
+      alive = false
+      if (blobUrl) URL.revokeObjectURL(blobUrl)
+    }
+  }, [src])
+
+  if (!src) return null
+
+  if (loading) {
+    return (
+      <div className={`${className} flex items-center justify-center bg-zinc-100 animate-pulse`}>
+        <div className="w-5 h-5 border-2 border-zinc-300 border-t-zinc-500 rounded-full animate-spin" />
+      </div>
+    )
+  }
+
+  return (
+    <img
+      src={blobUrl || ''}
+      alt={alt}
+      className={className}
+      style={style}
+      onClick={onClick}
+    />
+  )
 }
 
 export default function NodePoleReport() {
@@ -58,10 +122,10 @@ export default function NodePoleReport() {
   const [node, setNode] = useState<NodeInfo | null>(() =>
     nodeId ? cacheGet<NodeInfo>(`pr_info_${nodeId}`) : null
   )
-  const [rows, setRows] = useState<PoleRow[]>(() =>
-    nodeId ? cacheGet<PoleRow[]>(`pr_rows_${nodeId}`) ?? [] : []
+  const [rows, setRows] = useState<PoleGroup[]>(() =>
+    nodeId ? cacheGet<PoleGroup[]>(`pr_rows_v2_${nodeId}`) ?? [] : []
   )
-  const [loading, setLoading] = useState(() => !cacheGet<PoleRow[]>(`pr_rows_${nodeId}`))
+  const [loading, setLoading] = useState(() => !cacheGet<PoleGroup[]>(`pr_rows_v2_${nodeId}`))
   const [refreshing, setRefreshing] = useState(false)
 
   const [lightbox, setLightbox] = useState<{ src: string; caption: string } | null>(null)
@@ -71,7 +135,7 @@ export default function NodePoleReport() {
     let alive = true
 
     const hitNode = cacheGet<NodeInfo>(`pr_info_${nodeId}`)
-    const hitRows = cacheGet<PoleRow[]>(`pr_rows_${nodeId}`)
+    const hitRows = cacheGet<PoleGroup[]>(`pr_rows_v2_${nodeId}`)
 
     if (hitNode) setNode(hitNode)
     if (hitRows) setRows(hitRows)
@@ -80,14 +144,32 @@ export default function NodePoleReport() {
 
     Promise.all([
       fetch(`${SKYCABLE_API}/nodes/${nodeId}`, { headers: authHeaders() }).then(r => r.json()),
-      fetch(`${SKYCABLE_API}/nodes/${nodeId}/pole-photos`, { headers: authHeaders() }).then(r => r.json()),
+      fetch(`${SKYCABLE_API}/teardown/node-images/${nodeId}`, { headers: authHeaders() }).then(r => r.json()),
     ])
       .then(([nd, rd]) => {
         if (!alive) return
         if (nd?.id) { setNode(nd); cacheSet(`pr_info_${nodeId}`, nd) }
-        const list: PoleRow[] = Array.isArray(rd) ? rd : rd?.data ?? []
+        
+        const images: PoleImage[] = Array.isArray(rd) ? rd : (rd?.data ?? [])
+        
+        // Group images by pole_code + inventory_type
+        const groups: Record<string, PoleGroup> = {}
+        images.forEach(img => {
+          const key = `${img.inventory_type}_${img.pole_code}`
+          if (!groups[key]) {
+            groups[key] = {
+              pole_code: img.pole_code,
+              inventory_type: img.inventory_type,
+            }
+          }
+          if (img.image_type === 'before') groups[key].before = img.file_path
+          if (img.image_type === 'after') groups[key].after = img.file_path
+          if (img.image_type === 'pole_tag') groups[key].pole_tag = img.file_path
+        })
+
+        const list = Object.values(groups)
         setRows(list)
-        cacheSet(`pr_rows_${nodeId}`, list)
+        cacheSet(`pr_rows_v2_${nodeId}`, list)
       })
       .catch(() => {})
       .finally(() => { if (!alive) return; setLoading(false); setRefreshing(false) })
@@ -274,28 +356,33 @@ export default function NodePoleReport() {
               </thead>
               <tbody>
                 {rows.map((row, i) => (
-                  <tr key={row.skycable_pole_id} style={{ background: i % 2 === 0 ? '#ffffff' : BRAND.softer }}>
+                  <tr key={`${row.inventory_type}_${row.pole_code}`} style={{ background: i % 2 === 0 ? '#ffffff' : BRAND.softer }}>
                     <td className="border px-2 py-2 text-center align-top" style={{ borderColor: BRAND.border }}>
                       <span className="font-mono text-sm font-black" style={{ color: BRAND.textDark }}>{i + 1}</span>
                     </td>
 
                     <td className="border px-2 py-3 text-center align-top" style={{ borderColor: BRAND.border }}>
-                      <span className="inline-flex items-center justify-center rounded-xl px-2 py-1.5 text-xs font-black"
-                        style={{ background: BRAND.softer, color: BRAND.blue, border: `1px solid ${BRAND.borderStrong}` }}>
-                        {row.pole_code ?? '—'}
-                      </span>
+                      <div className="flex flex-col items-center gap-1">
+                        <span className="inline-flex items-center justify-center rounded-xl px-2 py-1.5 text-xs font-black"
+                          style={{ background: BRAND.softer, color: BRAND.blue, border: `1px solid ${BRAND.borderStrong}` }}>
+                          {row.pole_code ?? '—'}
+                        </span>
+                        <span className={`text-[9px] font-bold uppercase tracking-wider ${row.inventory_type === 'globe' ? 'text-red-500' : 'text-blue-500'}`}>
+                          {row.inventory_type}
+                        </span>
+                      </div>
                     </td>
 
                     {([
                       { data: row.before, caption: `BEFORE — ${row.pole_code ?? 'N/A'}` },
                       { data: row.after, caption: `AFTER — ${row.pole_code ?? 'N/A'}` },
                       { data: row.pole_tag, caption: `POLE PIC — ${row.pole_code ?? 'N/A'}` },
-                    ] as { data: PoleRow['before']; caption: string }[]).map(({ data, caption }, ci) => (
+                    ] as { data: string | null | undefined; caption: string }[]).map(({ data, caption }, ci) => (
                       <td key={ci} className="border p-1 text-center align-top" style={{ borderColor: BRAND.border }}>
                         <div className="flex min-h-[280px] items-center justify-center rounded-lg border p-1"
                           style={{ borderColor: '#8fc9b4', background: '#fff' }}>
                           {imgUrl(data) ? (
-                            <img
+                            <SafeImage
                               src={imgUrl(data)!}
                               alt={caption}
                               className="block max-h-[270px] w-auto max-w-full cursor-pointer rounded object-contain transition hover:scale-[1.02]"
@@ -345,10 +432,11 @@ export default function NodePoleReport() {
         </div>
 
         {rows.map((row, i) => (
-          <div key={row.skycable_pole_id} className="npr-pole-block">
+          <div key={`${row.inventory_type}_${row.pole_code}`} className="npr-pole-block">
             <div className="npr-pole-header">
               <span className="npr-pole-num">#{i + 1}</span>
               <span className="npr-pole-code">{row.pole_code ?? '—'}</span>
+              <span style={{ fontSize: '7pt', marginLeft: 'auto', opacity: 0.7 }}>{row.inventory_type.toUpperCase()}</span>
             </div>
 
             <div className="npr-photos-row">
@@ -359,7 +447,7 @@ export default function NodePoleReport() {
               ] as { data: PoleRow['before']; label: string }[]).map(({ data, label }) => (
                 <div key={label} className="npr-photo-box">
                   {imgUrl(data) ? (
-                    <img src={imgUrl(data)!} alt={label} />
+                    <SafeImage src={imgUrl(data)!} alt={label} />
                   ) : (
                     <div className="npr-no-photo">No Photo</div>
                   )}
@@ -386,12 +474,12 @@ export default function NodePoleReport() {
           >
             ✕ Close
           </button>
-          <img
+          <SafeImage
             src={lightbox.src}
             alt={lightbox.caption}
             className="max-h-[84vh] max-w-[94vw] rounded-xl object-contain bg-white p-1.5"
             style={{ boxShadow: '0 18px 50px rgba(0,0,0,0.45)' }}
-            onClick={e => e.stopPropagation()}
+            onClick={e => (e as any).stopPropagation()}
           />
           <p className="max-w-lg text-center text-xs font-bold text-gray-300">{lightbox.caption}</p>
         </div>

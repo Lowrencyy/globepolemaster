@@ -520,11 +520,9 @@ export default function NodeSpans() {
     <div className="flex flex-col gap-5 pb-10">
       {/* Breadcrumb */}
       <nav className="flex flex-wrap items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
-        <Link to="/sites" className="hover:text-indigo-600 transition">Site List</Link>
+        <Link to={`/${siteSlug}`} className="hover:text-indigo-600 transition">{node?.area?.name ?? 'Site'}</Link>
         <svg className="h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" /></svg>
-        <Link to={`/sites/${siteSlug}`} className="hover:text-indigo-600 transition">{node?.area?.name ?? 'Site'}</Link>
-        <svg className="h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" /></svg>
-        <Link to={`/sites/${siteSlug}/nodes/${nodeSlug}`} className="hover:text-indigo-600 transition">{node?.full_label ?? node?.name ?? 'Node'}</Link>
+        <Link to={`/${siteSlug}/${nodeSlug}/poles`} className="hover:text-indigo-600 transition">{node?.full_label ?? node?.name ?? 'Node'}</Link>
         <svg className="h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" /></svg>
         <span className="font-semibold text-slate-900 dark:text-slate-100">Spans</span>
       </nav>
@@ -535,7 +533,7 @@ export default function NodeSpans() {
           <h4 className="text-[18px] font-semibold text-slate-900 dark:text-slate-100">{node?.full_label ?? node?.name ?? '…'} — Spans</h4>
           <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">Click two poles on the sitemap to declare a span</p>
         </div>
-        <Link to={`/sites/${siteSlug}/nodes/${nodeSlug}`}
+        <Link to={`/${siteSlug}/${nodeSlug}/poles`}
           className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-600 shadow-sm hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
           <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" /></svg>
           Back to Poles
