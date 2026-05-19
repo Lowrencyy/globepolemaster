@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import { getToken } from '../lib/auth'
+import { getToken, getSubcontractorId, isSubconSide, SKYCABLE_API } from '../lib/auth'
+import { cacheGet, cacheSet } from '../lib/cache'
 
 declare const L: any
 
@@ -21,17 +22,15 @@ interface MapPin {
 }
 
 const STATUS_COLOR: Record<string, string> = {
-  'ON GOING':  '#3b82f6',
-  'COMPLETED': '#22c55e',
-  'PENDING':   '#f59e0b',
-  'BILLING':   '#8b5cf6',
+  'IN_PROGRESS': '#3b82f6',
+  'COMPLETED':   '#22c55e',
+  'PENDING':     '#f59e0b',
 }
 
 const STATUS_LABEL: Record<string, string> = {
-  'ON GOING':  'On Going',
-  'COMPLETED': 'Completed',
-  'PENDING':   'Pending',
-  'BILLING':   'Billing',
+  'IN_PROGRESS': 'In Progress',
+  'COMPLETED':   'Completed',
+  'PENDING':     'Pending',
 }
 
 function pinColor(status: string) {
@@ -65,14 +64,15 @@ export type MapView = keyof typeof TILE_LAYERS
 interface Props {
   mapView?: MapView
   onMapViewChange?: (v: MapView) => void
+  syncTrigger?: number
 }
 
-export default function FieldCoverageMap({ mapView: mapViewProp, onMapViewChange }: Props = {}) {
+export default function FieldCoverageMap({ mapView: mapViewProp, onMapViewChange, syncTrigger = 0 }: Props = {}) {
   const mapRef = useRef<HTMLDivElement>(null)
   const mapInstance = useRef<any>(null)
   const tileLayerRef = useRef<any>(null)
-  const [pins, setPins] = useState<MapPin[]>([])
-  const [loading, setLoading] = useState(true)
+  const [pins, setPins] = useState<MapPin[]>(() => cacheGet<MapPin[]>('dashboard_map_pins') ?? [])
+  const [loading, setLoading] = useState(() => !cacheGet<MapPin[]>('dashboard_map_pins'))
   const [error, setError] = useState<string | null>(null)
   const [mapViewInternal, setMapViewInternal] = useState<MapView>('satellite')
 
@@ -82,7 +82,14 @@ export default function FieldCoverageMap({ mapView: mapViewProp, onMapViewChange
   // Fetch pins from backend
   useEffect(() => {
     const token = getToken()
-    fetch(`${API_BASE}/api/v1/nodes/map-pins`, {
+    const subconId = getSubcontractorId()
+    const isSubcon = isSubconSide()
+    const url = new URL(`${SKYCABLE_API}/nodes/map-pins`)
+    if (isSubcon && subconId) {
+      url.searchParams.set('subcontractor_id', String(subconId))
+    }
+
+    fetch(url.toString(), {
       headers: {
         'Authorization': `Bearer ${token}`,
         'Accept': 'application/json',
@@ -91,12 +98,23 @@ export default function FieldCoverageMap({ mapView: mapViewProp, onMapViewChange
     })
       .then(r => r.json())
       .then(data => {
-        if (Array.isArray(data)) setPins(data)
+        if (Array.isArray(data)) {
+          setPins(data)
+          cacheSet('dashboard_map_pins', data)
+          setError(null)
+          // Automatically fit map bounds to pins if any are present
+          if (data.length > 0 && mapInstance.current && typeof L !== 'undefined') {
+            try {
+              const bounds = L.latLngBounds(data.map(p => [p.lat, p.lng]))
+              mapInstance.current.fitBounds(bounds, { padding: [40, 40], maxZoom: 14 })
+            } catch (_) {}
+          }
+        }
         else setError('Unexpected response from server')
       })
       .catch(() => setError('Failed to load node data'))
       .finally(() => setLoading(false))
-  }, [])
+  }, [syncTrigger])
 
   // Init map
   useEffect(() => {

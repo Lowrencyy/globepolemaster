@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useLocation, Link, useNavigate } from 'react-router-dom'
-import { getUser, removeToken } from '../lib/auth'
+import { getUser, removeToken, isAdmin, isExecutive, isClient, isSubconSide, canAccessWarehouse, isTelcoVantage } from '../lib/auth'
 
 const linkCls = "block py-2.5 px-6 text-sm font-medium text-gray-950 transition-all duration-150 ease-linear hover:text-violet-500 dark:text-gray-300 dark:hover:text-white"
 const parentCls = `${linkCls} nav-menu`
@@ -10,245 +10,6 @@ const activeLinkCls  = "block py-2.5 px-6 text-sm font-medium transition-all dur
 const subCls         = "pl-[52.8px] pr-6 py-[6.4px] block text-[13.5px] font-medium text-gray-950 transition-all duration-150 ease-linear hover:text-violet-500 dark:text-gray-300 dark:hover:text-white"
 const subActiveCls   = "pl-[52.8px] pr-6 py-[6.4px] block text-[13.5px] font-medium transition-all duration-150 ease-linear text-violet-600 dark:text-violet-400"
 
-// ── Hardcoded demo data ────────────────────────────────────────────────────
-const DEMO_TEAMS = [
-  { id: 1, name: 'Alpha Team', lead: 'Juan dela Cruz', members: 4 },
-  { id: 2, name: 'Bravo Team', lead: 'Maria Santos',  members: 3 },
-  { id: 3, name: 'Charlie Team', lead: 'Ramon Reyes', members: 5 },
-]
-
-const DEMO_SUBCON_USERS = [
-  { id: 1, name: 'Carlos Bautista', team: 'Alpha Team',   role: 'Technician' },
-  { id: 2, name: 'Liza Fernandez',  team: 'Bravo Team',   role: 'Team Lead'  },
-  { id: 3, name: 'Mark Villanueva', team: 'Charlie Team', role: 'Technician' },
-]
-
-// ── Reusable Modal shell ───────────────────────────────────────────────────
-function Modal({ title, subtitle, onClose, children }: {
-  title: string; subtitle?: string; onClose: () => void; children: React.ReactNode
-}) {
-  useEffect(() => {
-    const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
-    document.addEventListener('keydown', esc)
-    return () => document.removeEventListener('keydown', esc)
-  }, [onClose])
-
-  return (
-    <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm" onClick={onClose}>
-      <div className="w-full max-w-xl rounded-3xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 shadow-2xl overflow-hidden" onClick={e => e.stopPropagation()}>
-        {/* Header */}
-        <div className="flex items-start justify-between gap-3 border-b border-zinc-100 dark:border-zinc-800 bg-gradient-to-r from-violet-50/60 to-white dark:from-zinc-900 dark:to-zinc-900 px-6 py-5">
-          <div>
-            <h3 className="text-lg font-black text-zinc-900 dark:text-zinc-100">{title}</h3>
-            {subtitle && <p className="mt-0.5 text-xs font-medium text-zinc-400 dark:text-zinc-500">{subtitle}</p>}
-          </div>
-          <button onClick={onClose} className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-zinc-100 dark:bg-zinc-800 text-zinc-500 hover:bg-zinc-200 dark:hover:bg-zinc-700 transition font-bold text-base">×</button>
-        </div>
-        <div className="p-6 max-h-[75vh] overflow-y-auto">{children}</div>
-      </div>
-    </div>
-  )
-}
-
-// ── Shared field component ─────────────────────────────────────────────────
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div className="flex flex-col gap-1.5">
-      <label className="text-xs font-bold text-zinc-500 dark:text-zinc-400 uppercase tracking-wide">{label}</label>
-      {children}
-    </div>
-  )
-}
-
-const inputCls = "w-full rounded-2xl border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800 px-4 py-2.5 text-sm font-medium text-zinc-800 dark:text-zinc-100 placeholder-zinc-400 outline-none focus:border-violet-400 focus:ring-2 focus:ring-violet-400/20 transition"
-
-// ── Teams Modal ────────────────────────────────────────────────────────────
-function TeamsModal({ onClose }: { onClose: () => void }) {
-  const [tab, setTab] = useState<'list' | 'add'>('list')
-  const [form, setForm] = useState({ name: '', lead: '', description: '' })
-
-  const avatarColors = ['from-violet-500 to-blue-500', 'from-emerald-500 to-teal-500', 'from-orange-500 to-amber-500']
-
-  return (
-    <Modal title="Subcontractor Teams" subtitle="Manage field teams and their assignments" onClose={onClose}>
-      {/* Tab switcher */}
-      <div className="flex gap-1 mb-5 rounded-2xl bg-zinc-100 dark:bg-zinc-800 p-1">
-        {(['list', 'add'] as const).map(t => (
-          <button key={t} onClick={() => setTab(t)}
-            className={`flex-1 rounded-xl py-2 text-xs font-black tracking-wide transition ${
-              tab === t
-                ? 'bg-white dark:bg-zinc-700 text-violet-600 dark:text-violet-400 shadow-sm'
-                : 'text-zinc-400 dark:text-zinc-500 hover:text-zinc-600 dark:hover:text-zinc-300'
-            }`}>
-            {t === 'list' ? '▤  View Teams' : '＋  Add Team'}
-          </button>
-        ))}
-      </div>
-
-      {tab === 'list' && (
-        <div className="flex flex-col gap-3">
-          {/* Summary row */}
-          <div className="grid grid-cols-3 gap-3 mb-1">
-            {[
-              { label: 'Total Teams', value: DEMO_TEAMS.length, color: 'text-violet-600 dark:text-violet-400' },
-              { label: 'Total Members', value: DEMO_TEAMS.reduce((s, t) => s + t.members, 0), color: 'text-emerald-600 dark:text-emerald-400' },
-              { label: 'Active', value: DEMO_TEAMS.length, color: 'text-blue-600 dark:text-blue-400' },
-            ].map(({ label, value, color }) => (
-              <div key={label} className="rounded-2xl border border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800 px-3 py-3 text-center">
-                <p className={`text-xl font-black ${color}`}>{value}</p>
-                <p className="text-[10px] font-semibold text-zinc-400 dark:text-zinc-500 mt-0.5">{label}</p>
-              </div>
-            ))}
-          </div>
-
-          {DEMO_TEAMS.map((t, i) => (
-            <div key={t.id} className="group flex items-center gap-4 rounded-2xl border border-zinc-100 dark:border-zinc-700 bg-white dark:bg-zinc-800/60 px-4 py-4 shadow-sm hover:shadow-md hover:-translate-y-px transition">
-              {/* Team avatar */}
-              <div className={`h-11 w-11 shrink-0 rounded-2xl bg-gradient-to-br ${avatarColors[i % avatarColors.length]} flex items-center justify-center text-white text-sm font-black shadow-sm`}>
-                {t.name.charAt(0)}
-              </div>
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-black text-zinc-800 dark:text-zinc-100">{t.name}</p>
-                <p className="text-xs text-zinc-400 dark:text-zinc-500 mt-0.5">
-                  <span className="font-semibold text-zinc-500 dark:text-zinc-400">Lead:</span> {t.lead}
-                </p>
-              </div>
-              <div className="text-right shrink-0">
-                <p className="text-lg font-black text-violet-600 dark:text-violet-400">{t.members}</p>
-                <p className="text-[10px] font-semibold text-zinc-400 dark:text-zinc-500">members</p>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {tab === 'add' && (
-        <form className="flex flex-col gap-4" onSubmit={e => e.preventDefault()}>
-          <Field label="Team Name">
-            <input className={inputCls} placeholder="e.g. Delta Team"
-              value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} />
-          </Field>
-          <Field label="Team Lead">
-            <input className={inputCls} placeholder="Full name of the team lead"
-              value={form.lead} onChange={e => setForm(f => ({ ...f, lead: e.target.value }))} />
-          </Field>
-          <Field label="Description (optional)">
-            <textarea className={inputCls + ' resize-none'} rows={3} placeholder="What does this team handle?"
-              value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} />
-          </Field>
-          <div className="flex gap-2 mt-1">
-            <button type="button" onClick={() => setTab('list')} className="flex-1 rounded-2xl border border-zinc-200 dark:border-zinc-700 py-2.5 text-sm font-bold text-zinc-500 dark:text-zinc-400 hover:bg-zinc-50 dark:hover:bg-zinc-800 transition">
-              Cancel
-            </button>
-            <button type="submit" className="flex-1 rounded-2xl bg-violet-600 py-2.5 text-sm font-black text-white hover:bg-violet-700 active:scale-95 transition">
-              Save Team
-            </button>
-          </div>
-        </form>
-      )}
-    </Modal>
-  )
-}
-
-// ── Subcon Users Modal ─────────────────────────────────────────────────────
-function SubconUsersModal({ onClose }: { onClose: () => void }) {
-  const [tab, setTab] = useState<'list' | 'add'>('list')
-  const [form, setForm] = useState({ name: '', email: '', team: '', role: '' })
-
-  const roleColor: Record<string, string> = {
-    'Technician': 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400',
-    'Team Lead':  'bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-400',
-  }
-  const avatarColors = ['from-violet-500 to-blue-500', 'from-emerald-500 to-teal-500', 'from-orange-500 to-amber-500']
-
-  return (
-    <Modal title="Subcontractor Users" subtitle="Field staff registered under subcontractors" onClose={onClose}>
-      <div className="flex gap-1 mb-5 rounded-2xl bg-zinc-100 dark:bg-zinc-800 p-1">
-        {(['list', 'add'] as const).map(t => (
-          <button key={t} onClick={() => setTab(t)}
-            className={`flex-1 rounded-xl py-2 text-xs font-black tracking-wide transition ${
-              tab === t
-                ? 'bg-white dark:bg-zinc-700 text-violet-600 dark:text-violet-400 shadow-sm'
-                : 'text-zinc-400 dark:text-zinc-500 hover:text-zinc-600 dark:hover:text-zinc-300'
-            }`}>
-            {t === 'list' ? '▤  View Users' : '＋  Add User'}
-          </button>
-        ))}
-      </div>
-
-      {tab === 'list' && (
-        <div className="flex flex-col gap-3">
-          {/* Stats */}
-          <div className="grid grid-cols-2 gap-3 mb-1">
-            {[
-              { label: 'Total Users', value: DEMO_SUBCON_USERS.length, color: 'text-violet-600 dark:text-violet-400' },
-              { label: 'Teams Covered', value: new Set(DEMO_SUBCON_USERS.map(u => u.team)).size, color: 'text-emerald-600 dark:text-emerald-400' },
-            ].map(({ label, value, color }) => (
-              <div key={label} className="rounded-2xl border border-zinc-100 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800 px-3 py-3 text-center">
-                <p className={`text-xl font-black ${color}`}>{value}</p>
-                <p className="text-[10px] font-semibold text-zinc-400 dark:text-zinc-500 mt-0.5">{label}</p>
-              </div>
-            ))}
-          </div>
-
-          {DEMO_SUBCON_USERS.map((u, i) => (
-            <div key={u.id} className="flex items-center gap-4 rounded-2xl border border-zinc-100 dark:border-zinc-700 bg-white dark:bg-zinc-800/60 px-4 py-4 shadow-sm hover:shadow-md hover:-translate-y-px transition">
-              <div className={`h-11 w-11 shrink-0 rounded-2xl bg-gradient-to-br ${avatarColors[i % avatarColors.length]} flex items-center justify-center text-white text-xs font-black shadow-sm`}>
-                {u.name.split(' ').map((w: string) => w[0]).join('').slice(0, 2)}
-              </div>
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-black text-zinc-800 dark:text-zinc-100 truncate">{u.name}</p>
-                <p className="text-xs text-zinc-400 dark:text-zinc-500 mt-0.5 truncate">{u.team}</p>
-              </div>
-              <span className={`shrink-0 rounded-full px-2.5 py-1 text-[10px] font-bold ${roleColor[u.role] ?? 'bg-zinc-100 text-zinc-600 dark:bg-zinc-700 dark:text-zinc-300'}`}>
-                {u.role}
-              </span>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {tab === 'add' && (
-        <form className="flex flex-col gap-4" onSubmit={e => e.preventDefault()}>
-          <Field label="Full Name">
-            <input className={inputCls} placeholder="e.g. Jose Rizal"
-              value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} />
-          </Field>
-          <Field label="Email Address">
-            <input className={inputCls} type="email" placeholder="user@email.com"
-              value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))} />
-          </Field>
-          <div className="grid grid-cols-2 gap-3">
-            <Field label="Team">
-              <select className={inputCls}
-                value={form.team} onChange={e => setForm(f => ({ ...f, team: e.target.value }))}>
-                <option value="">Select team</option>
-                {DEMO_TEAMS.map(t => <option key={t.id} value={t.name}>{t.name}</option>)}
-              </select>
-            </Field>
-            <Field label="Role">
-              <select className={inputCls}
-                value={form.role} onChange={e => setForm(f => ({ ...f, role: e.target.value }))}>
-                <option value="">Select role</option>
-                <option>Team Lead</option>
-                <option>Technician</option>
-                <option>Helper</option>
-              </select>
-            </Field>
-          </div>
-          <div className="flex gap-2 mt-1">
-            <button type="button" onClick={() => setTab('list')} className="flex-1 rounded-2xl border border-zinc-200 dark:border-zinc-700 py-2.5 text-sm font-bold text-zinc-500 dark:text-zinc-400 hover:bg-zinc-50 dark:hover:bg-zinc-800 transition">
-              Cancel
-            </button>
-            <button type="submit" className="flex-1 rounded-2xl bg-violet-600 py-2.5 text-sm font-black text-white hover:bg-violet-700 active:scale-95 transition">
-              Save User
-            </button>
-          </div>
-        </form>
-      )}
-    </Modal>
-  )
-}
 
 // ── Sidebar helpers ────────────────────────────────────────────────────────
 function useOpen(path: string, childPaths: string[]) {
@@ -353,13 +114,21 @@ function UserDropdown() {
 }
 
 export default function Sidebar() {
-  const { pathname } = useLocation()
+  const { pathname, search } = useLocation()
+
+  // Role flags — computed once per render
+  const admin     = isAdmin()
+  const executive = isExecutive()
+  const client    = isClient()
+  const subcon    = isSubconSide()
+  const internal  = isTelcoVantage()   // admin or executive
+  const warehouse = canAccessWarehouse()
 
   const poleMaster   = useOpen(pathname, ['/poles/all', '/poles/map'])
   const napInventory = useOpen(pathname, ['/nap/boxes', '/nap/slot-status'])
   const auditRpts    = useOpen(pathname, ['/polereports/poleAudit', '/reports/teardown-logs', '/dailyreports', '/reports/daily', '/reports/rtd', '/reports/vicinity', '/reports/pole-reports'])
   const usersMgmt    = useOpen(pathname, ['/users'])
-  const subcon       = useOpen(pathname, ['/subcontractors'])
+
   const sub = (href: string, label: string) => {
     const isActive = href !== '#' && pathname.startsWith(href)
     const cls = isActive ? subActiveCls : subCls
@@ -376,194 +145,178 @@ export default function Sidebar() {
     )
   }
 
+  // Client users have no sidebar — they get a standalone dashboard page
+  if (client) return null
+
   return (
     <div className="fixed bottom-0 z-10 h-screen ltr:border-r rtl:border-l vertical-menu rtl:right-0 ltr:left-0 top-[70px] bg-slate-50 border-gray-50 print:hidden dark:bg-zinc-800 dark:border-neutral-700 flex flex-col">
       <div data-simplebar className="flex-1 overflow-y-auto">
         <div className="metismenu pb-4 pt-2.5" id="sidebar-menu">
           <ul id="side-menu">
 
-            {/* ── MAIN ── */}
-            <li className={labelCls}>Main</li>
-            <li className={pathname === '/dashboard' ? 'mm-active' : ''}>
-              <Link to="/dashboard" className={pathname === '/dashboard' ? activeLinkCls : linkCls}>
-                <i data-feather="home"></i>
-                <span> Dashboard</span>
-              </Link>
-            </li>
+            {/* ── MAIN — internal team only ── */}
+            {internal && (
+              <>
+                <li className={labelCls}>Main</li>
+                <li className={pathname === '/dashboard' ? 'mm-active' : ''}>
+                  <Link to="/dashboard" className={pathname === '/dashboard' ? activeLinkCls : linkCls}>
+                    <i data-feather="home" />
+                    <span> Dashboard</span>
+                  </Link>
+                </li>
+              </>
+            )}
 
-            {/* ── GLOBE ── */}
-            <li className={labelCls}>Globe</li>
+            {/* ── SUBCON HOME ── */}
+            {subcon && (
+              <li className={pathname === '/subcon-dashboard' ? 'mm-active' : ''}>
+                <Link to="/subcon-dashboard" className={pathname === '/subcon-dashboard' ? activeLinkCls : linkCls}>
+                  <i data-feather="home" />
+                  <span> My Dashboard</span>
+                </Link>
+              </li>
+            )}
 
-            {/* Live Onsite Map */}
-            <li className={pathname === '/field/live' ? 'mm-active' : ''}>
-              <Link to="/field/live" className={pathname === '/field/live' ? activeLinkCls : linkCls}>
-                <i data-feather="radio"></i>
-                <span>Live Onsite Map</span>
-              </Link>
-            </li>
+            {/* ── OPERATIONS — all non-client roles ── */}
+            <li className={labelCls}>Operations</li>
 
-            {/* Live Teardown Logs */}
-            <li className={pathname.startsWith('/reports/teardown-logs') ? 'mm-active' : ''}>
-              <Link to="/reports/teardown-logs" className={pathname.startsWith('/reports/teardown-logs') ? activeLinkCls : linkCls}>
-                <i data-feather="clipboard"></i>
-                <span>Live Teardown Logs</span>
-              </Link>
-            </li>
+            {internal && (
+              <li className={pathname === '/field/live' ? 'mm-active' : ''}>
+                <Link to="/field/live" className={pathname === '/field/live' ? activeLinkCls : linkCls}>
+                  <i data-feather="radio" />
+                  <span>Live Onsite Map</span>
+                </Link>
+              </li>
+            )}
 
-            {/* Area Management */}
-            <li>
-              <a href="#" className={linkCls}>
-                <i data-feather="map-pin"></i>
-                <span>Area Management</span>
-              </a>
-            </li>
-
-            {/* Node Management */}
             <li className={pathname === '/sites' ? 'mm-active' : ''}>
               <Link to="/sites" className={pathname === '/sites' ? activeLinkCls : linkCls}>
-                <i data-feather="git-commit"></i>
+                <i data-feather="git-commit" />
                 <span>Node List</span>
               </Link>
             </li>
 
-            {/* Span List */}
-            <li className={pathname === '/spans' ? 'mm-active' : ''}>
-              <Link to="/spans" className={pathname === '/spans' ? activeLinkCls : linkCls}>
-                <i data-feather="git-branch"></i>
-                <span>Span List</span>
-              </Link>
-            </li>
+            {internal && (
+              <li className={pathname === '/spans' ? 'mm-active' : ''}>
+                <Link to="/spans" className={pathname === '/spans' ? activeLinkCls : linkCls}>
+                  <i data-feather="git-branch" />
+                  <span>Span List</span>
+                </Link>
+              </li>
+            )}
 
-            {/* Pole Master */}
-            <li className={poleMaster.open ? 'mm-active' : ''}>
-              <a href="javascript:void(0);" onClick={poleMaster.toggle} aria-expanded={poleMaster.open} className={poleMaster.childActive ? activeLinkCls : parentCls}>
-                <i data-feather="anchor"></i>
-                <span>Pole Master</span>
-              </a>
-              <ul style={{ display: poleMaster.open ? 'block' : 'none' }}>
-                {sub('/poles/all', 'All Poles')}
-               
-                {sub('/poles/map', 'Pole Map View')}
-              </ul>
-            </li>
+            {/* Pole Master — internal only */}
+            {internal && (
+              <li className={poleMaster.open ? 'mm-active' : ''}>
+                <a href="javascript:void(0);" onClick={poleMaster.toggle} aria-expanded={poleMaster.open} className={poleMaster.childActive ? activeLinkCls : parentCls}>
+                  <i data-feather="anchor" />
+                  <span>Pole Master</span>
+                </a>
+                <ul style={{ display: poleMaster.open ? 'block' : 'none' }}>
+                  {sub('/poles/all', 'All Poles')}
+                  {sub('/poles/map', 'Pole Map View')}
+                </ul>
+              </li>
+            )}
 
-            {/* NAP Inventory */}
-            <li className={napInventory.open ? 'mm-active' : ''}>
-              <a href="javascript:void(0);" onClick={napInventory.toggle} aria-expanded={napInventory.open} className={napInventory.childActive ? activeLinkCls : parentCls}>
-                <i data-feather="server"></i>
-                <span>NAP Inventory</span>
-              </a>
-              <ul style={{ display: napInventory.open ? 'block' : 'none' }}>
-                {sub('/nap/boxes',       'NAP Boxes')}
-                {sub('/nap/slot-status', 'Slot Status')}
-              </ul>
-            </li>
+            {/* NAP Inventory — internal only */}
+            {internal && (
+              <li className={napInventory.open ? 'mm-active' : ''}>
+                <a href="javascript:void(0);" onClick={napInventory.toggle} aria-expanded={napInventory.open} className={napInventory.childActive ? activeLinkCls : parentCls}>
+                  <i data-feather="server" />
+                  <span>NAP Inventory</span>
+                </a>
+                <ul style={{ display: napInventory.open ? 'block' : 'none' }}>
+                  {sub('/nap/boxes', 'NAP Boxes')}
+                  {sub('/nap/slot-status', 'Slot Status')}
+                </ul>
+              </li>
+            )}
 
+            {/* Warehouse — PM, admin, executive, warehouse incharge */}
+            {warehouse && (
+              <>
+                <li className={labelCls}>Warehouse</li>
+                <li className={pathname === '/warehouse/inventory' && !search.includes('tab=deliveries') ? 'mm-active' : ''}>
+                  <Link to="/warehouse/inventory" className={pathname === '/warehouse/inventory' && !search.includes('tab=deliveries') ? activeLinkCls : linkCls}>
+                    <i data-feather="package" />
+                    <span>Material Inventory</span>
+                  </Link>
+                </li>
+                <li className={pathname === '/warehouse/inventory' && search.includes('tab=deliveries') ? 'mm-active' : ''}>
+                  <Link to="/warehouse/inventory?tab=deliveries" className={pathname === '/warehouse/inventory' && search.includes('tab=deliveries') ? activeLinkCls : linkCls}>
+                    <i data-feather="truck" />
+                    <span>Delivery Tracker</span>
+                  </Link>
+                </li>
+              </>
+            )}
 
-            {/* Teardown Management */}
-            <li>
-              <a href="#" className={linkCls}>
-                <i data-feather="git-commit"></i>
-                <span>Teardown Management</span>
-              </a>
-            </li>
-
-            {/* Subscriber Lookup */}
-            <li>
-              <a href="#" className={linkCls}>
-                <i data-feather="users"></i>
-                <span>Subscriber Lookup</span>
-              </a>
-            </li>
-
-            {/* Cable Teardown */}
-            <li>
-              <a href="#" className={linkCls}>
-                <i data-feather="scissors"></i>
-                <span>Cable Teardown</span>
-              </a>
-            </li>
-
-            {/* Validation Queue */}
-            <li>
-              <a href="#" className={linkCls}>
-                <i data-feather="check-square"></i>
-                <span>Validation Queue</span>
-              </a>
-            </li>
-
-            {/* ── REPORTS ── */}
+            {/* ── REPORTS — internal + subcon (filtered) ── */}
             <li className={labelCls}>Reports</li>
 
-            <li className={auditRpts.open ? 'mm-active' : ''}>
-              <a href="javascript:void(0);" onClick={auditRpts.toggle} aria-expanded={auditRpts.open} className={auditRpts.childActive ? activeLinkCls : parentCls}>
-                <i data-feather="bar-chart-2"></i>
-                <span>Audit Reports</span>
-              </a>
-              <ul style={{ display: auditRpts.open ? 'block' : 'none' }}>
-                {sub('/polereports/poleAudit', 'Pole Audit Summary')}
-                {sub('/reports/teardown-logs', 'Teardown Logs')}
-                {sub('#', 'NAP Utilization')}
-                {sub('#', 'Span Teardown Report')}
-                {sub('#', 'Validation Summary')}
-                {sub('/dailyreports', 'Daily Reports')}
-                {sub('/reports/rtd', 'RTD Reports')}
-                {sub('/reports/vicinity', 'Vicinity Maps')}
-                {sub('/reports/pole-reports', 'Pole Reports')}
-              </ul>
-            </li>
-
-            {/* ── USERS ── */}
-            <li className={labelCls}>Users Management</li>
-
-            <li className={usersMgmt.open ? 'mm-active' : ''}>
-              <a href="javascript:void(0);" onClick={usersMgmt.toggle} aria-expanded={usersMgmt.open} className={usersMgmt.childActive ? activeLinkCls : parentCls}>
-                <i data-feather="users"></i>
-                <span>Users</span>
-              </a>
-              <ul style={{ display: usersMgmt.open ? 'block' : 'none' }}>
-                {sub('/users', 'All Users')}
-                {sub('#', 'Roles & Permissions')}
-              </ul>
-            </li>
-
-            {/* Subcontractors */}
-            <li className={pathname.startsWith('/subcontractors') ? 'mm-active' : ''}>
-              <Link to="/subcontractors" className={pathname.startsWith('/subcontractors') ? activeLinkCls : linkCls}>
-                <i data-feather="briefcase"></i>
-                <span>Subcontractors</span>
+            <li className={pathname.startsWith('/reports/teardown-logs') ? 'mm-active' : ''}>
+              <Link to="/reports/teardown-logs" className={pathname.startsWith('/reports/teardown-logs') ? activeLinkCls : linkCls}>
+                <i data-feather="clipboard" />
+                <span>Teardown Logs</span>
               </Link>
             </li>
 
-            <li>
-              <a href="#" className={linkCls}>
-                <i data-feather="eye"></i>
-                <span>Pole Owner Preview</span>
-              </a>
-            </li>
+            {internal && (
+              <li className={auditRpts.open ? 'mm-active' : ''}>
+                <a href="javascript:void(0);" onClick={auditRpts.toggle} aria-expanded={auditRpts.open} className={auditRpts.childActive ? activeLinkCls : parentCls}>
+                  <i data-feather="bar-chart-2" />
+                  <span>Audit Reports</span>
+                </a>
+                <ul style={{ display: auditRpts.open ? 'block' : 'none' }}>
+                  {sub('/polereports/poleAudit', 'Pole Audit Summary')}
+                  {sub('/dailyreports', 'Daily Reports')}
+                  {sub('/reports/rtd', 'RTD Reports')}
+                  {sub('/reports/vicinity', 'Vicinity Maps')}
+                  {sub('/reports/pole-reports', 'Pole Reports')}
+                </ul>
+              </li>
+            )}
 
-            {/* ── SETTINGS ── */}
-            <li className={labelCls}>Settings</li>
+            {/* ── USERS & SUBCON — admin full, executive subcon only ── */}
+            {(admin || executive) && (
+              <>
+                <li className={labelCls}>Teams</li>
+                <li className={pathname.startsWith('/subcontractors') ? 'mm-active' : ''}>
+                  <Link to="/subcontractors" className={pathname.startsWith('/subcontractors') ? activeLinkCls : linkCls}>
+                    <i data-feather="briefcase" />
+                    <span>Subcontractors</span>
+                  </Link>
+                </li>
+              </>
+            )}
 
-            <li>
-              <a href="#" className={linkCls}>
-                <i data-feather="settings"></i>
-                <span>System Settings</span>
-              </a>
-            </li>
-
-            <li>
-              <a href="#" className={linkCls}>
-                <i data-feather="shield"></i>
-                <span>User Management</span>
-              </a>
-            </li>
+            {/* System users — admin only */}
+            {admin && (
+              <>
+                <li className={labelCls}>System</li>
+                <li className={usersMgmt.open ? 'mm-active' : ''}>
+                  <a href="javascript:void(0);" onClick={usersMgmt.toggle} aria-expanded={usersMgmt.open} className={usersMgmt.childActive ? activeLinkCls : parentCls}>
+                    <i data-feather="users" />
+                    <span>User Management</span>
+                  </a>
+                  <ul style={{ display: usersMgmt.open ? 'block' : 'none' }}>
+                    {sub('/users', 'All Users')}
+                  </ul>
+                </li>
+                <li>
+                  <a href="#" className={linkCls}>
+                    <i data-feather="settings" />
+                    <span>System Settings</span>
+                  </a>
+                </li>
+              </>
+            )}
 
           </ul>
         </div>
       </div>
       <UserDropdown />
-
     </div>
   )
 }

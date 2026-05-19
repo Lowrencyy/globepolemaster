@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { getToken, API_BASE } from '../../lib/auth'
-import { cacheGet, cacheSet } from '../../lib/cache'
+import { cacheGet, cacheSet, cacheDel } from '../../lib/cache'
 
 const ADMIN_API = `${API_BASE}/api/v1/admin`
 
@@ -25,6 +25,16 @@ type CreateForm = {
   company: Company | ''
   name: string
   warehouse_name: string
+  contact_name: string
+  contact_phone: string
+  contact_email: string
+  address: string
+  status: SubconStatus
+}
+
+type EditForm = {
+  name: string
+  contact_name: string
   contact_phone: string
   contact_email: string
   address: string
@@ -35,6 +45,7 @@ const emptyForm = (): CreateForm => ({
   company: '',
   name: '',
   warehouse_name: '',
+  contact_name: '',
   contact_phone: '',
   contact_email: '',
   address: '',
@@ -168,6 +179,11 @@ export default function Subcontractors() {
   const [successName, setSuccessName] = useState<string | null>(null)
   const [successWarehouse, setSuccessWarehouse] = useState<string | null>(null)
 
+  const [editingSubcon, setEditingSubcon] = useState<Subcontractor | null>(null)
+  const [editForm, setEditForm] = useState<EditForm>({ name: '', contact_name: '', contact_phone: '', contact_email: '', address: '', status: 'active' })
+  const [editError, setEditError] = useState<string | null>(null)
+  const [editSaving, setEditSaving] = useState(false)
+
   function load() {
     const cacheKey = `subcons_${companyFilter}`
     const hit = cacheGet<Subcontractor[]>(cacheKey)
@@ -196,6 +212,8 @@ export default function Subcontractors() {
   }
 
   useEffect(() => {
+    // Bust stale cache (pre-warehouses data)
+    cacheDel(`subcons_all`); cacheDel(`subcons_skycable`); cacheDel(`subcons_globe`)
     load()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [companyFilter])
@@ -248,6 +266,7 @@ export default function Subcontractors() {
         company: addForm.company,
         name: addForm.name.trim(),
         warehouse_name: addForm.warehouse_name.trim(),
+        contact_name: addForm.contact_name.trim(),
         contact_phone: addForm.contact_phone.trim(),
         contact_email: addForm.contact_email.trim(),
         address: addForm.address.trim(),
@@ -282,16 +301,40 @@ export default function Subcontractors() {
     }
   }
 
+  function openEdit(s: Subcontractor) {
+    setEditingSubcon(s)
+    setEditForm({ name: s.name, contact_name: s.contact_name ?? '', contact_phone: s.contact_phone ?? '', contact_email: s.contact_email ?? '', address: s.address ?? '', status: s.status })
+    setEditError(null)
+  }
+
+  async function handleEdit(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault()
+    if (!editingSubcon) return
+    setEditSaving(true); setEditError(null)
+    try {
+      const res = await fetch(`${ADMIN_API}/subcontractors/${editingSubcon.id}`, {
+        method: 'PUT',
+        headers: authHeaders(),
+        body: JSON.stringify({ name: editForm.name.trim(), contact_name: editForm.contact_name.trim(), contact_phone: editForm.contact_phone.trim(), contact_email: editForm.contact_email.trim(), address: editForm.address.trim(), status: editForm.status }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.message ?? 'Failed to update')
+      setEditingSubcon(null)
+      cacheDel(`subcons_all`); cacheDel(`subcons_skycable`); cacheDel(`subcons_globe`)
+      load()
+    } catch (err) { setEditError(err instanceof Error ? err.message : 'Something went wrong') }
+    finally { setEditSaving(false) }
+  }
+
   return (
     <div className="flex flex-col gap-5 pb-10">
       {/* Premium header */}
-      <div className="relative overflow-hidden rounded-[30px] border border-white/70 bg-white/80 p-[1px] shadow-[0_24px_70px_-40px_rgba(15,23,42,0.65)] ring-1 ring-slate-950/[0.04] backdrop-blur-xl dark:border-white/10 dark:bg-zinc-900/80 dark:ring-white/10">
-        <div className="absolute inset-0 bg-gradient-to-br from-sky-500/18 via-blue-500/8 to-cyan-400/16" />
-        <div className="absolute -right-16 -top-20 h-52 w-52 rounded-full bg-sky-400/20 blur-3xl" />
-        <div className="absolute -bottom-24 left-1/3 h-56 w-56 rounded-full bg-blue-500/10 blur-3xl" />
-
-        <div className="relative flex flex-wrap items-center justify-between gap-5 rounded-[29px] bg-gradient-to-br from-white via-slate-50 to-white p-6 dark:from-zinc-900 dark:via-slate-950 dark:to-zinc-900">
-          <div className="flex items-center gap-4">
+      <div className="relative rounded-[30px] border border-white/70 bg-white/80 p-[1px] shadow-[0_24px_70px_-40px_rgba(15,23,42,0.65)] ring-1 ring-slate-950/[0.04] backdrop-blur-xl dark:border-white/10 dark:bg-zinc-900/80 dark:ring-white/10">
+        <div className="relative overflow-hidden flex flex-wrap items-center justify-between gap-5 rounded-[29px] bg-gradient-to-br from-white via-slate-50 to-white p-6 dark:from-zinc-900 dark:via-slate-950 dark:to-zinc-900">
+          <div className="pointer-events-none absolute inset-0 bg-gradient-to-br from-sky-500/18 via-blue-500/8 to-cyan-400/16 rounded-[29px]" />
+          <div className="pointer-events-none absolute -right-16 -top-20 h-52 w-52 rounded-full bg-sky-400/20 blur-3xl" />
+          <div className="pointer-events-none absolute -bottom-24 left-1/3 h-56 w-56 rounded-full bg-blue-500/10 blur-3xl" />
+          <div className="relative flex items-center gap-4">
             <div className="relative flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-2xl bg-gradient-to-br from-sky-500 to-blue-700 text-white shadow-[0_18px_42px_-20px_rgba(2,132,199,0.9)]">
               <div className="absolute inset-x-1 top-1 h-1/2 rounded-full bg-gradient-to-b from-white/40 to-transparent" />
               <i className="bx bx-buildings relative text-[27px]" />
@@ -327,7 +370,8 @@ export default function Subcontractors() {
             <button
               type="button"
               onClick={openAddModal}
-              className="inline-flex h-12 items-center gap-2 rounded-2xl bg-gradient-to-r from-sky-600 to-blue-700 px-5 text-sm font-black text-white shadow-[0_18px_36px_-18px_rgba(2,132,199,0.85)] transition hover:-translate-y-0.5 hover:shadow-[0_24px_44px_-22px_rgba(2,132,199,0.95)]"
+              className="inline-flex h-12 items-center gap-2 rounded-2xl px-5 text-sm font-black text-white shadow-lg transition hover:-translate-y-0.5"
+              style={{ backgroundColor: '#059669' }}
             >
               <i className="bx bx-plus text-[19px]" />
               Add Subcontractor
@@ -476,23 +520,21 @@ export default function Subcontractors() {
             const accent = CARD_ACCENTS[index % CARD_ACCENTS.length]
 
             return (
-              <button
+              <div
                 key={subcon.id}
-                type="button"
-                onClick={() => navigate(`/subcontractors/${subcon.id}`)}
                 className="group relative overflow-hidden rounded-[28px] border border-white/70 bg-white/80 p-[1px] text-left shadow-[0_18px_50px_-32px_rgba(15,23,42,0.55)] ring-1 ring-slate-950/[0.04] backdrop-blur-xl transition duration-300 hover:-translate-y-1 hover:shadow-[0_28px_70px_-38px_rgba(14,116,144,0.65)] dark:border-white/10 dark:bg-zinc-900/80 dark:ring-white/10"
               >
                 <div className={`absolute inset-0 bg-gradient-to-br ${accent} opacity-14 transition group-hover:opacity-20`} />
                 <div className="absolute inset-[1px] rounded-[27px] bg-gradient-to-br from-white via-slate-50 to-white dark:from-zinc-900 dark:via-slate-950 dark:to-zinc-900" />
                 <div className={`absolute -right-12 -top-12 h-36 w-36 rounded-full bg-gradient-to-br ${accent} opacity-20 blur-3xl`} />
 
-                <div className="relative rounded-[27px] p-5">
+                <div className="relative cursor-pointer rounded-[27px] p-5" onClick={() => navigate(`/subcontractors/${subcon.id}`)}>
                   <div className="flex items-start gap-4">
                     <div
                       className={`relative flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-2xl bg-gradient-to-br ${accent} text-xl font-black text-white shadow-[0_18px_36px_-20px_rgba(15,23,42,0.85)]`}
                     >
                       <div className="absolute inset-x-1 top-1 h-1/2 rounded-full bg-gradient-to-b from-white/45 to-transparent" />
-                      <i className="bx bx-buildings relative text-[24px]" />
+                      <span className="relative">{avatarLetter(subcon.name)}</span>
                     </div>
 
                     <div className="min-w-0 flex-1">
@@ -513,24 +555,36 @@ export default function Subcontractors() {
                       </div>
                     </div>
 
-                    <i className="bx bx-chevron-right mt-2 text-2xl text-slate-300 transition group-hover:translate-x-0.5 group-hover:text-sky-500" />
                   </div>
 
                   <div className="mt-5 space-y-2.5 text-sm">
-                    <div className="flex items-start gap-2.5 text-slate-500 dark:text-slate-400">
-                      <i className="bx bx-map-pin mt-0.5 text-base text-slate-300 dark:text-zinc-600" />
-                      <span className="line-clamp-1">{subcon.address || 'No address provided'}</span>
-                    </div>
+                    {subcon.contact_name && (
+                      <div className="flex items-center gap-2.5 text-slate-500 dark:text-slate-400">
+                        <i className="bx bx-user text-base text-slate-300 dark:text-zinc-600" />
+                        <span className="truncate">{subcon.contact_name}</span>
+                      </div>
+                    )}
 
-                    <div className="flex items-center gap-2.5 text-slate-500 dark:text-slate-400">
-                      <i className="bx bx-phone text-base text-slate-300 dark:text-zinc-600" />
-                      <span>{subcon.contact_phone || 'No CP number'}</span>
-                    </div>
+                    {subcon.contact_phone ? (
+                      <div className="flex items-center gap-2.5 text-slate-500 dark:text-slate-400">
+                        <i className="bx bx-phone text-base text-slate-300 dark:text-zinc-600" />
+                        <span>{subcon.contact_phone}</span>
+                      </div>
+                    ) : null}
 
-                    <div className="flex items-center gap-2.5 text-slate-500 dark:text-slate-400">
-                      <i className="bx bx-envelope text-base text-slate-300 dark:text-zinc-600" />
-                      <span className="truncate">{subcon.contact_email || 'No email address'}</span>
-                    </div>
+                    {subcon.contact_email ? (
+                      <div className="flex items-center gap-2.5 text-slate-500 dark:text-slate-400">
+                        <i className="bx bx-envelope text-base text-slate-300 dark:text-zinc-600" />
+                        <span className="truncate">{subcon.contact_email}</span>
+                      </div>
+                    ) : null}
+
+                    {subcon.address ? (
+                      <div className="flex items-start gap-2.5 text-slate-500 dark:text-slate-400">
+                        <i className="bx bx-map-pin mt-0.5 text-base text-slate-300 dark:text-zinc-600" />
+                        <span className="line-clamp-1">{subcon.address}</span>
+                      </div>
+                    ) : null}
 
                     <div className="flex items-center gap-2.5 text-slate-500 dark:text-slate-400">
                       <i className="bx bx-store text-base text-slate-300 dark:text-zinc-600" />
@@ -538,23 +592,36 @@ export default function Subcontractors() {
                     </div>
                   </div>
 
-                  <div className="mt-5 flex items-center gap-4 border-t border-slate-100 pt-4 dark:border-zinc-800">
+                  <div className="mt-5 flex items-center gap-3 border-t border-slate-100 pt-4 dark:border-zinc-800">
                     <div className="flex items-center gap-1.5 text-[11px] font-bold text-slate-400">
                       <i className="bx bx-group text-sm text-slate-300" />
                       {(subcon.teams ?? []).length} team{(subcon.teams ?? []).length !== 1 ? 's' : ''}
                     </div>
-
                     <div className="flex items-center gap-1.5 text-[11px] font-bold text-slate-400">
                       <i className="bx bx-store text-sm text-slate-300" />
                       {(subcon.warehouses ?? []).length} warehouse{(subcon.warehouses ?? []).length !== 1 ? 's' : ''}
                     </div>
-
-                    <div className="ml-auto font-mono text-[10px] font-black text-slate-300">
-                      #{subcon.id}
+                    <div className="ml-auto flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={e => { e.stopPropagation(); openEdit(subcon) }}
+                        className="flex h-7 w-7 items-center justify-center rounded-lg text-slate-400 transition hover:bg-amber-50 hover:text-amber-500"
+                        title="Edit subcontractor"
+                      >
+                        <i className="bx bx-pencil text-sm" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => navigate(`/subcontractors/${subcon.id}`)}
+                        className="flex h-7 w-7 items-center justify-center rounded-lg text-slate-400 transition hover:bg-sky-50 hover:text-sky-500"
+                        title="View details"
+                      >
+                        <i className="bx bx-chevron-right text-lg" />
+                      </button>
                     </div>
                   </div>
                 </div>
-              </button>
+              </div>
             )
           })}
         </div>
@@ -703,6 +770,18 @@ export default function Subcontractors() {
                 </div>
               </Field>
 
+              <Field label="Contact Person">
+                <div className="relative">
+                  <i className="bx bx-user absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-300" />
+                  <input
+                    value={addForm.contact_name}
+                    onChange={e => setAddForm(prev => ({ ...prev, contact_name: e.target.value }))}
+                    placeholder="e.g. Juan Dela Cruz"
+                    className={`${inputCls} pl-10`}
+                  />
+                </div>
+              </Field>
+
               <Field label="Address">
                 <div className="relative">
                   <i className="bx bx-map-pin absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-300" />
@@ -765,6 +844,66 @@ export default function Subcontractors() {
                   ) : (
                     'Create Subcontractor'
                   )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Subcontractor Modal */}
+      {editingSubcon && (
+        <div className="fixed inset-0 z-[999] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-slate-950/55 backdrop-blur-[6px]" onClick={() => setEditingSubcon(null)} />
+          <div className="relative w-full max-w-lg overflow-hidden rounded-[32px] border border-[#ffe8d0] bg-white shadow-2xl dark:border-[#3a2010] dark:bg-[#0f1728]">
+            <div className="border-b border-white/20 px-6 py-5" style={{ background: 'linear-gradient(to right, #f59e0b, #f97316)' }}>
+              <div className="flex items-center gap-3.5">
+                <div className="flex h-10 w-10 items-center justify-center rounded-[14px] border border-white/30 bg-white/15">
+                  <i className="bx bx-pencil text-white text-[19px]" />
+                </div>
+                <div className="flex-1">
+                  <h5 className="text-sm font-bold text-white">Edit Subcontractor</h5>
+                  <p className="text-xs text-white/80">{editingSubcon.name}</p>
+                </div>
+                <button onClick={() => setEditingSubcon(null)} className="flex h-9 w-9 items-center justify-center rounded-full border border-white/15 bg-white/10 text-white/80 hover:bg-white/20">
+                  <i className="bx bx-x text-[21px]" />
+                </button>
+              </div>
+            </div>
+            <form onSubmit={handleEdit} className="max-h-[70vh] overflow-y-auto p-6 space-y-4 bg-gradient-to-b from-[#fffdf8]/95 to-white dark:from-[#0f1728] dark:to-[#0f1728]">
+              <Field label="Subcontractor Name">
+                <input required value={editForm.name} onChange={e => setEditForm(p => ({ ...p, name: e.target.value }))} className={inputCls} placeholder="Company name" />
+              </Field>
+              <div className="grid grid-cols-2 gap-4">
+                <Field label="Contact Person">
+                  <input value={editForm.contact_name} onChange={e => setEditForm(p => ({ ...p, contact_name: e.target.value }))} className={inputCls} placeholder="Full name" />
+                </Field>
+                <Field label="CP Number">
+                  <input value={editForm.contact_phone} onChange={e => setEditForm(p => ({ ...p, contact_phone: e.target.value }))} className={inputCls} placeholder="09XXXXXXXXX" />
+                </Field>
+              </div>
+              <Field label="Email">
+                <input type="email" value={editForm.contact_email} onChange={e => setEditForm(p => ({ ...p, contact_email: e.target.value }))} className={inputCls} placeholder="contact@company.com" />
+              </Field>
+              <Field label="Address">
+                <input value={editForm.address} onChange={e => setEditForm(p => ({ ...p, address: e.target.value }))} className={inputCls} placeholder="Street, barangay, city" />
+              </Field>
+              <Field label="Status">
+                <div className="relative">
+                  <select value={editForm.status} onChange={e => setEditForm(p => ({ ...p, status: e.target.value as SubconStatus }))} className={`${inputCls} appearance-none pr-8 cursor-pointer`}>
+                    <option value="active">Active</option>
+                    <option value="inactive">Inactive</option>
+                  </select>
+                  <i className="bx bx-chevron-down pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                </div>
+              </Field>
+              {editError && <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-600">{editError}</div>}
+              <div className="flex gap-2 border-t border-[#f0e8d8] pt-4">
+                <button type="button" onClick={() => setEditingSubcon(null)} className={`${secondaryBtn} flex-1`}>Cancel</button>
+                <button type="submit" disabled={editSaving}
+                  className="flex-1 h-11 rounded-2xl px-5 text-sm font-semibold text-white shadow-md transition disabled:opacity-60"
+                  style={{ backgroundColor: '#f59e0b' }}>
+                  {editSaving ? <span className="flex items-center justify-center gap-2"><i className="bx bx-loader-alt animate-spin" /> Saving…</span> : 'Save Changes'}
                 </button>
               </div>
             </form>

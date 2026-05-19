@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode, type SyntheticEvent } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { getToken, API_BASE } from '../../lib/auth'
+import { getToken, API_BASE, isAdmin } from '../../lib/auth'
 import { cacheGet, cacheSet } from '../../lib/cache'
 
 const ADMIN_API = `${API_BASE}/api/v1/admin`
@@ -180,6 +180,116 @@ function AddUserModal({ teams, onSubmit, onClose, saving, error }: {
   )
 }
 
+/* ── Edit Staff Modal ──────────────────────────────────────────────── */
+function EditStaffModal({ user, teams, onSubmit, onClose, saving, error }: {
+  user: StaffUser; teams: Team[];
+  onSubmit: (id: number, f: Partial<UserForm>) => void;
+  onClose: () => void; saving: boolean; error: string | null
+}) {
+  const [form, setForm] = useState<UserForm>({
+    first_name: user.first_name,
+    last_name:  user.last_name,
+    email:      user.email,
+    role:       user.role,
+    cellphone:  user.cellphone ?? '',
+    team_id:    user.team_id ?? '',
+    status:     user.status,
+  })
+
+  return (
+    <div className="fixed inset-0 z-[999] flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-slate-950/55 backdrop-blur-[6px]" onClick={onClose} />
+      <div className="relative w-full max-w-lg rounded-[30px] border border-[#ffe8d8] bg-white shadow-[0_36px_100px_-34px_rgba(120,50,20,0.35)] dark:border-[#3a2010] dark:bg-[#0f1728]">
+        {/* Header */}
+        <div className="overflow-hidden rounded-t-[30px] border-b border-white/20 bg-gradient-to-r from-amber-500 to-orange-500 px-6 py-4">
+          <div className="flex items-center gap-3.5">
+            <div className="flex h-10 w-10 items-center justify-center rounded-[14px] border border-white/30 bg-white/15">
+              <i className="bx bx-pencil text-white text-[19px]" />
+            </div>
+            <div className="flex-1">
+              <h5 className="text-sm font-bold text-white">Edit Staff Member</h5>
+              <p className="text-xs text-white/80">{user.full_name} · reassign team or update details</p>
+            </div>
+            <button onClick={onClose} className="flex h-9 w-9 items-center justify-center rounded-full border border-white/15 bg-white/10 text-white/80 hover:bg-white/20">
+              <i className="bx bx-x text-[21px]" />
+            </button>
+          </div>
+        </div>
+
+        {/* Body */}
+        <form onSubmit={e => { e.preventDefault(); onSubmit(user.id, form) }}
+          className="max-h-[70vh] overflow-y-auto p-6 space-y-4 bg-gradient-to-b from-[#fffdf8]/95 to-white dark:from-[#0f1728] dark:to-[#0f1728]">
+
+          {/* Team reassignment — prominent at top */}
+          <div className="rounded-2xl border border-amber-100 bg-amber-50/60 p-4 dark:border-amber-900/30 dark:bg-amber-900/10">
+            <p className="mb-3 text-[10px] font-black uppercase tracking-widest text-amber-600 dark:text-amber-400">Team Assignment</p>
+            <F label="Assign to Team">
+              <div className="relative">
+                <select value={form.team_id} onChange={e => setForm(p => ({ ...p, team_id: Number(e.target.value) || '' }))}
+                  className={`${iCls} appearance-none pr-8 cursor-pointer`}>
+                  <option value="">— No team —</option>
+                  {teams.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                </select>
+                <i className="bx bx-chevron-down pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              </div>
+            </F>
+          </div>
+
+          {/* Name + role */}
+          <div className="grid grid-cols-2 gap-4">
+            <F label="First Name">
+              <input required value={form.first_name} onChange={e => setForm(p => ({ ...p, first_name: e.target.value }))} className={iCls} />
+            </F>
+            <F label="Last Name">
+              <input required value={form.last_name} onChange={e => setForm(p => ({ ...p, last_name: e.target.value }))} className={iCls} />
+            </F>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <F label="Role">
+              <div className="relative">
+                <select value={form.role} onChange={e => setForm(p => ({ ...p, role: e.target.value }))}
+                  className={`${iCls} appearance-none pr-8 cursor-pointer`}>
+                  {USER_ROLES.map(r => <option key={r} value={r}>{r.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}</option>)}
+                </select>
+                <i className="bx bx-chevron-down pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              </div>
+            </F>
+            <F label="Status">
+              <div className="relative">
+                <select value={form.status} onChange={e => setForm(p => ({ ...p, status: e.target.value as UserStatus }))}
+                  className={`${iCls} appearance-none pr-8 cursor-pointer`}>
+                  <option value="active">Active</option>
+                  <option value="inactive">Inactive</option>
+                  <option value="on_hold">On Hold</option>
+                </select>
+                <i className="bx bx-chevron-down pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              </div>
+            </F>
+          </div>
+
+          <F label="Cellphone">
+            <input value={form.cellphone} onChange={e => setForm(p => ({ ...p, cellphone: e.target.value }))}
+              placeholder="09XXXXXXXXX" className={iCls} />
+          </F>
+
+          {error && <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-600">{error}</div>}
+
+          <div className="flex gap-2 border-t border-[#f0e8d8] pt-4">
+            <button type="button" onClick={onClose} className={`${secondaryBtn} flex-1`}>Cancel</button>
+            <button type="submit" disabled={saving}
+              className="flex-1 h-10 rounded-2xl bg-amber-500 px-5 text-sm font-semibold text-white shadow-md shadow-amber-400/30 transition hover:bg-amber-600 disabled:opacity-60">
+              {saving
+                ? <span className="flex items-center justify-center gap-2"><i className="bx bx-loader-alt animate-spin" /> Saving…</span>
+                : 'Save Changes'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  )
+}
+
 /* ═══════════════════════════════════════════════════════════════════ */
 export default function SubcontractorDetail() {
   const { id } = useParams<{ id: string }>()
@@ -202,6 +312,9 @@ export default function SubcontractorDetail() {
   const [saving, setSaving]                 = useState(false)
   const [tempPass, setTempPass]             = useState<{ name: string; password: string } | null>(null)
   const [resettingId, setResettingId]       = useState<number | null>(null)
+  const [editingUser, setEditingUser]       = useState<StaffUser | null>(null)
+  const [editUserError, setEditUserError]   = useState<string | null>(null)
+  const [deletingId, setDeletingId]         = useState<number | null>(null)
 
   useEffect(() => {
     if (!subconId) return
@@ -269,16 +382,27 @@ export default function SubcontractorDetail() {
     finally { setSaving(false) }
   }
 
-  async function handleStatusToggle(u: StaffUser) {
-    const next: UserStatus = u.status === 'active' ? 'inactive' : 'active'
-    const res = await fetch(`${ADMIN_API}/users/${u.id}/status`, {
-      method: 'PUT', headers: authHeaders(), body: JSON.stringify({ status: next }),
-    })
-    if (res.ok) setUsers(prev => {
-      const updated = prev.map(x => x.id === u.id ? { ...x, status: next } : x)
-      cacheSet(`subcondetail_${subconId}_users`, updated)
-      return updated
-    })
+  async function handleEditUser(id: number, form: Partial<UserForm>) {
+    setSaving(true); setEditUserError(null)
+    try {
+      const payload: Record<string, unknown> = {
+        first_name: form.first_name,
+        last_name:  form.last_name,
+        role:       form.role,
+        status:     form.status,
+        cellphone:  form.cellphone,
+        team_id:    form.team_id || null,
+      }
+      const res  = await fetch(`${ADMIN_API}/users/${id}`, { method: 'PUT', headers: authHeaders(), body: JSON.stringify(payload) })
+      const data = await res.json()
+      if (!res.ok) {
+        const msg = data.message ?? (Object.values(data.errors ?? {}) as string[][])?.[0]?.[0] ?? 'Failed'
+        throw new Error(msg)
+      }
+      setEditingUser(null)
+      loadUsers()
+    } catch (err) { setEditUserError(err instanceof Error ? err.message : 'Something went wrong') }
+    finally { setSaving(false) }
   }
 
   async function handleResetPassword(u: StaffUser) {
@@ -289,6 +413,19 @@ export default function SubcontractorDetail() {
     if (res.ok) setTempPass({ name: u.full_name, password: data.temp_password })
   }
 
+  async function handleDeleteUser(u: StaffUser) {
+    if (!confirm(`Delete ${u.full_name}? This cannot be undone.`)) return
+    setDeletingId(u.id)
+    const res = await fetch(`${ADMIN_API}/users/${u.id}`, { method: 'DELETE', headers: authHeaders() })
+    setDeletingId(null)
+    if (res.ok) {
+      const updated = users.filter(x => x.id !== u.id)
+      setUsers(updated)
+      cacheSet(`subcondetail_${subconId}_users`, updated)
+    }
+  }
+
+  const admin = isAdmin()
   const teams    = subcon?.teams ?? []
   const warehouses = subcon?.warehouses ?? []
 
@@ -455,14 +592,20 @@ export default function SubcontractorDetail() {
                       </td>
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-1">
-                          <button onClick={() => handleStatusToggle(u)} title={u.status === 'active' ? 'Deactivate' : 'Activate'}
-                            className={`flex h-7 w-7 items-center justify-center rounded-lg transition ${u.status === 'active' ? 'text-emerald-500 hover:bg-emerald-50' : 'text-slate-400 hover:bg-slate-100'}`}>
-                            <i className={`bx ${u.status === 'active' ? 'bx-toggle-right' : 'bx-toggle-left'} text-xl`} />
+                          <button onClick={() => { setEditUserError(null); setEditingUser(u) }} title="Edit staff member"
+                            className="flex h-7 w-7 items-center justify-center rounded-lg text-slate-400 transition hover:bg-amber-50 hover:text-amber-500">
+                            <i className="bx bx-pencil text-sm" />
                           </button>
                           <button onClick={() => handleResetPassword(u)} disabled={resettingId === u.id} title="Reset password"
-                            className="flex h-7 w-7 items-center justify-center rounded-lg text-slate-400 transition hover:bg-amber-50 hover:text-amber-600">
+                            className="flex h-7 w-7 items-center justify-center rounded-lg text-slate-400 transition hover:bg-sky-50 hover:text-sky-500">
                             {resettingId === u.id ? <i className="bx bx-loader-alt animate-spin text-sm" /> : <i className="bx bx-key text-sm" />}
                           </button>
+                          {admin && (
+                            <button onClick={() => handleDeleteUser(u)} disabled={deletingId === u.id} title="Delete user"
+                              className="flex h-7 w-7 items-center justify-center rounded-lg text-slate-400 transition hover:bg-red-50 hover:text-red-500">
+                              {deletingId === u.id ? <i className="bx bx-loader-alt animate-spin text-sm" /> : <i className="bx bx-trash text-sm" />}
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -598,6 +741,18 @@ export default function SubcontractorDetail() {
             </form>
           </div>
         </div>
+      )}
+
+      {/* Edit Staff Modal */}
+      {editingUser && (
+        <EditStaffModal
+          user={editingUser}
+          teams={teams}
+          onSubmit={handleEditUser}
+          onClose={() => setEditingUser(null)}
+          saving={saving}
+          error={editUserError}
+        />
       )}
 
       {/* Temp password banner */}

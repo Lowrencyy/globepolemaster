@@ -1,9 +1,9 @@
 import { type ReactNode, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import FieldCoverageMap, { TILE_LAYERS } from '../components/FieldCoverageMap'
-import type { MapView } from '../components/FieldCoverageMap'
-import { getToken, SKYCABLE_API, GLOBE_API } from '../lib/auth'
-import { cacheDel, cacheGet, cacheSet } from '../lib/cache'
+import FieldCoverageMap, { TILE_LAYERS } from '../../components/FieldCoverageMap'
+import type { MapView } from '../../components/FieldCoverageMap'
+import { getToken, SKYCABLE_API, GLOBE_API } from '../../lib/auth'
+import { cacheDel, cacheGet, cacheSet } from '../../lib/cache'
 
 declare const ApexCharts: any
 
@@ -329,7 +329,7 @@ const h = () => ({
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
-export default function Dashboard() {
+export default function SubconDashboard() {
   const navigate = useNavigate()
   const [mapView, setMapView] = useState<MapView>('satellite')
   const [surveyTab, setSurveyTab] = useState<'all' | 'active' | 'inactive' | 'for_removal'>('all')
@@ -596,7 +596,7 @@ export default function Dashboard() {
         <div className="md:flex items-center justify-between px-[2px] gap-3 min-w-0">
           <div className="min-w-0">
             <h4 className="text-[18px] font-medium text-gray-800 mb-1 dark:text-gray-100 truncate">
-              Telcovantage — Operations Dashboard
+              Telcovantage — Subcon Dashboard
             </h4>
           </div>
 

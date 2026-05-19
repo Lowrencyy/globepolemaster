@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
+import { SKYCABLE_API, getToken } from '../../lib/auth'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -13,15 +14,35 @@ interface Lineman {
   status: LinemanStatus
   currentTask: string
   region: string
-  polesAuditedToday: number
-  battery: number
   lastUpdate: Date
   lat: number
   lng: number
   trail: Array<{ lat: number; lng: number }>
+  _api?: ApiLineman
 }
 
-// ── Teardown log mock data ────────────────────────────────────────────────────
+interface ApiLineman {
+  id: string
+  name: string
+  employeeId: string
+  status: LinemanStatus
+  lat: number
+  lng: number
+  accuracy: number | null
+  pingedAt: string
+  // Address (reverse-geocoded from device)
+  barangay: string | null
+  city: string | null
+  province: string | null
+  regionName: string | null
+  // Assignment
+  teamId: number | null
+  teamName: string | null
+  subconId: number | null
+  subconName: string | null
+}
+
+// ── Teardown log types ────────────────────────────────────────────────────────
 
 type LogAction = 'started' | 'completed' | 'submitted' | 'flagged' | 'on_site'
 
@@ -45,19 +66,6 @@ const LOG_ACTION_STYLE: Record<LogAction, { label: string; cls: string }> = {
   flagged:   { label: 'Flagged',   cls: 'bg-red-500/20 text-red-400' },
 }
 
-function minsAgo(n: number) { const d = new Date(); d.setMinutes(d.getMinutes() - n); return d }
-
-const SEED_LOGS: TeardownLog[] = [
-  { id: 'L01', ticket: 'TK-0112', lineman: 'Ana Bautista',   employeeId: 'EMP-4055', pole: 'PL-7654', span: 'SP-1044', area: 'Laguna – Sta. Rosa',       action: 'started',   ts: minsAgo(1)  },
-  { id: 'L02', ticket: 'TK-0089', lineman: 'Ramon Castillo', employeeId: 'EMP-9007', pole: 'PL-6540', span: 'SP-0988', area: 'CDO – Divisoria',           action: 'on_site',   ts: minsAgo(3)  },
-  { id: 'L03', ticket: 'TK-0108', lineman: 'Juan Dela Cruz', employeeId: 'EMP-1042', pole: 'PL-8812', span: 'SP-1032', area: 'Makati – Brgy. Sta. Cruz',  action: 'completed', ts: minsAgo(6)  },
-  { id: 'L04', ticket: 'TK-0101', lineman: 'Luz Fernandez',  employeeId: 'EMP-8041', pole: 'PL-5210', span: 'SP-0920', area: 'Ilocos Sur – Vigan',        action: 'submitted', ts: minsAgo(11) },
-  { id: 'L05', ticket: 'TK-0095', lineman: 'Carlos Mendoza', employeeId: 'EMP-5002', pole: 'PL-5802', span: 'SP-0871', area: 'Cebu – Mandaue',            action: 'flagged',   ts: minsAgo(18) },
-  { id: 'L06', ticket: 'TK-0091', lineman: 'Maria Santos',   employeeId: 'EMP-2031', pole: 'PL-7703', span: 'SP-0987', area: 'QC – Brgy. Palanan',        action: 'submitted', ts: minsAgo(24) },
-  { id: 'L07', ticket: 'TK-0087', lineman: 'Ana Bautista',   employeeId: 'EMP-4055', pole: 'PL-7200', span: 'SP-0964', area: 'Laguna – Biñan',            action: 'completed', ts: minsAgo(30) },
-  { id: 'L08', ticket: 'TK-0083', lineman: 'Ramon Castillo', employeeId: 'EMP-9007', pole: 'PL-6480', span: 'SP-0941', area: 'CDO – Lapasan',             action: 'completed', ts: minsAgo(37) },
-]
-
 function timeAgo(date: Date) {
   const diff = Math.floor((Date.now() - date.getTime()) / 60000)
   if (diff < 1) return 'just now'
@@ -65,20 +73,38 @@ function timeAgo(date: Date) {
   return `${Math.floor(diff / 60)}h ${diff % 60}m ago`
 }
 
-// ── Mock data ─────────────────────────────────────────────────────────────────
+function apiHeaders() {
+  const token = getToken()
+  return {
+    Accept: 'application/json',
+    'ngrok-skip-browser-warning': 'true',
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  }
+}
 
-const SEED: Omit<Lineman, 'trail' | 'lastUpdate'>[] = [
-  { id: 'LM-001', name: 'Juan Dela Cruz',   employeeId: 'EMP-1042', status: 'active',  currentTask: 'Auditing PL-8812',  region: 'NCR – Makati',           polesAuditedToday: 14, battery: 78,  lat: 14.5550, lng: 121.0150 },
-  { id: 'LM-002', name: 'Maria Santos',     employeeId: 'EMP-2031', status: 'active',  currentTask: 'Auditing PL-7703',  region: 'NCR – Quezon City',      polesAuditedToday: 9,  battery: 55,  lat: 14.6760, lng: 121.0430 },
-  { id: 'LM-003', name: 'Pedro Reyes',      employeeId: 'EMP-3018', status: 'idle',    currentTask: 'On break',          region: 'Region III – Pampanga',  polesAuditedToday: 6,  battery: 91,  lat: 15.0700, lng: 120.6200 },
-  { id: 'LM-004', name: 'Ana Bautista',     employeeId: 'EMP-4055', status: 'active',  currentTask: 'Teardown TK-0112',  region: 'Region IV – Laguna',     polesAuditedToday: 11, battery: 43,  lat: 14.1650, lng: 121.2430 },
-  { id: 'LM-005', name: 'Carlos Mendoza',   employeeId: 'EMP-5002', status: 'active',  currentTask: 'Auditing PL-5802',  region: 'Region VII – Cebu City', polesAuditedToday: 17, battery: 66,  lat: 10.3170, lng: 123.8910 },
-  { id: 'LM-006', name: 'Rosa Villanueva',  employeeId: 'EMP-6019', status: 'offline', currentTask: 'No signal',         region: 'Region XI – Davao',      polesAuditedToday: 3,  battery: 12,  lat: 7.0730,  lng: 125.6120 },
-  { id: 'LM-007', name: 'Jose Garcia',      employeeId: 'EMP-7033', status: 'idle',    currentTask: 'Traveling',         region: 'Region VI – Iloilo',     polesAuditedToday: 8,  battery: 82,  lat: 10.7200, lng: 122.5620 },
-  { id: 'LM-008', name: 'Luz Fernandez',    employeeId: 'EMP-8041', status: 'active',  currentTask: 'Auditing PL-6540',  region: 'Region I – Ilocos Sur',  polesAuditedToday: 21, battery: 74,  lat: 17.5730, lng: 120.3870 },
-  { id: 'LM-009', name: 'Ramon Castillo',   employeeId: 'EMP-9007', status: 'active',  currentTask: 'Teardown TK-0089',  region: 'Region X – CDO',         polesAuditedToday: 13, battery: 59,  lat: 8.4820,  lng: 124.6480 },
-  { id: 'LM-010', name: 'Elena Ramos',      employeeId: 'EMP-0028', status: 'idle',    currentTask: 'On break',          region: 'Region XII – GenSan',    polesAuditedToday: 5,  battery: 88,  lat: 6.1120,  lng: 125.1710 },
-]
+function mapApiLineman(api: ApiLineman, prev?: Lineman): Lineman {
+  const trail = prev
+    ? [...prev.trail, { lat: prev.lat, lng: prev.lng }].slice(-8)
+    : []
+
+  const locationParts = [api.city, api.province].filter(Boolean)
+  const region = locationParts.length > 0 ? locationParts.join(', ') : (api.regionName ?? '—')
+
+  return {
+    id:          api.id,
+    name:        api.name,
+    employeeId:  api.employeeId,
+    status:      api.status,
+    currentTask: api.status === 'offline' ? 'No signal' : api.status === 'idle' ? 'Idle' : 'In the field',
+    region,
+    lastUpdate:  new Date(api.pingedAt),
+    lat:         api.lat,
+    lng:         api.lng,
+    trail,
+    // carry full api data for detail card
+    _api:        api,
+  } as Lineman & { _api: ApiLineman }
+}
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -150,12 +176,6 @@ function makeIcon(l: Pick<Lineman, 'name' | 'status'>, size = 34, opacity = 1) {
   return L.divIcon({ html, className: '', iconSize: [size, size], iconAnchor: [size / 2, size / 2], popupAnchor: [0, -(size / 2 + 6)] })
 }
 
-function batteryColor(pct: number) {
-  if (pct > 60) return '#16a34a'
-  if (pct > 30) return '#d97706'
-  return '#dc2626'
-}
-
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function LiveTeardown() {
@@ -164,15 +184,16 @@ export default function LiveTeardown() {
   const tileRef    = useRef<L.TileLayer | null>(null)
   const markersRef = useRef<Map<string, { main: L.Marker; trail: L.Marker[] }>>(new Map())
 
-  const [linemen, setLinemen] = useState<Lineman[]>(() =>
-    SEED.map(l => ({ ...l, trail: [], lastUpdate: new Date() }))
-  )
+  const [linemen, setLinemen]           = useState<Lineman[]>([])
+  const [lastFetch, setLastFetch]       = useState<Date | null>(null)
+  const [fetchError, setFetchError]     = useState(false)
+  const linemenRef                      = useRef<Lineman[]>([])
   const [baseTile, setBaseTile]         = useState<BaseTile>('satellite')
   const [filterStatus, setFilterStatus] = useState<LinemanStatus | 'all'>('all')
   const [search, setSearch]             = useState('')
   const [selected, setSelected]         = useState<string | null>(null)
   const [logsOpen, setLogsOpen]         = useState(false)
-  const [logs, setLogs]                 = useState<TeardownLog[]>(SEED_LOGS)
+  const [logs]                          = useState<TeardownLog[]>([])
   const [logFilter, setLogFilter]       = useState<LogAction | 'all'>('all')
 
   const selectedLineman = linemen.find(l => l.id === selected) ?? null
@@ -198,16 +219,29 @@ export default function LiveTeardown() {
     tileRef.current = L.tileLayer(t.url, { attribution: t.attr, maxZoom: 19 }).addTo(mapObj.current)
   }, [baseTile])
 
-  // ── Simulate GPS every 3 s ─────────────────────────────────────────────────
+  // ── Poll backend for live lineman locations every 30 s ────────────────────
   useEffect(() => {
-    const id = setInterval(() => {
-      setLinemen(prev => prev.map(l => {
-        if (l.status === 'offline') return { ...l, lastUpdate: new Date() }
-        const jitter = () => (Math.random() - 0.5) * 0.004
-        const trail = [...l.trail, { lat: l.lat, lng: l.lng }].slice(-8)
-        return { ...l, lat: l.lat + jitter(), lng: l.lng + jitter(), trail, lastUpdate: new Date() }
-      }))
-    }, 3000)
+    async function fetchLocations() {
+      try {
+        const res = await fetch(`${SKYCABLE_API}/lineman/locations`, { headers: apiHeaders() })
+        if (!res.ok) { setFetchError(true); return }
+        const data: ApiLineman[] = await res.json()
+        setFetchError(false)
+        setLastFetch(new Date())
+        setLinemen(prev => {
+          linemenRef.current = data.map(api => {
+            const existing = prev.find(p => p.id === api.id)
+            return mapApiLineman(api, existing)
+          })
+          return linemenRef.current
+        })
+      } catch {
+        setFetchError(true)
+      }
+    }
+
+    fetchLocations()
+    const id = setInterval(fetchLocations, 30_000)
     return () => clearInterval(id)
   }, [])
 
@@ -279,7 +313,12 @@ export default function LiveTeardown() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h4 className="text-lg font-bold text-slate-800 dark:text-zinc-100">Live Teardown Map</h4>
-          <p className="text-xs text-slate-400 dark:text-zinc-500 mt-0.5">Real-time lineman GPS · auto-updates every 3 s</p>
+          <p className="text-xs mt-0.5 flex items-center gap-1.5">
+            {fetchError
+              ? <span className="text-red-400 dark:text-red-400">⚠ Cannot reach server</span>
+              : <><span className="h-1.5 w-1.5 rounded-full bg-green-500 animate-pulse inline-block" /><span className="text-slate-400 dark:text-zinc-500">Live · refreshes every 30 s{lastFetch ? ` · last at ${lastFetch.toLocaleTimeString()}` : ''}</span></>
+            }
+          </p>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
@@ -447,10 +486,10 @@ export default function LiveTeardown() {
                     <p className="text-[11px] text-slate-400 dark:text-zinc-500 truncate">{l.employeeId} · {l.region}</p>
                     <div className="flex items-center justify-between mt-0.5">
                       <p className="text-[11px] font-medium truncate" style={{ color: STATUS_COLOR[l.status] }}>
-                        {STATUS_LABEL[l.status]} — {l.currentTask}
+                        {STATUS_LABEL[l.status]}
                       </p>
-                      <span className="text-[10px] font-semibold ml-1 shrink-0" style={{ color: batteryColor(l.battery) }}>
-                        {l.battery}%
+                      <span className="text-[10px] text-slate-400 dark:text-zinc-500 ml-1 shrink-0">
+                        {timeAgo(l.lastUpdate)}
                       </span>
                     </div>
                   </div>
@@ -463,53 +502,88 @@ export default function LiveTeardown() {
           </div>
 
           {/* Selected detail card */}
-          {selectedLineman && (
-            <div className="border-t border-slate-100 dark:border-zinc-700 p-3 bg-slate-50/60 dark:bg-zinc-700/20">
-              <div className="flex items-center justify-between mb-2.5">
-                <div className="flex items-center gap-2">
-                  <div className="w-8 h-8 rounded-full flex items-center justify-center text-[11px] font-bold shrink-0"
-                    style={{ border: `2.5px solid ${STATUS_COLOR[selectedLineman.status]}`, color: STATUS_COLOR[selectedLineman.status] }}>
-                    {initials(selectedLineman.name)}
-                  </div>
-                  <div>
-                    <p className="text-xs font-bold text-slate-700 dark:text-zinc-200 leading-tight">{selectedLineman.name}</p>
-                    <p className="text-[10px] text-slate-400 dark:text-zinc-500">{selectedLineman.employeeId}</p>
-                  </div>
-                </div>
-                <button onClick={() => setSelected(null)} className="text-slate-400 hover:text-slate-600 dark:hover:text-zinc-200">
-                  <i className="mdi mdi-close text-base" />
-                </button>
-              </div>
+          {selectedLineman && (() => {
+            const api = selectedLineman._api
+            const address = [api?.barangay, api?.city, api?.province]
+              .filter(Boolean).join(', ') || '—'
 
-              <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-[11px] mb-2">
-                {([
-                  ['Status',       STATUS_LABEL[selectedLineman.status]],
-                  ['Region',       selectedLineman.region],
-                  ['Current Task', selectedLineman.currentTask],
-                  ['Poles Today',  String(selectedLineman.polesAuditedToday)],
-                  ['Coords',       `${selectedLineman.lat.toFixed(4)}, ${selectedLineman.lng.toFixed(4)}`],
-                  ['Last Update',  selectedLineman.lastUpdate.toLocaleTimeString()],
-                ] as [string, string][]).map(([k, v]) => (
-                  <div key={k}>
-                    <span className="text-slate-400 dark:text-zinc-500">{k}</span>
-                    <p className="font-semibold text-slate-700 dark:text-zinc-200 truncate">{v}</p>
+            return (
+              <div className="border-t border-slate-100 dark:border-zinc-700 p-3 bg-slate-50/60 dark:bg-zinc-700/20 overflow-y-auto max-h-72">
+                {/* Header */}
+                <div className="flex items-center justify-between mb-3">
+                  <div className="flex items-center gap-2">
+                    <div className="w-9 h-9 rounded-full flex items-center justify-center text-[11px] font-bold shrink-0"
+                      style={{ border: `2.5px solid ${STATUS_COLOR[selectedLineman.status]}`, color: STATUS_COLOR[selectedLineman.status] }}>
+                      {initials(selectedLineman.name)}
+                    </div>
+                    <div>
+                      <p className="text-xs font-bold text-slate-700 dark:text-zinc-200 leading-tight">{selectedLineman.name}</p>
+                      <p className="text-[10px] text-slate-400 dark:text-zinc-500">{selectedLineman.employeeId}</p>
+                    </div>
                   </div>
-                ))}
-              </div>
+                  <button onClick={() => setSelected(null)} className="text-slate-400 hover:text-slate-600 dark:hover:text-zinc-200 w-6 h-6 flex items-center justify-center rounded-full hover:bg-slate-200 dark:hover:bg-zinc-600 transition">
+                    ×
+                  </button>
+                </div>
 
-              {/* Battery bar */}
-              <div>
-                <div className="flex justify-between text-[10px] mb-1">
-                  <span className="text-slate-400 dark:text-zinc-500">Battery</span>
-                  <span className="font-bold" style={{ color: batteryColor(selectedLineman.battery) }}>{selectedLineman.battery}%</span>
+                {/* Status + Last Seen */}
+                <div className="flex gap-2 mb-3">
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold"
+                    style={{ background: STATUS_COLOR[selectedLineman.status] + '22', color: STATUS_COLOR[selectedLineman.status] }}>
+                    <span className="w-1.5 h-1.5 rounded-full inline-block" style={{ background: STATUS_COLOR[selectedLineman.status] }} />
+                    {STATUS_LABEL[selectedLineman.status]}
+                  </span>
+                  <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 dark:bg-zinc-700 text-slate-500 dark:text-zinc-400">
+                    {timeAgo(selectedLineman.lastUpdate)}
+                  </span>
                 </div>
-                <div className="h-1.5 rounded-full bg-slate-200 dark:bg-zinc-600 overflow-hidden">
-                  <div className="h-full rounded-full transition-all duration-500"
-                    style={{ width: `${selectedLineman.battery}%`, background: batteryColor(selectedLineman.battery) }} />
+
+                {/* Subcon + Team */}
+                <div className="rounded-xl bg-white dark:bg-zinc-800 border border-slate-100 dark:border-zinc-700 p-2.5 mb-2.5 space-y-2">
+                  <p className="text-[9px] font-black text-slate-400 dark:text-zinc-500 uppercase tracking-wider">Assignment</p>
+                  <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-[11px]">
+                    <div>
+                      <span className="text-[9px] font-bold text-slate-400 dark:text-zinc-500 uppercase">Subcontractor</span>
+                      <p className="font-bold text-slate-700 dark:text-zinc-200 truncate">{api?.subconName ?? '—'}</p>
+                    </div>
+                    <div>
+                      <span className="text-[9px] font-bold text-slate-400 dark:text-zinc-500 uppercase">Team</span>
+                      <p className="font-bold text-slate-700 dark:text-zinc-200 truncate">{api?.teamName ?? '—'}</p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Location */}
+                <div className="rounded-xl bg-white dark:bg-zinc-800 border border-slate-100 dark:border-zinc-700 p-2.5 mb-2.5 space-y-2">
+                  <p className="text-[9px] font-black text-slate-400 dark:text-zinc-500 uppercase tracking-wider">Location</p>
+                  <p className="text-[11px] font-bold text-slate-700 dark:text-zinc-200">{address}</p>
+                  {api?.regionName && (
+                    <p className="text-[10px] text-slate-400 dark:text-zinc-500">{api.regionName}</p>
+                  )}
+                  <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[10px] pt-1 border-t border-slate-100 dark:border-zinc-700">
+                    <div>
+                      <span className="text-slate-400 dark:text-zinc-500">Latitude</span>
+                      <p className="font-mono font-bold text-slate-600 dark:text-zinc-300">{selectedLineman.lat.toFixed(6)}</p>
+                    </div>
+                    <div>
+                      <span className="text-slate-400 dark:text-zinc-500">Longitude</span>
+                      <p className="font-mono font-bold text-slate-600 dark:text-zinc-300">{selectedLineman.lng.toFixed(6)}</p>
+                    </div>
+                    <div>
+                      <span className="text-slate-400 dark:text-zinc-500">Pinged At</span>
+                      <p className="font-bold text-slate-600 dark:text-zinc-300">{selectedLineman.lastUpdate.toLocaleTimeString()}</p>
+                    </div>
+                    {api?.accuracy && (
+                      <div>
+                        <span className="text-slate-400 dark:text-zinc-500">Accuracy</span>
+                        <p className="font-bold text-slate-600 dark:text-zinc-300">±{Math.round(api.accuracy)}m</p>
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
-            </div>
-          )}
+            )
+          })()}
         </div>
       </div>
     </div>

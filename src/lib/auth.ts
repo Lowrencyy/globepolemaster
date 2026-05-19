@@ -77,20 +77,124 @@ export function getRole(): string {
   return 'field_staff'
 }
 
-export function isExecutive(): boolean {
+function roleIs(role: string, ...values: string[]): boolean {
   const user = getUser()
   if (user) {
     const fields = ['role', 'roles', 'role_name', 'user_role', 'type', 'user_type']
     for (const f of fields) {
       const val = user[f]
-      if (typeof val === 'string' && ['executive', 'exec', 'manager'].includes(val.toLowerCase())) return true
+      if (typeof val === 'string' && values.includes(val.toLowerCase())) return true
     }
   }
   return false
 }
 
+// ── Role checks ────────────────────────────────────────────────────────────
+
+export function isExecutive(): boolean {
+  return roleIs('executive', 'executive', 'exec', 'manager')
+}
+
+/** Skycable / Globe client — read-only project view */
+export function isClient(): boolean {
+  return roleIs('client', 'client', 'viewer', 'customer', 'skycable_client', 'globe_client')
+}
+
+/** Subcontractor company-level admin */
+export function isSubcontractor(): boolean {
+  return roleIs('subcontractor', 'subcontractor', 'subcon', 'subcontractor_admin')
+}
+
+/** Project manager — subcon staff that can also access warehouse */
+export function isProjectManager(): boolean {
+  return roleIs('pm', 'project_manager', 'pm', 'project manager')
+}
+
+/** Warehouse in-charge — manages inventory */
+export function isWarehouseIncharge(): boolean {
+  return roleIs('warehouse', 'warehouse_incharge', 'warehouse_incharge', 'warehouse')
+}
+
+/** Any subcontractor-side user (subcon admin, PM, warehouse, field staff) */
+export function isSubconSide(): boolean {
+  return isSubcontractor() || isProjectManager() || isWarehouseIncharge()
+    || roleIs('field', 'field_staff', 'lineman', 'technician')
+}
+
+/** TelcoVantage internal team (admin or executive) */
+export function isTelcoVantage(): boolean {
+  return isAdmin() || isExecutive()
+}
+
+/**
+ * Resolved role string — use this for if/else branching.
+ * Priority order: admin > executive > client > project_manager > warehouse_incharge > subcontractor > field_staff
+ */
+export type AppRole =
+  | 'admin'
+  | 'executive'
+  | 'client'
+  | 'project_manager'
+  | 'warehouse_incharge'
+  | 'subcontractor'
+  | 'field_staff'
+
+export function getAppRole(): AppRole {
+  if (isAdmin())            return 'admin'
+  if (isExecutive())        return 'executive'
+  if (isClient())           return 'client'
+  if (isProjectManager())   return 'project_manager'
+  if (isWarehouseIncharge()) return 'warehouse_incharge'
+  if (isSubcontractor())    return 'subcontractor'
+  return 'field_staff'
+}
+
+/** Home route for each role after login */
+export function getHomeRoute(): string {
+  const role = getAppRole()
+  if (role === 'admin' || role === 'executive') return '/dashboard'
+  if (role === 'client')                         return '/client-dashboard'
+  if (isSubconSide())                            return '/subcon-dashboard'
+  return '/sites'
+}
+
 export function canManageStatus(): boolean {
   return isAdmin() || isExecutive()
+}
+
+/** True if the user can access user management pages */
+export function canManageUsers(): boolean {
+  return isAdmin()
+}
+
+/** True if the user can manage subcontractor users (not system users) */
+export function canManageSubconUsers(): boolean {
+  return isAdmin() || isExecutive()
+}
+
+/** True if the user can access warehouse/inventory */
+export function canAccessWarehouse(): boolean {
+  return isAdmin() || isExecutive() || isProjectManager() || isWarehouseIncharge()
+}
+
+/** Subcontractor ID of the logged-in user (null if internal/client) */
+export function getSubcontractorId(): number | null {
+  const user = getUser()
+  const id = user?.subcontractor_id
+  return id && typeof id === 'number' ? id : null
+}
+
+/** Team ID of the logged-in user */
+export function getTeamId(): number | null {
+  const user = getUser()
+  const id = user?.team_id
+  return id && typeof id === 'number' ? id : null
+}
+
+/** Subcontractor name from saved user */
+export function getSubcontractorName(): string {
+  const user = getUser()
+  return String(user?.subcontractor_name ?? user?.company ?? 'Your Company')
 }
 
 export function isAdmin(): boolean {

@@ -3,7 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 import { getToken, SKYCABLE_API, isAdmin } from '../../lib/auth'
-import { cacheGet, cacheSet } from '../../lib/cache'
+import { cacheGet, cacheSet, cacheDel } from '../../lib/cache'
 import { slugify } from '../../lib/utils'
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -342,7 +342,29 @@ function PageShell({ children }: { children: ReactNode }) {
   return <div className="flex flex-col gap-5 bg-slate-50 px-4 py-4 pb-10 sm:px-6 lg:px-8">{children}</div>
 }
 
-function ViewHero({ crumbs, eyebrow, title, subtitle, actions }: { crumbs: Array<{ label: ReactNode; onClick?: () => void }>; eyebrow: string; title: ReactNode; subtitle: string; actions?: ReactNode }) {
+function ViewHero({
+  crumbs,
+  eyebrow,
+  title,
+  subtitle,
+  actions,
+  isOnline,
+  syncing,
+  syncText,
+  onSync,
+  onClear,
+}: {
+  crumbs: Array<{ label: ReactNode; onClick?: () => void }>;
+  eyebrow: string;
+  title: ReactNode;
+  subtitle: string;
+  actions?: ReactNode;
+  isOnline?: boolean;
+  syncing?: boolean;
+  syncText?: string;
+  onSync?: () => void;
+  onClear?: () => void;
+}) {
   return (
     <div
       className="relative overflow-hidden rounded-[28px] px-6 py-7"
@@ -392,7 +414,56 @@ function ViewHero({ crumbs, eyebrow, title, subtitle, actions }: { crumbs: Array
             <p className="mt-2 text-sm font-semibold" style={{ color: BRAND.muted }}>{subtitle}</p>
           </div>
 
-          {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
+          <div className="flex flex-wrap items-center gap-3">
+            {/* Cache Control Panel */}
+            {syncText && (
+              <div className="flex items-center gap-2 rounded-2xl bg-white/40 backdrop-blur-md border border-white/20 px-3 py-1.5 shadow-sm text-xs select-none">
+                {/* Live Connection Badge */}
+                <div className="flex items-center gap-1.5 pr-2.5 border-r border-slate-200">
+                  <span className="relative flex h-2 w-2">
+                    <span className={`absolute inline-flex h-full w-full rounded-full opacity-75 animate-ping ${isOnline ? 'bg-emerald-400' : 'bg-amber-400'}`} />
+                    <span className={`relative inline-flex h-2 w-2 rounded-full ${isOnline ? 'bg-emerald-500' : 'bg-amber-500'}`} />
+                  </span>
+                  <span className="font-bold text-slate-600">
+                    {isOnline ? 'Online' : 'Offline Mode'}
+                  </span>
+                </div>
+
+                {/* Cache Status Details */}
+                <div className="flex items-center gap-1 text-slate-400 font-medium">
+                  <i className="bx bx-time-five text-sm" />
+                  <span>Synced:</span>
+                  <span className="font-black text-slate-600 bg-slate-100 rounded px-1.5 py-0.5 leading-none">
+                    {syncText}
+                  </span>
+                </div>
+
+                {/* Actions */}
+                <div className="flex items-center gap-1 pl-2 border-l border-slate-200">
+                  <button
+                    type="button"
+                    onClick={onSync}
+                    disabled={syncing || !isOnline}
+                    title="Sync Now"
+                    className={`flex h-6 w-6 items-center justify-center rounded-lg text-slate-500 transition-all ${syncing ? 'animate-spin' : 'hover:bg-slate-100 hover:text-violet-500'} disabled:opacity-50`}
+                  >
+                    <i className="bx bx-refresh text-lg" />
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={onClear}
+                    title="Purge Cache"
+                    className="flex h-6 w-6 items-center justify-center rounded-lg text-slate-400 hover:bg-red-50 hover:text-red-500 transition-all"
+                  >
+                    <i className="bx bx-trash text-sm" />
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {actions && <div className="flex items-center gap-2">{actions}</div>}
+          </div>
         </div>
       </div>
     </div>
@@ -621,6 +692,55 @@ export default function SpanList() {
   const navigate = useNavigate()
   const { spanSiteSlug, spanNodeSlug } = useParams<{ spanSiteSlug?: string; spanNodeSlug?: string }>()
 
+  // Cache & Connection States
+  const [syncing, setSyncing] = useState(false)
+  const [isOnline, setIsOnline] = useState(navigator.onLine)
+  const [lastSynced, setLastSynced] = useState<number | null>(() => {
+    const keys = ['spanlist_areas', 'spanlist_overview_stats']
+    // check sessionStorage for oldest timestamp among active keys
+    const times = keys.map(k => {
+      try {
+        const raw = sessionStorage.getItem(k)
+        return raw ? JSON.parse(raw).ts : null
+      } catch { return null }
+    }).filter(Boolean) as number[]
+    return times.length > 0 ? Math.min(...times) : null
+  })
+  const [syncText, setSyncText] = useState('Never')
+
+  // Dynamic relative time calculations for sync label
+  useEffect(() => {
+    function updateText() {
+      if (!lastSynced) {
+        setSyncText('Never')
+        return
+      }
+      const diff = Date.now() - lastSynced
+      const secs = Math.floor(diff / 1000)
+      if (secs < 60) {
+        setSyncText('Just now')
+      } else {
+        const mins = Math.floor(secs / 60)
+        setSyncText(`${mins}m ago`)
+      }
+    }
+    updateText()
+    const id = setInterval(updateText, 10000)
+    return () => clearInterval(id)
+  }, [lastSynced])
+
+  // Track browser connectivity
+  useEffect(() => {
+    function handleOnline() { setIsOnline(true) }
+    function handleOffline() { setIsOnline(false) }
+    window.addEventListener('online', handleOnline)
+    window.addEventListener('offline', handleOffline)
+    return () => {
+      window.removeEventListener('online', handleOnline)
+      window.removeEventListener('offline', handleOffline)
+    }
+  }, [])
+
   const [selectedArea, setSelectedArea] = useState<Area | null>(null)
   const [selectedNode, setSelectedNode] = useState<NodeItem | null>(null)
 
@@ -668,6 +788,15 @@ export default function SpanList() {
     if (hit) {
       setAreas(hit)
       setAreasLoading(false)
+      // silent background revalidation fetch:
+      fetch(`${SKYCABLE_API}/areas`, { headers: authHeaders() })
+        .then(r => r.json())
+        .then(data => {
+          const list = Array.isArray(data) ? data : data?.data ?? []
+          setAreas(list)
+          cacheSet('spanlist_areas', list)
+          setLastSynced(Date.now())
+        }).catch(() => {})
       if (spanSiteSlug) {
         const areaId = idFromSlug(spanSiteSlug)
         const area = hit.find(a => a.id === areaId) ?? null
@@ -682,6 +811,7 @@ export default function SpanList() {
         const list: Area[] = Array.isArray(data) ? data : data?.data ?? []
         setAreas(list)
         cacheSet('spanlist_areas', list)
+        setLastSynced(Date.now())
         if (spanSiteSlug) {
           const areaId = idFromSlug(spanSiteSlug)
           const area = list.find(a => a.id === areaId) ?? null
@@ -696,6 +826,39 @@ export default function SpanList() {
     let mounted = true
 
     const loadOverview = async () => {
+      const ck = 'spanlist_overview_stats'
+      const hit = cacheGet<any>(ck)
+      if (hit) {
+        setOverviewStats(hit)
+        setOverviewLoading(false)
+        // silent background fetch to revalidate
+        fetch(`${SKYCABLE_API}/spans?per_page=500`, { headers: authHeaders() })
+          .then(r => r.json())
+          .then(async data => {
+            let page = 1
+            let lastPage = Array.isArray(data) ? 1 : data?.meta?.last_page ?? data?.last_page ?? 1
+            const all: Span[] = Array.isArray(data) ? data : data?.data ?? []
+            while (page < lastPage) {
+              page += 1
+              const res = await fetch(`${SKYCABLE_API}/spans?per_page=500&page=${page}`, { headers: authHeaders() })
+              const d = await res.json()
+              const rows = Array.isArray(d) ? d : d?.data ?? []
+              all.push(...rows)
+            }
+            const stats = {
+              total: all.length,
+              completed: all.filter(s => s.status === 'completed').length,
+              pending: all.filter(s => s.status === 'pending').length,
+            }
+            if (mounted) {
+              setOverviewStats(stats)
+              cacheSet(ck, stats)
+              setLastSynced(Date.now())
+            }
+          }).catch(() => {})
+        return
+      }
+
       setOverviewLoading(true)
       try {
         let page = 1
@@ -713,11 +876,14 @@ export default function SpanList() {
 
         if (!mounted) return
 
-        setOverviewStats({
+        const stats = {
           total: all.length,
           completed: all.filter(s => s.status === 'completed').length,
           pending: all.filter(s => s.status === 'pending').length,
-        })
+        }
+        setOverviewStats(stats)
+        cacheSet(ck, stats)
+        setLastSynced(Date.now())
       } catch {
         if (!mounted) return
         setOverviewStats({ total: 0, completed: 0, pending: 0 })
@@ -742,6 +908,15 @@ export default function SpanList() {
     const hit = cacheGet<NodeItem[]>(cacheKey)
     if (hit) {
       setNodes(hit)
+      // silent background fetch to revalidate
+      fetch(`${SKYCABLE_API}/nodes?area_id=${selectedArea.id}&per_page=200`, { headers: authHeaders() })
+        .then(r => r.json())
+        .then(data => {
+          const list = Array.isArray(data) ? data : data?.data ?? []
+          setNodes(list)
+          cacheSet(cacheKey, list)
+          setLastSynced(Date.now())
+        }).catch(() => {})
       if (spanNodeSlug) {
         const nodeId = idFromSlug(spanNodeSlug)
         const node = hit.find(n => n.id === nodeId) ?? null
@@ -758,6 +933,7 @@ export default function SpanList() {
         const list: NodeItem[] = Array.isArray(data) ? data : data?.data ?? []
         setNodes(list)
         cacheSet(cacheKey, list)
+        setLastSynced(Date.now())
         if (spanNodeSlug) {
           const nodeId = idFromSlug(spanNodeSlug)
           const node = list.find(n => n.id === nodeId) ?? null
@@ -768,14 +944,36 @@ export default function SpanList() {
       .finally(() => setNodesLoading(false))
   }, [selectedArea])
 
-  const loadSpans = () => {
+  const loadSpans = (silent = false) => {
     if (!selectedNode) return
 
-    setSpansLoading(true)
+    const ck = `spanlist_spans_${selectedNode.id}`
+    const hit = cacheGet<Span[]>(ck)
+    if (hit) {
+      setSpans(hit)
+      setSpansLoading(false)
+      // Background revalidation silently
+      fetch(`${SKYCABLE_API}/spans?node_id=${selectedNode.id}&per_page=200`, { headers: authHeaders() })
+        .then(r => r.json())
+        .then(data => {
+          const list = Array.isArray(data) ? data : data?.data ?? []
+          setSpans(list)
+          cacheSet(ck, list)
+          setLastSynced(Date.now())
+        }).catch(() => {})
+      return
+    }
+
+    if (!silent) setSpansLoading(true)
 
     fetch(`${SKYCABLE_API}/spans?node_id=${selectedNode.id}&per_page=200`, { headers: authHeaders() })
       .then(r => r.json())
-      .then(data => setSpans(Array.isArray(data) ? data : data?.data ?? []))
+      .then(data => {
+        const list = Array.isArray(data) ? data : data?.data ?? []
+        setSpans(list)
+        cacheSet(ck, list)
+        setLastSynced(Date.now())
+      })
       .catch(() => setSpans([]))
       .finally(() => setSpansLoading(false))
   }
@@ -791,19 +989,179 @@ export default function SpanList() {
 
     loadSpans()
 
+    const pck = `spanlist_poles_${selectedNode.id}`
+    const phit = cacheGet<any[]>(pck)
+    if (phit) {
+      setPoles(phit)
+      // silent background fetch to revalidate
+      fetch(`${SKYCABLE_API}/nodes/${selectedNode.id}/poles`, { headers: authHeaders() })
+        .then(r => r.json())
+        .then(data => {
+          const list = Array.isArray(data) ? data : data?.data ?? []
+          const parsed = list.map((p: any) => ({
+            id:        p.id,
+            pole_code: p.pole?.pole_code ?? p.pole_code ?? `#${p.id}`,
+            lat:       p.pole?.lat  ?? null,
+            lng:       p.pole?.lng  ?? null,
+          }))
+          setPoles(parsed)
+          cacheSet(pck, parsed)
+          setLastSynced(Date.now())
+        }).catch(() => {})
+      return
+    }
+
     fetch(`${SKYCABLE_API}/nodes/${selectedNode.id}/poles`, { headers: authHeaders() })
       .then(r => r.json())
       .then(data => {
         const list = Array.isArray(data) ? data : data?.data ?? []
-        setPoles(list.map((p: any) => ({
+        const parsed = list.map((p: any) => ({
           id:        p.id,
           pole_code: p.pole?.pole_code ?? p.pole_code ?? `#${p.id}`,
           lat:       p.pole?.lat  ?? null,
           lng:       p.pole?.lng  ?? null,
-        })))
+        }))
+        setPoles(parsed)
+        cacheSet(pck, parsed)
+        setLastSynced(Date.now())
       })
       .catch(() => setPoles([]))
   }, [selectedNode])
+
+  async function handleManualSync() {
+    if (syncing || !isOnline) return
+    setSyncing(true)
+
+    try {
+      const promises: Promise<any>[] = []
+
+      // 1. Purge all cache keys
+      cacheDel('spanlist_areas')
+      cacheDel('spanlist_overview_stats')
+      if (selectedArea) cacheDel(`spanlist_nodes_${selectedArea.id}`)
+      if (selectedNode) {
+        cacheDel(`spanlist_spans_${selectedNode.id}`)
+        cacheDel(`spanlist_poles_${selectedNode.id}`)
+      }
+
+      // 2. Fetch fresh sites & overview stats
+      promises.push(
+        fetch(`${SKYCABLE_API}/areas`, { headers: authHeaders() })
+          .then(r => r.json())
+          .then(data => {
+            const list = Array.isArray(data) ? data : data?.data ?? []
+            setAreas(list)
+            cacheSet('spanlist_areas', list)
+          })
+      )
+
+      promises.push(
+        (async () => {
+          let page = 1
+          let lastPage = 1
+          const all: Span[] = []
+          do {
+            const res = await fetch(`${SKYCABLE_API}/spans?per_page=500&page=${page}`, { headers: authHeaders() })
+            const data = await res.json()
+            const rows = Array.isArray(data) ? data : data?.data ?? []
+            all.push(...rows)
+            lastPage = Array.isArray(data) ? 1 : data?.meta?.last_page ?? data?.last_page ?? 1
+            page += 1
+          } while (page <= lastPage)
+
+          const stats = {
+            total: all.length,
+            completed: all.filter(s => s.status === 'completed').length,
+            pending: all.filter(s => s.status === 'pending').length,
+          }
+          setOverviewStats(stats)
+          cacheSet('spanlist_overview_stats', stats)
+        })()
+      )
+
+      // 3. If area selected, fetch fresh nodes
+      if (selectedArea) {
+        promises.push(
+          fetch(`${SKYCABLE_API}/nodes?area_id=${selectedArea.id}&per_page=200`, { headers: authHeaders() })
+            .then(r => r.json())
+            .then(data => {
+              const list = Array.isArray(data) ? data : data?.data ?? []
+              setNodes(list)
+              cacheSet(`spanlist_nodes_${selectedArea.id}`, list)
+            })
+        )
+      }
+
+      // 4. If node selected, fetch fresh spans & poles
+      if (selectedNode) {
+        promises.push(
+          fetch(`${SKYCABLE_API}/spans?node_id=${selectedNode.id}&per_page=200`, { headers: authHeaders() })
+            .then(r => r.json())
+            .then(data => {
+              const list = Array.isArray(data) ? data : data?.data ?? []
+              setSpans(list)
+              cacheSet(`spanlist_spans_${selectedNode.id}`, list)
+            })
+        )
+
+        promises.push(
+          fetch(`${SKYCABLE_API}/nodes/${selectedNode.id}/poles`, { headers: authHeaders() })
+            .then(r => r.json())
+            .then(data => {
+              const list = Array.isArray(data) ? data : data?.data ?? []
+              const parsed = list.map((p: any) => ({
+                id:        p.id,
+                pole_code: p.pole?.pole_code ?? p.pole_code ?? `#${p.id}`,
+                lat:       p.pole?.lat  ?? null,
+                lng:       p.pole?.lng  ?? null,
+              }))
+              setPoles(parsed)
+              cacheSet(`spanlist_poles_${selectedNode.id}`, parsed)
+            })
+        )
+      }
+
+      await Promise.all(promises)
+      setLastSynced(Date.now())
+    } catch {
+    } finally {
+      setSyncing(false)
+    }
+  }
+
+  function handleClearCache() {
+    cacheDel('spanlist_areas')
+    cacheDel('spanlist_overview_stats')
+    if (selectedArea) cacheDel(`spanlist_nodes_${selectedArea.id}`)
+    if (selectedNode) {
+      cacheDel(`spanlist_spans_${selectedNode.id}`)
+      cacheDel(`spanlist_poles_${selectedNode.id}`)
+    }
+
+    setAreas([])
+    setOverviewStats({ total: 0, completed: 0, pending: 0 })
+    setNodes([])
+    setSpans([])
+    setPoles([])
+    setLastSynced(null)
+
+    // Trigger full fresh reload
+    setTimeout(() => {
+      // Re-trigger useEffect fetches
+      setSelectedArea(null)
+      setSelectedNode(null)
+      navigate('/spans')
+      
+      // Fetch fresh areas
+      fetch(`${SKYCABLE_API}/areas`, { headers: authHeaders() })
+        .then(r => r.json())
+        .then(data => {
+          const list = Array.isArray(data) ? data : data?.data ?? []
+          setAreas(list)
+          cacheSet('spanlist_areas', list)
+        })
+    }, 100)
+  }
 
   // Auto-generate span_code from pole codes whenever from/to pole changes,
   // but only if span_code is empty or was previously auto-generated (not manually typed).
@@ -896,10 +1254,16 @@ export default function SpanList() {
       const data = await res.json()
       if (!res.ok) throw new Error(data.message ?? 'Failed to add span')
 
+      const newSpan: Span = data.data ?? data
+      setSpans(prev => {
+        const next = [newSpan, ...prev]
+        cacheSet(`spanlist_spans_${selectedNode.id}`, next)
+        return next
+      })
+
       const fromId = Number(addForm.from_pole_id)
       const toId = Number(addForm.to_pole_id)
       closeModal()
-      loadSpans()
       if (fromId && toId) setSavedPairs(prev => [...prev, { from: fromId, to: toId }])
     } catch (err: any) {
       setFormErr(err.message)
@@ -910,7 +1274,7 @@ export default function SpanList() {
 
   const handleEdit = async (e: SyntheticEvent<HTMLFormElement>) => {
     e.preventDefault()
-    if (!selected) return
+    if (!selected || !selectedNode) return
 
     setSaving(true)
     setFormErr(null)
@@ -930,8 +1294,14 @@ export default function SpanList() {
       const data = await res.json()
       if (!res.ok) throw new Error(data.message ?? 'Failed to update span')
 
+      const updatedSpan: Span = data.data ?? data
+      setSpans(prev => {
+        const next = prev.map(s => s.id === updatedSpan.id ? updatedSpan : s)
+        cacheSet(`spanlist_spans_${selectedNode.id}`, next)
+        return next
+      })
+
       closeModal()
-      loadSpans()
     } catch (err: any) {
       setFormErr(err.message)
     } finally {
@@ -940,7 +1310,7 @@ export default function SpanList() {
   }
 
   const handleDelete = async () => {
-    if (!selected) return
+    if (!selected || !selectedNode) return
 
     setSaving(true)
     setFormErr(null)
@@ -953,8 +1323,13 @@ export default function SpanList() {
 
       if (!res.ok) throw new Error('Failed to delete span')
 
+      setSpans(prev => {
+        const next = prev.filter(s => s.id !== selected.id)
+        cacheSet(`spanlist_spans_${selectedNode.id}`, next)
+        return next
+      })
+
       closeModal()
-      loadSpans()
     } catch (err: any) {
       setFormErr(err.message ?? 'Failed to delete')
     } finally {
@@ -990,6 +1365,11 @@ export default function SpanList() {
           eyebrow="Network Control"
           title="All Sites"
           subtitle="Select a site to open nodes, pole mapping, span status, runs, and expected cable details."
+          isOnline={isOnline}
+          syncing={syncing}
+          syncText={syncText}
+          onSync={handleManualSync}
+          onClear={handleClearCache}
         />
 
         <div className="rounded-[24px] p-4" style={{ background: BRAND.panel, border: `1px solid ${BRAND.border}` }}>
@@ -1089,6 +1469,11 @@ export default function SpanList() {
         eyebrow="Selected Site"
         title={selectedArea?.name}
         subtitle="Choose a node to view span inventory and cable details."
+        isOnline={isOnline}
+        syncing={syncing}
+        syncText={syncText}
+        onSync={handleManualSync}
+        onClear={handleClearCache}
         actions={
           <button
             type="button"
@@ -1206,6 +1591,11 @@ export default function SpanList() {
         eyebrow={selectedNode?.full_label ?? `Node #${selectedNode?.id}`}
         title={selectedNode?.name}
         subtitle="Track pole mapping, span status, runs, and expected cable."
+        isOnline={isOnline}
+        syncing={syncing}
+        syncText={syncText}
+        onSync={handleManualSync}
+        onClear={handleClearCache}
         actions={
           <>
             {admin && (

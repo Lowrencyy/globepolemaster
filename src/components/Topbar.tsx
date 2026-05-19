@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import logoImg from '../assets/images/logo.png'
+import logoImg from '../assets/images/telcovantage-logo.png'
 import { removeToken, getUser } from '../lib/auth'
 
 function getDisplayName(user: Record<string, unknown> | null): { initials: string; label: string } {
@@ -59,6 +59,24 @@ export default function Topbar() {
   const grid = useDropdown()
   const { initials, label } = getDisplayName(getUser())
 
+  const [themeMode, setThemeMode] = useState(() => {
+    return sessionStorage.getItem("data-layout-mode") || document.body.getAttribute('data-mode') || 'light'
+  })
+
+  useEffect(() => {
+    document.body.setAttribute('data-mode', themeMode)
+    sessionStorage.setItem('data-layout-mode', themeMode)
+    if (themeMode === 'dark') {
+      document.documentElement.classList.add('dark')
+    } else {
+      document.documentElement.classList.remove('dark')
+    }
+  }, [themeMode])
+
+  const toggleTheme = () => {
+    setThemeMode(prev => prev === 'dark' ? 'light' : 'dark')
+  }
+
   return (
     <nav className="fixed top-0 left-0 right-0 z-10 flex items-center bg-white dark:bg-zinc-800 print:hidden dark:border-zinc-700 ltr:pr-6 rtl:pl-6">
       <div className="flex justify-between w-full">
@@ -92,9 +110,8 @@ export default function Topbar() {
           <div className="flex items-center gap-1">
 
             {/* Dark mode */}
-            <button type="button" className="light-dark-mode text-xl px-3 h-[70px] text-gray-600 dark:text-gray-100 hidden sm:block">
-              <i data-feather="moon" className="block w-5 h-5 dark:hidden"></i>
-              <i data-feather="sun" className="hidden w-5 h-5 dark:block"></i>
+            <button type="button" onClick={toggleTheme} className="light-dark-mode text-xl px-3 h-[70px] text-gray-600 dark:text-gray-100 hidden sm:block">
+              <i className={`bx ${themeMode === 'light' ? 'bx-moon' : 'bx-sun'} text-[22px]`}></i>
             </button>
 
             {/* Grid / Apps dropdown */}

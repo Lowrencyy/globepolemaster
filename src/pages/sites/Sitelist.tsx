@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useRef,
   useMemo,
   useState,
   type MouseEvent,
@@ -9,9 +10,11 @@ import {
 import { useNavigate } from 'react-router-dom'
 import { SKYCABLE_API, getToken, isAdmin } from '../../lib/auth'
 import { cacheGet, cacheSet } from '../../lib/cache'
+import telcoImg from '../../assets/images/telco.png'
 
 const CACHE_KEY = 'sitelist'
-import { slugify } from '../../lib/utils'
+
+type PolePin = { lat: number; lng: number; status: string; area: string }
 
 type Site = {
   id: number
@@ -24,15 +27,6 @@ type Site = {
 
 type ApiListResponse = Site[] | { data?: Site[]; message?: string }
 type ApiSingleResponse = Site | { data?: Site; message?: string }
-
-const REGION_MARKERS: Record<string, [number, number]> = {
-  'north luzon': [76, 45],
-  ncr: [81, 88],
-  'metro manila': [81, 88],
-  'south luzon': [103, 111],
-  visayas: [110, 158],
-  mindanao: [111, 214],
-}
 
 const REGION_ORDER = [
   'north luzon',
@@ -106,151 +100,161 @@ async function readJsonSafe<T>(response: Response): Promise<T | null> {
   }
 }
 
-function PhilippinesMap({ siteName }: { siteName: string }) {
-  const key = normalizeAreaName(siteName)
-  const marker = REGION_MARKERS[key] ?? null
+// ── Tile math helpers (mirrors mobile PolesVicinityMap) ───────────────────────
+const TILE_PX = 256
 
-  const isActive = (area: string) => {
-    if (area === 'ncr') return key === 'ncr' || key === 'metro manila'
-    return key === area
+function latLngToTileFrac(lat: number, lng: number, z: number) {
+  const n = Math.pow(2, z)
+  const xFrac = ((lng + 180) / 360) * n
+  const latRad = (lat * Math.PI) / 180
+  const yFrac = ((1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2) * n
+  return { xFrac, yFrac, tileX: Math.floor(xFrac), tileY: Math.floor(yFrac) }
+}
+
+// ── Site card thumbnail: static-tile vicinity map ────────────────────────────
+// Uses a fixed card size (h-36 = 144px height, width measured once on mount).
+const MAP_H = 144
+
+function SiteCardMap({ poles, siteName }: { poles: PolePin[]; siteName: string }) {
+  // Start with a reasonable default; update once the container is measured
+  const [w, setW] = useState(300)
+  const divRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const el = divRef.current
+    if (!el) return
+    // Measure real width immediately
+    const rect = el.getBoundingClientRect()
+    if (rect.width > 0) setW(rect.width)
+    // Update on resize
+    const obs = new ResizeObserver(es => {
+      const cw = es[0]?.contentRect.width
+      if (cw && cw > 0) setW(cw)
+    })
+    obs.observe(el)
+    return () => obs.disconnect()
+  }, [])
+
+  if (poles.length === 0) {
+    return (
+      <div className="overflow-hidden rounded-xl border border-slate-100 bg-slate-50 dark:border-slate-700 dark:bg-slate-800">
+        <img src={telcoImg} alt="Telcovantage" className="h-36 w-full object-contain p-4 opacity-40" />
+      </div>
+    )
   }
 
-  const fillFor = (area: string) => (isActive(area) ? '#2563eb' : '#dbe5f3')
-  const strokeFor = (area: string) => (isActive(area) ? '#1d4ed8' : '#b7c5d8')
-  const strokeWidthFor = (area: string) => (isActive(area) ? '1.35' : '0.75')
+  const h = MAP_H
+  const lats = poles.map(p => p.lat)
+  const lngs = poles.map(p => p.lng)
+  const minLat = Math.min(...lats), maxLat = Math.max(...lats)
+  const minLng = Math.min(...lngs), maxLng = Math.max(...lngs)
+  // Use centroid (average) so the view centers on where most poles cluster,
+  // not skewed toward outliers like bounding-box midpoint would be.
+  const centerLat = lats.reduce((a, b) => a + b, 0) / lats.length
+  const centerLng = lngs.reduce((a, b) => a + b, 0) / lngs.length
+
+  const latSpan = Math.max(maxLat - minLat, 0.0005)
+  const lngSpan = Math.max(maxLng - minLng, 0.0005)
+  const zLng = Math.log2((w * 0.55 * 360) / (TILE_PX * lngSpan))
+  const zLat = Math.log2((h * 0.55 * 180) / (TILE_PX * latSpan))
+  const zoom = Math.max(8, Math.min(14, Math.floor(Math.min(zLng, zLat))))
+
+  const { xFrac, yFrac, tileX, tileY } = latLngToTileFrac(centerLat, centerLng, zoom)
+  const fracX = xFrac - tileX
+  const fracY = yFrac - tileY
+  const scale = Math.max(w / TILE_PX, h / TILE_PX)
+  const imgW  = TILE_PX * scale
+  const imgH  = TILE_PX * scale
+  const offX  = w / 2 - fracX * imgW
+  const offY  = h / 2 - fracY * imgH
+
+  // Bounding box pixel coords
+  const sw    = latLngToTileFrac(minLat, minLng, zoom)
+  const ne    = latLngToTileFrac(maxLat, maxLng, zoom)
+  const bxL   = offX + (sw.xFrac - tileX) * imgW
+  const bxT   = offY + (ne.yFrac - tileY) * imgH
+  const bxW   = (ne.xFrac - sw.xFrac) * imgW
+  const bxH   = (sw.yFrac - ne.yFrac) * imgH
+
+  const STATUS_COLOR: Record<string, string> = {
+    pending: '#f59e0b', in_progress: '#8b5cf6', cleared: '#10b981',
+  }
 
   return (
-    <div className="relative overflow-hidden rounded-xl border border-slate-200 bg-[radial-gradient(circle_at_top,#f8fbff_0%,#edf5ff_48%,#eaf1fb_100%)] dark:border-slate-700 dark:bg-[radial-gradient(circle_at_top,#17233b_0%,#111827_55%,#0f172a_100%)]">
-      <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(135deg,rgba(37,99,235,0.08),transparent_45%,rgba(14,165,233,0.08))]" />
+    <div
+      ref={divRef}
+      className="relative w-full overflow-hidden rounded-xl"
+      style={{ height: MAP_H, background: '#1a1a2e' }}
+    >
+      {/* Satellite tiles — 3x3 grid to cover the card without gaps */}
+      {[-1, 0, 1].flatMap(dx =>
+        [-1, 0, 1].map(dy => (
+          <img
+            key={`${dx}-${dy}`}
+            src={`https://mt1.google.com/vt/lyrs=s&x=${tileX + dx}&y=${tileY + dy}&z=${zoom}`}
+            alt=""
+            draggable={false}
+            style={{
+              position: 'absolute',
+              left:   offX + dx * imgW,
+              top:    offY + dy * imgH,
+              width:  imgW,
+              height: imgH,
+              userSelect: 'none',
+            }}
+          />
+        ))
+      )}
 
-      <svg
-        viewBox="0 0 160 250"
-        className="relative h-32 w-full"
-        fill="none"
-        xmlns="http://www.w3.org/2000/svg"
-      >
-        <path d="M28 0V250" stroke="#dbeafe" strokeWidth="0.6" opacity="0.65" />
-        <path d="M80 0V250" stroke="#dbeafe" strokeWidth="0.6" opacity="0.65" />
-        <path d="M132 0V250" stroke="#dbeafe" strokeWidth="0.6" opacity="0.65" />
-        <path d="M0 54H160" stroke="#dbeafe" strokeWidth="0.6" opacity="0.65" />
-        <path d="M0 125H160" stroke="#dbeafe" strokeWidth="0.6" opacity="0.65" />
-        <path d="M0 196H160" stroke="#dbeafe" strokeWidth="0.6" opacity="0.65" />
+      {/* Orange bounding box (only when multiple poles have spread) */}
+      {poles.length > 1 && bxW > 2 && bxH > 2 && (
+        <div
+          style={{
+            position: 'absolute',
+            left:   bxL, top: bxT,
+            width:  bxW, height: bxH,
+            border: '2.5px solid #f59e0b',
+            borderRadius: 3,
+            background: 'rgba(245,158,11,0.13)',
+            pointerEvents: 'none',
+          }}
+        />
+      )}
 
-        {/* North Luzon */}
-        <path
-          d="M79 9C90 5 106 10 112 21L117 36C120 50 115 64 107 72H74L68 44C67 28 71 14 79 9Z"
-          fill={fillFor('north luzon')}
-          stroke={strokeFor('north luzon')}
-          strokeWidth={strokeWidthFor('north luzon')}
-        />
+      {/* Pole dots */}
+      {poles.map((p, i) => {
+        const { xFrac: px, yFrac: py } = latLngToTileFrac(p.lat, p.lng, zoom)
+        const color = STATUS_COLOR[p.status] ?? '#94a3b8'
+        return (
+          <div
+            key={i}
+            style={{
+              position: 'absolute',
+              left: offX + (px - tileX) * imgW - 3.5,
+              top:  offY + (py - tileY) * imgH - 3.5,
+              width: 7, height: 7, borderRadius: '50%',
+              background: '#ffffff',
+              border: `1.5px solid ${color}`,
+              pointerEvents: 'none',
+              zIndex: 1,
+            }}
+          />
+        )
+      })}
 
-        {/* NCR */}
-        <path
-          d="M74 72H107C103 78 105 86 102 95L97 105C93 113 86 116 80 112L74 104C70 96 72 86 74 78Z"
-          fill={fillFor('ncr')}
-          stroke={strokeFor('ncr')}
-          strokeWidth={strokeWidthFor('ncr')}
-        />
-
-        {/* South Luzon */}
-        <path
-          d="M102 95C105 99 109 106 111 114L109 124C106 131 101 133 97 127L95 115L97 105Z"
-          fill={fillFor('south luzon')}
-          stroke={strokeFor('south luzon')}
-          strokeWidth={strokeWidthFor('south luzon')}
-        />
-
-        {/* Palawan */}
-        <path
-          d="M65 107C59 119 52 133 45 147C38 161 33 175 30 188C29 192 32 195 35 193C40 181 45 168 52 155C59 141 66 127 72 113Z"
-          fill="#dbe5f3"
-          stroke="#b7c5d8"
-          strokeWidth="0.75"
-        />
-
-        {/* Visayas */}
-        <ellipse
-          cx="76"
-          cy="148"
-          rx="13"
-          ry="9"
-          fill={fillFor('visayas')}
-          stroke={strokeFor('visayas')}
-          strokeWidth={strokeWidthFor('visayas')}
-        />
-        <ellipse
-          cx="91"
-          cy="158"
-          rx="7"
-          ry="14"
-          fill={fillFor('visayas')}
-          stroke={strokeFor('visayas')}
-          strokeWidth={strokeWidthFor('visayas')}
-        />
-        <ellipse
-          cx="105"
-          cy="154"
-          rx="5"
-          ry="13"
-          fill={fillFor('visayas')}
-          stroke={strokeFor('visayas')}
-          strokeWidth={strokeWidthFor('visayas')}
-        />
-        <ellipse
-          cx="120"
-          cy="146"
-          rx="10"
-          ry="11"
-          fill={fillFor('visayas')}
-          stroke={strokeFor('visayas')}
-          strokeWidth={strokeWidthFor('visayas')}
-        />
-        <ellipse
-          cx="132"
-          cy="138"
-          rx="11"
-          ry="8"
-          fill={fillFor('visayas')}
-          stroke={strokeFor('visayas')}
-          strokeWidth={strokeWidthFor('visayas')}
-        />
-        <ellipse
-          cx="106"
-          cy="170"
-          rx="9"
-          ry="6"
-          fill={fillFor('visayas')}
-          stroke={strokeFor('visayas')}
-          strokeWidth={strokeWidthFor('visayas')}
-        />
-
-        {/* Mindanao */}
-        <path
-          d="M78 188C96 180 121 178 141 184L156 193C162 205 159 222 150 232C141 242 128 246 114 245L96 242C78 237 66 224 63 210L62 197Z"
-          fill={fillFor('mindanao')}
-          stroke={strokeFor('mindanao')}
-          strokeWidth={strokeWidthFor('mindanao')}
-        />
-
-        {marker ? (
-          <>
-            <circle cx={marker[0]} cy={marker[1]} r="18" fill="#2563eb" opacity="0.08" />
-            <circle cx={marker[0]} cy={marker[1]} r="11" fill="#2563eb" opacity="0.18" />
-            <circle cx={marker[0]} cy={marker[1]} r="5.5" fill="#2563eb" />
-            <circle cx={marker[0]} cy={marker[1]} r="2" fill="white" />
-          </>
-        ) : (
-          <>
-            <circle cx="80" cy="125" r="18" fill="#2563eb" opacity="0.08" />
-            <circle cx="80" cy="125" r="10" fill="#2563eb" opacity="0.18" />
-            <circle cx="80" cy="125" r="5" fill="#2563eb" />
-            <circle cx="80" cy="125" r="2" fill="white" />
-          </>
-        )}
-      </svg>
+      {/* Area name label */}
+      <div style={{
+        position: 'absolute', bottom: 0, left: 0, right: 0,
+        background: 'rgba(0,0,0,0.5)',
+        padding: '4px 10px',
+        zIndex: 2,
+      }}>
+        <span style={{ fontSize: 11, fontWeight: 700, color: '#fff' }}>{siteName}</span>
+      </div>
     </div>
   )
 }
+
 
 function Modal({
   title,
@@ -274,7 +278,7 @@ function Modal({
         className={`w-full ${maxWidth} overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-[0_30px_90px_-35px_rgba(15,23,42,0.55)] dark:border-slate-700 dark:bg-slate-900`}
         onClick={(event) => event.stopPropagation()}
       >
-        <div className="relative overflow-hidden border-b border-slate-100 bg-gradient-to-r from-slate-950 via-blue-950 to-blue-800 px-6 py-5 dark:border-slate-800">
+        <div className="relative overflow-hidden border-b border-slate-100 bg-slate-900 px-6 py-5 dark:border-slate-800" style={{ backgroundColor: '#0f172a' }}>
           <div className="pointer-events-none absolute -right-10 -top-12 h-28 w-28 rounded-full bg-sky-400/20 blur-2xl" />
           <div className="pointer-events-none absolute -left-10 bottom-0 h-24 w-24 rounded-full bg-blue-400/20 blur-2xl" />
 
@@ -285,6 +289,7 @@ function Modal({
             </div>
 
             <button
+              type="button"
               onClick={onClose}
               className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-white/10 bg-white/10 text-lg font-bold text-white/75 transition hover:bg-white/20 hover:text-white"
             >
@@ -312,6 +317,7 @@ export default function Sitelist() {
   const [sites, setSites] = useState<Site[]>([])
   const [loading, setLoading] = useState(true)
   const [fetchErr, setFetchErr] = useState('')
+  const [polesByArea, setPolesByArea] = useState<Map<string, PolePin[]>>(new Map())
 
   const [addOpen, setAddOpen] = useState(false)
   const [editOpen, setEditOpen] = useState(false)
@@ -357,6 +363,25 @@ export default function Sitelist() {
 
   useEffect(() => {
     loadSites()
+  }, [])
+
+  // Fetch all skycable poles with GPS and group by area name
+  useEffect(() => {
+    fetch(`${SKYCABLE_API}/poles/map`, {
+      headers: { Authorization: `Bearer ${getToken()}`, Accept: 'application/json', 'ngrok-skip-browser-warning': '1' },
+    })
+      .then(r => r.json())
+      .then((rows: any[]) => {
+        const map = new Map<string, PolePin[]>()
+        ;(Array.isArray(rows) ? rows : []).forEach((p: any) => {
+          if (!p.lat || !p.lng || !p.area) return
+          const key = (p.area as string).toLowerCase().trim()
+          if (!map.has(key)) map.set(key, [])
+          map.get(key)!.push({ lat: Number(p.lat), lng: Number(p.lng), status: p.skycable_status ?? 'pending', area: key })
+        })
+        setPolesByArea(map)
+      })
+      .catch(() => {})
   }, [])
 
   const totals = useMemo(() => {
@@ -606,7 +631,8 @@ export default function Sitelist() {
           <button
             type="submit"
             disabled={saving}
-            className="flex-1 rounded-xl bg-blue-600 py-2.5 text-sm font-semibold text-white shadow-lg shadow-blue-600/20 transition hover:bg-blue-700 active:scale-[0.98] disabled:opacity-60"
+            className="flex-1 rounded-xl py-2.5 text-sm font-semibold shadow-lg transition active:scale-[0.98] disabled:opacity-60"
+            style={{ backgroundColor: '#059669', color: '#ffffff' }}
           >
             {saving ? 'Saving…' : buttonLabel}
           </button>
@@ -654,21 +680,18 @@ export default function Sitelist() {
               Refresh
             </button>
 
-            <button
-              onClick={openAdd}
-              className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white shadow-lg shadow-blue-600/20 transition hover:bg-blue-700 active:scale-[0.98]"
-            >
-              <svg
-                className="h-4 w-4"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-                strokeWidth={2.5}
+            {admin && (
+              <button
+                onClick={openAdd}
+                className="inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold shadow-lg transition active:scale-[0.98]"
+                style={{ backgroundColor: '#059669', color: '#ffffff' }}
               >
-                <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
-              </svg>
-              Add Site
-            </button>
+                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+                </svg>
+                Add Site
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -850,7 +873,7 @@ export default function Sitelist() {
                   </div>
 
                   <div className="mt-3">
-                    <PhilippinesMap siteName={site.name} />
+                    <SiteCardMap poles={polesByArea.get(site.name.toLowerCase().trim()) ?? []} siteName={areaDisplayName(site.name)} />
                   </div>
 
                   <div className="mt-3 grid grid-cols-3 gap-1.5">
@@ -882,39 +905,28 @@ export default function Sitelist() {
                     </div>
                   </div>
 
-                  <div className="mt-3 flex gap-1.5" onClick={(event) => event.stopPropagation()}>
-                    <button
-                      onClick={(event) => openEdit(site, event)}
-                      className="flex flex-1 items-center justify-center gap-1 rounded-xl border border-slate-200 bg-white py-2 text-xs font-semibold text-slate-600 transition hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800"
-                    >
-                      <svg
-                        className="h-3.5 w-3.5"
-                        fill="none"
-                        viewBox="0 0 24 24"
-                        stroke="currentColor"
-                        strokeWidth={2}
+                  {admin && (
+                    <div className="mt-3 flex gap-1.5" onClick={(event) => event.stopPropagation()}>
+                      <button
+                        onClick={(event) => openEdit(site, event)}
+                        className="flex flex-1 items-center justify-center gap-1 rounded-xl border border-slate-200 bg-white py-2 text-xs font-semibold text-slate-600 transition hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800"
                       >
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
-                      </svg>
-                      Edit
-                    </button>
-
-                    <button
-                      onClick={(event) => openDelete(site, event)}
-                      className="flex flex-1 items-center justify-center gap-1 rounded-xl border border-rose-200 bg-rose-50 py-2 text-xs font-semibold text-rose-600 transition hover:bg-rose-100 dark:border-rose-900/60 dark:bg-rose-950/30 dark:text-rose-300"
-                    >
-                      <svg
-                        className="h-3.5 w-3.5"
-                        fill="none"
-                        viewBox="0 0 24 24"
-                        stroke="currentColor"
-                        strokeWidth={2}
+                        <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                        </svg>
+                        Edit
+                      </button>
+                      <button
+                        onClick={(event) => openDelete(site, event)}
+                        className="flex flex-1 items-center justify-center gap-1 rounded-xl border border-rose-200 bg-rose-50 py-2 text-xs font-semibold text-rose-600 transition hover:bg-rose-100 dark:border-rose-900/60 dark:bg-rose-950/30 dark:text-rose-300"
                       >
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                      </svg>
-                      Delete
-                    </button>
-                  </div>
+                        <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                        </svg>
+                        Delete
+                      </button>
+                    </div>
+                  )}
                 </article>
               ))}
             </div>

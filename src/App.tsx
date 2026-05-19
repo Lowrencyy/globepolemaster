@@ -38,10 +38,37 @@ import VicinityReports from './pages/reports/VicinityReports'
 import NodeVicinityMap from './pages/reports/NodeVicinityMap'
 import PoleReports from './pages/reports/PoleReports'
 import NodePoleReport from './pages/reports/NodePoleReport'
-import { isAuthenticated } from './lib/auth'
+import { isAuthenticated, getAppRole, getHomeRoute } from './lib/auth'
+import type { AppRole } from './lib/auth'
+import ClientDashboard from './pages/client/ClientDashboard'
+import SubconDashboard from './pages/subcon/SubconDashboard'
+import WarehouseInventory from './pages/warehouse/WarehouseInventory'
+import DailyTeardownDelivery from './pages/delivery/DailyTeardownDelivery'
+
+function WarehouseInventoryPage() {
+  return (
+    <Layout>
+      <WarehouseInventory />
+    </Layout>
+  )
+}
+
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   if (!isAuthenticated()) return <Navigate to="/login" replace />
+  return <>{children}</>
+}
+
+/** Block a route from roles not in the allowed list, redirect home instead */
+function RoleRoute({
+  children,
+  allow,
+}: {
+  children: React.ReactNode
+  allow: AppRole[]
+}) {
+  if (!isAuthenticated()) return <Navigate to="/login" replace />
+  if (!allow.includes(getAppRole())) return <Navigate to={getHomeRoute()} replace />
   return <>{children}</>
 }
 
@@ -195,31 +222,93 @@ function SubcontractorTeamsPage() {
   return <Layout><SubcontractorTeams /></Layout>
 }
 
+function ClientDashboardPage() {
+  return <ClientDashboard />
+}
+
+function SubconDashboardPage() {
+  return (
+    <Layout>
+      <SubconDashboard />
+    </Layout>
+  )
+}
+
 export default function App() {
   return (
     <BrowserRouter>
       <Routes>
         <Route path="/login" element={<Login />} />
         <Route path="/loading" element={<ProtectedRoute><LoadingScreen /></ProtectedRoute>} />
-        <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
-        <Route path="/poles/all" element={<ProtectedRoute><AllPolesPage /></ProtectedRoute>} />
-        <Route path="/poles/map" element={<ProtectedRoute><PoleMapViewPage /></ProtectedRoute>} />
-        <Route path="/nap/boxes" element={<ProtectedRoute><AllNapBoxesPage /></ProtectedRoute>} />
-        <Route path="/nap/boxes/:id" element={<ProtectedRoute><NapBoxDetailPage /></ProtectedRoute>} />
-        <Route path="/nap/slot-status" element={<ProtectedRoute><SlotStatusPage /></ProtectedRoute>} />
+
+        {/* ── Client-only dashboard (no sidebar layout) ── */}
+        <Route path="/client-dashboard" element={
+          <RoleRoute allow={['client']}>
+            <ClientDashboardPage />
+          </RoleRoute>
+        } />
+
+        {/* ── Subcontractor dashboard ── */}
+        <Route path="/subcon-dashboard" element={
+          <RoleRoute allow={['subcontractor', 'project_manager', 'warehouse_incharge', 'field_staff']}>
+            <SubconDashboardPage />
+          </RoleRoute>
+        } />
+
+        {/* ── Daily Teardown Delivery ── */}
+        <Route path="/delivery/daily" element={
+          <RoleRoute allow={['admin', 'executive', 'project_manager', 'warehouse_incharge', 'subcontractor', 'field_staff']}>
+            <Layout><DailyTeardownDelivery /></Layout>
+          </RoleRoute>
+        } />
+
+        {/* ── Warehouse Inventory ── */}
+        <Route path="/warehouse/inventory" element={
+          <RoleRoute allow={['admin', 'executive', 'project_manager', 'warehouse_incharge']}>
+            <WarehouseInventoryPage />
+          </RoleRoute>
+        } />
+        <Route path="/warehouse/:subconSlug/inventory" element={
+          <RoleRoute allow={['admin', 'executive', 'project_manager', 'warehouse_incharge']}>
+            <WarehouseInventoryPage />
+          </RoleRoute>
+        } />
+
+        {/* ── Admin + Executive only ── */}
+        <Route path="/dashboard" element={
+          <RoleRoute allow={['admin', 'executive', 'subcontractor', 'project_manager', 'warehouse_incharge', 'field_staff']}>
+            <Dashboard />
+          </RoleRoute>
+        } />
+        <Route path="/users" element={
+          <RoleRoute allow={['admin']}>
+            <UsersPage />
+          </RoleRoute>
+        } />
+
+        {/* ── Admin + Executive (subcon management) ── */}
+        <Route path="/subcontractors" element={<RoleRoute allow={['admin','executive']}><SubcontractorsPage /></RoleRoute>} />
+        <Route path="/subcontractors/:id" element={<RoleRoute allow={['admin','executive']}><SubcontractorDetailPage /></RoleRoute>} />
+        <Route path="/subcontractors/:id/teams" element={<RoleRoute allow={['admin','executive']}><SubcontractorTeamsPage /></RoleRoute>} />
+        <Route path="/subcontractors/:id/teams/:teamId" element={<RoleRoute allow={['admin','executive']}><TeamDetailPage /></RoleRoute>} />
+        <Route path="/subcontractors/teams" element={<RoleRoute allow={['admin','executive']}><TeamsPage /></RoleRoute>} />
+        <Route path="/subcontractors/users" element={<RoleRoute allow={['admin','executive']}><SubconUsersPage /></RoleRoute>} />
+
+        {/* ── All internal roles (not client) ── */}
+        <Route path="/poles/all"        element={<ProtectedRoute><AllPolesPage /></ProtectedRoute>} />
+        <Route path="/poles/map"        element={<ProtectedRoute><PoleMapViewPage /></ProtectedRoute>} />
+        <Route path="/nap/boxes"        element={<ProtectedRoute><AllNapBoxesPage /></ProtectedRoute>} />
+        <Route path="/nap/boxes/:id"    element={<ProtectedRoute><NapBoxDetailPage /></ProtectedRoute>} />
+        <Route path="/nap/slot-status"  element={<ProtectedRoute><SlotStatusPage /></ProtectedRoute>} />
         <Route path="/polereports/poleAudit" element={<ProtectedRoute><PoleAuditPage /></ProtectedRoute>} />
-        <Route path="/field/live" element={<ProtectedRoute><LiveTeardownPage /></ProtectedRoute>} />
-        <Route path="/reports/teardown-logs" element={<ProtectedRoute><TeardownLogsPage /></ProtectedRoute>} />
+        <Route path="/field/live"       element={<ProtectedRoute><LiveTeardownPage /></ProtectedRoute>} />
+        <Route path="/reports/teardown-logs"    element={<ProtectedRoute><TeardownLogsPage /></ProtectedRoute>} />
         <Route path="/reports/teardown-logs/:id" element={<ProtectedRoute><TeardownLogDetailPage /></ProtectedRoute>} />
-        <Route path="/subcontractors" element={<ProtectedRoute><SubcontractorsPage /></ProtectedRoute>} />
-        <Route path="/subcontractors/:id" element={<ProtectedRoute><SubcontractorDetailPage /></ProtectedRoute>} />
-        <Route path="/subcontractors/:id/teams" element={<ProtectedRoute><SubcontractorTeamsPage /></ProtectedRoute>} />
-        <Route path="/subcontractors/:id/teams/:teamId" element={<ProtectedRoute><TeamDetailPage /></ProtectedRoute>} />
-        <Route path="/subcontractors/teams" element={<ProtectedRoute><TeamsPage /></ProtectedRoute>} />
-        <Route path="/subcontractors/users" element={<ProtectedRoute><SubconUsersPage /></ProtectedRoute>} />
-        <Route path='/sites' element={<ProtectedRoute><SitelistPage/></ProtectedRoute>}/>
-        <Route path='/sites/:siteId/nodes' element={<ProtectedRoute><SiteNodesPage /></ProtectedRoute>} />
-        <Route path='/sites/:siteId/nodes/:nodeId' element={<ProtectedRoute><NodePolesSpansPage /></ProtectedRoute>} />
+
+        {/* ── Sites / Nodes — all roles except client ── */}
+        <Route path='/sites'                               element={<ProtectedRoute><SitelistPage /></ProtectedRoute>} />
+        <Route path='/sites/:siteId/nodes'                 element={<ProtectedRoute><SiteNodesPage /></ProtectedRoute>} />
+        <Route path='/sites/:siteId/nodes/:nodeId'         element={<ProtectedRoute><NodePolesSpansPage /></ProtectedRoute>} />
         <Route path='/sites/:siteId/nodes/:nodeId/teardown' element={<ProtectedRoute><TeardownSubmitPage /></ProtectedRoute>} />
         <Route path='/:siteSlug' element={<ProtectedRoute><SiteDetailPage /></ProtectedRoute>} />
         <Route path='/:siteSlug/:nodeSlug' element={<ProtectedRoute><NodeDetailPage /></ProtectedRoute>} />

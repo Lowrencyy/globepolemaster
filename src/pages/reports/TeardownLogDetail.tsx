@@ -2,8 +2,8 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { getToken, SKYCABLE_API, API_BASE } from '../../lib/auth'
 import { cacheGet, cacheSet } from '../../lib/cache'
-
-declare const L: any
+import L from 'leaflet'
+import 'leaflet/dist/leaflet.css'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -88,12 +88,33 @@ function fmt(n: string | number | null | undefined, dec = 2) {
     .replace(/\B(?=(\d{3})+(?!\d))/g, ',')
 }
 
-function workSpan(start: string | null, end: string | null) {
-  if (!start || !end) return '—'
-  const mins = Math.max(0, Math.floor((new Date(end).getTime() - new Date(start).getTime()) / 60000))
-  const h = Math.floor(mins / 60)
-  const m = mins % 60
-  return [h > 0 ? `${h}h` : '', m > 0 || !h ? `${m}m` : ''].filter(Boolean).join(' ')
+function computeDuration(start: string | null, end: string | null, fallbackMins: number | null): string {
+  if (start && end) {
+    const mins = Math.max(0, Math.floor((new Date(end).getTime() - new Date(start).getTime()) / 60000))
+    const h = Math.floor(mins / 60)
+    const m = mins % 60
+    const parts = []
+    if (h > 0) parts.push(`${h} hr${h !== 1 ? 's' : ''}`)
+    parts.push(`${m} min${m !== 1 ? 's' : ''}`)
+    return parts.join(' ')
+  }
+  if (fallbackMins != null) {
+    const h = Math.floor(fallbackMins / 60)
+    const m = fallbackMins % 60
+    const parts = []
+    if (h > 0) parts.push(`${h} hr${h !== 1 ? 's' : ''}`)
+    parts.push(`${m} min${m !== 1 ? 's' : ''}`)
+    return parts.join(' ')
+  }
+  return '—'
+}
+
+function fmtDateTime(s: string | null) {
+  if (!s) return '—'
+  return new Date(s).toLocaleString('en-PH', {
+    weekday: 'short', month: 'short', day: 'numeric', year: 'numeric',
+    hour: '2-digit', minute: '2-digit', hour12: true,
+  })
 }
 
 function fmtDate(s: string | null) {
@@ -102,6 +123,10 @@ function fmtDate(s: string | null) {
     month: 'short', day: 'numeric', year: 'numeric',
     hour: '2-digit', minute: '2-digit', hour12: true,
   })
+}
+
+function workSpan(start: string | null, end: string | null) {
+  return computeDuration(start, end, null)
 }
 
 function statusTone(ok: boolean) {
@@ -207,13 +232,16 @@ export default function TeardownLogDetail() {
 
   useEffect(() => {
     if (!log || !mapRef.current || mapInstance.current) return
-    if (typeof L === 'undefined') return
 
     const fromPole = log.span?.fromPole || (log.span as any)?.from_pole
     const toPole   = log.span?.toPole   || (log.span as any)?.to_pole
 
-    const fromLat = Number(fromPole?.pole?.lat ?? 0)
-    const fromLng = Number(fromPole?.pole?.lng ?? 0)
+    // Use pole GPS if available, fall back to captured GPS from the teardown report
+    const capturedLat = Number(log.captured_lat ?? 0)
+    const capturedLng = Number(log.captured_lng ?? 0)
+
+    const fromLat = Number(fromPole?.pole?.lat ?? 0) || capturedLat
+    const fromLng = Number(fromPole?.pole?.lng ?? 0) || capturedLng
     const toLat   = Number(toPole?.pole?.lat ?? 0)
     const toLng   = Number(toPole?.pole?.lng ?? 0)
     const hasGps  = (fromLat && fromLng) || (toLat && toLng)
@@ -322,8 +350,10 @@ export default function TeardownLogDetail() {
   const teamName    = log.team?.name ?? '—'
   const statusUpper = (log.status ?? 'pending').replace(/_/g, ' ').toUpperCase().replace('CLEARED', 'COMPLETED')
 
-  const fromLat  = Number(fromPole?.pole?.lat ?? 0)
-  const fromLng  = Number(fromPole?.pole?.lng ?? 0)
+  const capturedLat = Number(log.captured_lat ?? 0)
+  const capturedLng = Number(log.captured_lng ?? 0)
+  const fromLat  = Number(fromPole?.pole?.lat ?? 0) || capturedLat
+  const fromLng  = Number(fromPole?.pole?.lng ?? 0) || capturedLng
   const toLat    = Number(toPole?.pole?.lat ?? 0)
   const toLng    = Number(toPole?.pole?.lng ?? 0)
   const hasGps   = (fromLat && fromLng) || (toLat && toLng)
@@ -607,9 +637,9 @@ export default function TeardownLogDetail() {
               { label: 'Team',         value: teamName },
               { label: 'Submitted by', value: linemanName },
               { label: 'Status',       value: statusUpper },
-              { label: 'Started',      value: fmtDate(log.start_time) },
-              { label: 'Finished',     value: fmtDate(log.end_time) },
-              { label: 'Duration',     value: log.duration_minutes ? `${log.duration_minutes} min` : workSpan(log.start_time, log.end_time) },
+              { label: 'Date Started', value: fmtDateTime(log.start_time) },
+              { label: 'Date Finished', value: fmtDateTime(log.end_time) },
+              { label: 'Duration',     value: computeDuration(log.start_time, log.end_time, log.duration_minutes) },
               { label: 'Received',     value: fmtDate(log.received_at_server) },
               { label: 'Offline capture', value: log.offline_mode ? 'Yes' : 'No' },
               ...(log.rejection_reason ? [{ label: 'Rejection reason', value: log.rejection_reason }] : []),

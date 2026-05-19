@@ -215,7 +215,7 @@ export default function PoleMapView() {
       <div className="flex gap-4" style={{ height: 'calc(100vh - 220px)', minHeight: 520 }}>
 
         {/* Map */}
-        <div className="relative flex-1 overflow-hidden rounded-3xl shadow-sm ring-1 ring-slate-100 dark:ring-zinc-700">
+        <div className="relative z-0 flex-1 overflow-hidden rounded-3xl shadow-sm ring-1 ring-slate-100 dark:ring-zinc-700">
           {loading && (
             <div className="absolute inset-0 z-1001 flex items-center justify-center bg-white/70 dark:bg-zinc-900/70 backdrop-blur-sm">
               <div className="flex items-center gap-3 text-sm font-semibold text-slate-500 dark:text-zinc-400">

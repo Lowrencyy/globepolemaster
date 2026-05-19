@@ -38,3 +38,35 @@ body {
 .leaflet-container.leaflet-touch-drag {
   touch-action: none;
 }
+
+/* Fix for Boxicons rendering issues - Force font-family mapping */
+.bx {
+  font-family: 'boxicons' !important;
+  font-weight: normal !important;
+  font-style: normal;
+  font-variant: normal;
+  line-height: 1;
+  text-rendering: auto;
+  display: inline-block;
+  text-transform: none;
+  speak: none;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Standardize Feather icon SVG rendering */
+svg.feather {
+  width: 1.25rem;
+  height: 1.25rem;
+  stroke: currentColor;
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  fill: none;
+  vertical-align: middle;
+}
+
+/* Global Emerald Button Utility for high-visibility actions */
+.btn-emerald {
+  @apply inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-4 py-2.5 text-sm font-black text-white shadow-sm transition hover:bg-emerald-700;
+}

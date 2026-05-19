@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
-import { getToken, SKYCABLE_API } from '../../lib/auth'
+import { getToken, SKYCABLE_API, isAdmin } from '../../lib/auth'
 import { cacheGet, cacheSet } from '../../lib/cache'
 import { idFromSlug } from '../../lib/utils'
 import L from 'leaflet'
@@ -18,13 +18,24 @@ type NodeInfo = {
   region?: string
   province?: string
   city?: string
+  lat?: string | number | null
+  lng?: string | number | null
 }
 
-interface SpanComponent {
-  component_type: string
-  expected_count: number | string
-  actual_count: number | string
-  unit: string
+interface SpanSummary {
+  expected_node?: number | null
+  expected_amplifier?: number | null
+  expected_extender?: number | null
+  expected_tsc?: number | null
+  expected_powersupply?: number | null
+  expected_ps_housing?: number | null
+  expected_cable?: number | null
+  actual_node?: number | null
+  actual_amplifier?: number | null
+  actual_extender?: number | null
+  actual_tsc?: number | null
+  actual_powersupply?: number | null
+  actual_ps_housing?: number | null
 }
 
 interface TeardownEntry {
@@ -34,6 +45,10 @@ interface TeardownEntry {
   duration_minutes: number | null
   expected_cable: number | string
   actual_cable: number | string
+  nodes_collected?: number | null
+  amplifiers_collected?: number | null
+  extenders_collected?: number | null
+  tsc_collected?: number | null
   status: string
   team: { name: string } | null
   lineman: { first_name: string; last_name: string } | null
@@ -44,7 +59,7 @@ interface TeardownEntry {
     status: string
     fromPole?: { pole: { pole_code: string } | null } | null
     toPole?: { pole: { pole_code: string } | null } | null
-    components: SpanComponent[]
+    summary?: SpanSummary | null
   } | null
 }
 
@@ -151,8 +166,14 @@ export default function NodeDetail() {
   const [loading, setLoading] = useState(true)
   const [poles, setPoles] = useState<PolePin[]>([])
 
+  const [gpsLat, setGpsLat] = useState('')
+  const [gpsLng, setGpsLng] = useState('')
+  const [gpsSaving, setGpsSaving] = useState(false)
+  const [gpsSaved, setGpsSaved] = useState(false)
+
   const mapRef = useRef<HTMLDivElement>(null)
   const mapObj = useRef<L.Map | null>(null)
+  const nodeMarkerRef = useRef<L.Marker | null>(null)
 
   useEffect(() => {
     if (!nodeId) return
@@ -179,6 +200,8 @@ export default function NodeDetail() {
         if (nodeData?.id) {
           setNode(nodeData)
           cacheSet(`nodedetail_info_${nodeId}`, nodeData)
+          if (nodeData.lat) setGpsLat(String(nodeData.lat))
+          if (nodeData.lng) setGpsLng(String(nodeData.lng))
         }
 
         const list: TeardownEntry[] = Array.isArray(tdData) ? tdData : tdData?.data ?? []
@@ -201,18 +224,17 @@ export default function NodeDetail() {
       })
   }, [nodeId])
 
-  // Build Leaflet map once poles are loaded
+  // Build Leaflet map once the container is mounted
   useEffect(() => {
-    if (!mapRef.current || poles.length === 0) return
+    if (!mapRef.current) return
     if (mapObj.current) return // already initialised
 
     const gpsPoles = poles.filter(p => p.lat && p.lng)
-    if (gpsPoles.length === 0) return
 
     const map = L.map(mapRef.current, { zoomControl: true, attributionControl: false })
     mapObj.current = map
 
-    L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom: 20 }).addTo(map)
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { maxZoom: 20, subdomains: 'abcd' }).addTo(map)
 
     const STATUS_COLOR: Record<string, string> = {
       pending: '#f59e0b', in_progress: '#8b5cf6', cleared: '#10b981',
@@ -250,12 +272,73 @@ export default function NodeDetail() {
 
     setTimeout(() => {
       map.invalidateSize()
-      const bounds = L.latLngBounds(latlngs)
-      map.fitBounds(bounds, { padding: [44, 44], maxZoom: 17 })
+      if (latlngs.length > 0) {
+        map.fitBounds(L.latLngBounds(latlngs), { padding: [44, 44], maxZoom: 17 })
+      } else {
+        map.setView([12.8797, 121.7740], 6)
+      }
     }, 120)
 
     return () => { map.remove(); mapObj.current = null }
   }, [poles])
+
+  // Live-update the node GPS marker whenever lat/lng inputs change
+  useEffect(() => {
+    const map = mapObj.current
+    if (!map) return
+
+    const lat = parseFloat(gpsLat)
+    const lng = parseFloat(gpsLng)
+
+    if (isNaN(lat) || isNaN(lng)) {
+      nodeMarkerRef.current?.remove()
+      nodeMarkerRef.current = null
+      return
+    }
+
+    const nodeIcon = L.divIcon({
+      className: '',
+      html: `<div style="
+        width:18px;height:18px;border-radius:50%;
+        background:#3b82f6;border:3px solid #fff;
+        box-shadow:0 0 0 2px #3b82f6,0 4px 12px rgba(59,130,246,0.5);
+      "></div>`,
+      iconSize: [18, 18],
+      iconAnchor: [9, 9],
+    })
+
+    if (nodeMarkerRef.current) {
+      nodeMarkerRef.current.setLatLng([lat, lng])
+    } else {
+      nodeMarkerRef.current = L.marker([lat, lng], { icon: nodeIcon })
+        .bindPopup(`<div style="font-family:system-ui;min-width:100px">
+          <div style="font-size:12px;font-weight:900;color:#1d4ed8">📍 Node Location</div>
+          <div style="font-size:11px;color:#64748b;margin-top:3px">${lat.toFixed(6)}, ${lng.toFixed(6)}</div>
+        </div>`)
+        .addTo(map)
+    }
+
+    map.setView([lat, lng], map.getZoom() < 14 ? 15 : map.getZoom())
+  }, [gpsLat, gpsLng])
+
+  async function saveGps() {
+    if (!node) return
+    const lat = parseFloat(gpsLat)
+    const lng = parseFloat(gpsLng)
+    if (isNaN(lat) || isNaN(lng)) return
+
+    setGpsSaving(true)
+    try {
+      await fetch(`${SKYCABLE_API}/nodes/${node.id}`, {
+        method: 'PATCH',
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lat, lng }),
+      })
+      setGpsSaved(true)
+      setTimeout(() => setGpsSaved(false), 2500)
+    } catch {}
+    finally { setGpsSaving(false) }
+  }
 
   const filtered = useMemo(() => {
     if (!date) return teardowns
@@ -273,15 +356,20 @@ export default function NodeDetail() {
   const compMap: Record<string, { expected: number; actual: number; unit: string }> = {}
 
   filtered.forEach(td => {
-    ;(td.span?.components ?? []).forEach(c => {
-      if (c.component_type === 'cable') return
-
-      if (!compMap[c.component_type]) {
-        compMap[c.component_type] = { expected: 0, actual: 0, unit: c.unit }
-      }
-
-      compMap[c.component_type].expected += Number(c.expected_count ?? 0)
-      compMap[c.component_type].actual += Number(c.actual_count ?? 0)
+    const s = td.span?.summary
+    if (!s) return
+    const entries: [string, number | null | undefined, number | null | undefined][] = [
+      ['node',         s.expected_node,        td.nodes_collected],
+      ['amplifier',    s.expected_amplifier,   td.amplifiers_collected],
+      ['extender',     s.expected_extender,    td.extenders_collected],
+      ['tsc',          s.expected_tsc,         td.tsc_collected],
+      ['powersupply',  s.expected_powersupply, null],
+      ['ps_housing',   s.expected_ps_housing,  null],
+    ]
+    entries.forEach(([type, exp, act]) => {
+      if (!compMap[type]) compMap[type] = { expected: 0, actual: 0, unit: 'pcs' }
+      compMap[type].expected += Number(exp ?? 0)
+      compMap[type].actual   += Number(act ?? 0)
     })
   })
 
@@ -437,14 +525,47 @@ export default function NodeDetail() {
               </span>
             </div>
           </div>
-          {poles.filter(p => p.lat && p.lng).length === 0 ? (
-            <div className="flex h-48 flex-col items-center justify-center gap-2 text-slate-400 dark:text-slate-600">
-              <svg width="36" height="36" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.4}><path strokeLinecap="round" strokeLinejoin="round" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/><path strokeLinecap="round" strokeLinejoin="round" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
-              <p className="text-xs font-semibold">No GPS coordinates on poles in this node</p>
+          {/* GPS input panel — admin only */}
+          {isAdmin() && (
+            <div className="flex flex-wrap items-end gap-3 border-b border-slate-100 bg-slate-50/60 px-5 py-3 dark:border-white/10 dark:bg-white/[0.02]">
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] font-black uppercase tracking-widest text-slate-400">Latitude</label>
+                <input
+                  type="number"
+                  step="any"
+                  placeholder="e.g. 14.5896"
+                  value={gpsLat}
+                  onChange={e => { setGpsLat(e.target.value); setGpsSaved(false) }}
+                  className="h-9 w-44 rounded-xl border border-slate-200 bg-white px-3 text-xs font-bold text-slate-700 outline-none ring-0 transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100 dark:border-white/10 dark:bg-white/5 dark:text-slate-200"
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] font-black uppercase tracking-widest text-slate-400">Longitude</label>
+                <input
+                  type="number"
+                  step="any"
+                  placeholder="e.g. 121.0244"
+                  value={gpsLng}
+                  onChange={e => { setGpsLng(e.target.value); setGpsSaved(false) }}
+                  className="h-9 w-44 rounded-xl border border-slate-200 bg-white px-3 text-xs font-bold text-slate-700 outline-none ring-0 transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100 dark:border-white/10 dark:bg-white/5 dark:text-slate-200"
+                />
+              </div>
+              <button
+                onClick={saveGps}
+                disabled={gpsSaving || !gpsLat || !gpsLng}
+                className="h-9 rounded-xl bg-blue-600 px-4 text-xs font-extrabold text-white shadow-sm transition hover:bg-blue-700 active:scale-95 disabled:opacity-40"
+              >
+                {gpsSaving ? 'Saving…' : gpsSaved ? '✓ Saved' : 'Save GPS'}
+              </button>
+              {gpsLat && gpsLng && !isNaN(parseFloat(gpsLat)) && !isNaN(parseFloat(gpsLng)) && (
+                <span className="text-[11px] font-semibold text-blue-500">
+                  📍 Live preview active — blue dot on map
+                </span>
+              )}
             </div>
-          ) : (
-            <div ref={mapRef} className="h-[300px] w-full" />
           )}
+
+          <div ref={mapRef} className="h-80 w-full" />
         </div>
 
         <div id="node-report-print" className="overflow-hidden rounded-[30px] border border-slate-100 bg-white shadow-[0_24px_80px_-44px_rgba(15,23,42,0.55)] dark:border-white/10 dark:bg-[#0b1323]">
