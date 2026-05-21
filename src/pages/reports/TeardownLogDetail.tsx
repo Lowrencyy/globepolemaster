@@ -151,7 +151,10 @@ function SafeImage({ src, alt, className, style, onClick }: {
     setLoading(true)
 
     fetch(src, {
-      headers: { 'ngrok-skip-browser-warning': '1' }
+      headers: {
+        'ngrok-skip-browser-warning': '1',
+        Authorization: `Bearer ${getToken()}`,
+      }
     })
       .then(r => r.blob())
       .then(blob => {
@@ -201,15 +204,18 @@ export default function TeardownLogDetail() {
   const [loading, setLoading] = useState(true)
   const [error, setError]   = useState<string | null>(null)
   const [lightbox, setLightbox] = useState<string | null>(null)
+  const [lastFetch, setLastFetch] = useState<number | null>(null)
+  const [justUpdated, setJustUpdated] = useState(false)
+  const prevLogRef = useRef<TeardownDetail | null>(null)
+  const [capturedAddress, setCapturedAddress] = useState<string | null>(null)
 
   const mapRef      = useRef<HTMLDivElement>(null)
   const mapInstance = useRef<any>(null)
   const lineRef     = useRef<any>(null)
   const [lineOn, setLineOn] = useState(true)
 
-  useEffect(() => {
-    if (log) setLoading(false)
-
+  function fetchLog(isFirst = false) {
+    if (!id) return
     fetch(`${SKYCABLE_API}/teardowns/${id}`, {
       headers: {
         Authorization: `Bearer ${getToken()}`,
@@ -220,15 +226,64 @@ export default function TeardownLogDetail() {
       .then(r => r.json())
       .then(data => {
         if (data?.id) {
+          // Detect meaningful changes after an offline sync
+          const prev = prevLogRef.current
+          if (prev) {
+            const changed =
+              prev.status !== data.status ||
+              prev.offline_mode !== data.offline_mode ||
+              prev.received_at_server !== data.received_at_server ||
+              prev.span?.fromPole?.pole?.pole_code !== data.span?.fromPole?.pole?.pole_code ||
+              prev.span?.toPole?.pole?.pole_code !== data.span?.toPole?.pole?.pole_code
+            if (changed) {
+              setJustUpdated(true)
+              setTimeout(() => setJustUpdated(false), 4000)
+            }
+          }
+          prevLogRef.current = data
           cacheSet(cacheKey, data)
           setLog(data)
-        } else if (!log) {
+          setLastFetch(Date.now())
+        } else if (isFirst && !log) {
           setError('Log not found')
         }
       })
-      .catch(() => { if (!log) setError('Failed to load teardown log') })
-      .finally(() => setLoading(false))
+      .catch(() => { if (isFirst && !log) setError('Failed to load teardown log') })
+      .finally(() => { if (isFirst) setLoading(false) })
+  }
+
+  useEffect(() => {
+    if (log) {
+      setLoading(false)
+      prevLogRef.current = log
+    }
+    fetchLog(true)
+
+    // Poll every 8s — picks up changes as soon as mobile syncs to backend
+    const timer = setInterval(() => fetchLog(false), 8_000)
+    return () => clearInterval(timer)
   }, [id])
+
+  // Reverse geocode captured GPS → human-readable address
+  useEffect(() => {
+    const lat = Number(log?.captured_lat ?? 0)
+    const lng = Number(log?.captured_lng ?? 0)
+    if (!lat || !lng) return
+    fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=16&addressdetails=1`, {
+      headers: { 'Accept-Language': 'en' }
+    })
+      .then(r => r.json())
+      .then(d => {
+        const a = d?.address ?? {}
+        const parts = [
+          a.road ?? a.pedestrian ?? a.footway,
+          a.suburb ?? a.neighbourhood ?? a.village,
+          a.city ?? a.town ?? a.municipality,
+        ].filter(Boolean)
+        if (parts.length) setCapturedAddress(parts.join(', '))
+      })
+      .catch(() => {})
+  }, [log?.captured_lat, log?.captured_lng])
 
   useEffect(() => {
     if (!log || !mapRef.current || mapInstance.current) return
@@ -236,7 +291,7 @@ export default function TeardownLogDetail() {
     const fromPole = log.span?.fromPole || (log.span as any)?.from_pole
     const toPole   = log.span?.toPole   || (log.span as any)?.to_pole
 
-    // Use pole GPS if available, fall back to captured GPS from the teardown report
+    // Captured GPS (from the mobile at time of photo) is the primary location
     const capturedLat = Number(log.captured_lat ?? 0)
     const capturedLng = Number(log.captured_lng ?? 0)
 
@@ -244,19 +299,20 @@ export default function TeardownLogDetail() {
     const fromLng = Number(fromPole?.pole?.lng ?? 0) || capturedLng
     const toLat   = Number(toPole?.pole?.lat ?? 0)
     const toLng   = Number(toPole?.pole?.lng ?? 0)
-    const hasGps  = (fromLat && fromLng) || (toLat && toLng)
+    const hasGps  = (capturedLat && capturedLng) || (fromLat && fromLng) || (toLat && toLng)
     if (!hasGps) return
 
-    const pts = [[fromLat, fromLng], [toLat, toLng]].filter(([a, b]) => a && b)
-    const centerLat = pts.reduce((s, [a]) => s + a, 0) / pts.length
-    const centerLng = pts.reduce((s, [, b]) => s + b, 0) / pts.length
+    const centerLat = capturedLat || fromLat || toLat
+    const centerLng = capturedLng || fromLng || toLng
 
-    const map = L.map(mapRef.current, { zoomControl: true }).setView([centerLat, centerLng], 17)
+    // Start at zoom 19 (street-level) centered on captured GPS
+    const map = L.map(mapRef.current, { zoomControl: true, maxZoom: 19 }).setView([centerLat, centerLng], 19)
     mapInstance.current = map
 
+    // Street tiles — shows road names, buildings, street detail
     L.tileLayer(
-      'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-      { attribution: '© Esri', maxZoom: 20 }
+      'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+      { attribution: '© OpenStreetMap', maxZoom: 19, subdomains: 'abc' }
     ).addTo(map)
 
     function makeIcon(color: string) {
@@ -285,6 +341,26 @@ export default function TeardownLogDetail() {
       bounds.push([toLat, toLng])
     }
 
+    // Captured GPS marker (where the lineman actually took the photo)
+    if (capturedLat && capturedLng) {
+      const captIcon = L.divIcon({
+        className: '',
+        html: `<div style="position:relative;width:22px;height:22px">
+          <div style="position:absolute;inset:0;border-radius:50%;border:2px solid #ef4444;animation:lm-ripple 2s ease-out infinite;opacity:.6"></div>
+          <div style="width:22px;height:22px;border-radius:50%;background:#ef4444;border:3px solid #fff;box-shadow:0 2px 8px rgba(239,68,68,.5);display:flex;align-items:center;justify-content:center">
+            <div style="width:6px;height:6px;border-radius:50%;background:#fff"></div>
+          </div>
+        </div>`,
+        iconSize: [22, 22], iconAnchor: [11, 11],
+      })
+      L.marker([capturedLat, capturedLng], { icon: captIcon })
+        .addTo(map)
+        .bindPopup(`<div style="padding:8px;min-width:160px">
+          <div style="font-size:10px;color:#ef4444;font-weight:800;text-transform:uppercase;letter-spacing:.1em">📍 Capture Location</div>
+          <div style="font-size:11px;color:#555;margin-top:4px">${capturedLat.toFixed(6)}, ${capturedLng.toFixed(6)}</div>
+        </div>`, { maxWidth: 220 })
+    }
+
     if (fromLat && fromLng && toLat && toLng) {
       const spanLenVal = spanLengthM(log.span)
       const line = L.polyline([[fromLat, fromLng], [toLat, toLng]], {
@@ -305,8 +381,14 @@ export default function TeardownLogDetail() {
 
     setTimeout(() => {
       map.invalidateSize()
-      if (bounds.length > 1) map.fitBounds(bounds, { padding: [40, 40], maxZoom: 18 })
-      else if (bounds.length === 1) map.setView(bounds[0], 18)
+      if (capturedLat && capturedLng) {
+        // Always stay at street level on the exact capture location
+        map.setView([capturedLat, capturedLng], 19)
+      } else if (bounds.length > 1) {
+        map.fitBounds(bounds, { padding: [40, 40], maxZoom: 18 })
+      } else if (bounds.length === 1) {
+        map.setView(bounds[0], 19)
+      }
     }, 120)
 
     return () => { map.remove(); mapInstance.current = null }
@@ -371,15 +453,52 @@ export default function TeardownLogDetail() {
   return (
     <div className="flex flex-col gap-5 pb-10">
       <style>{`.span-length-tooltip{background:transparent!important;border:none!important;box-shadow:none!important;padding:0!important}.span-length-tooltip::before{display:none!important}`}</style>
-      <button
-        onClick={() => navigate('/reports/teardown-logs')}
-        className="inline-flex items-center gap-2 self-start rounded-2xl border border-zinc-200 bg-white px-4 py-2.5 text-sm font-semibold text-zinc-700 shadow-sm transition hover:-translate-y-px hover:shadow-md dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200"
-      >
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M19 12H5M12 5l-7 7 7 7" />
-        </svg>
-        Back to Live Teardown Logs
-      </button>
+
+      {/* ── Sync update flash banner ── */}
+      {justUpdated && (
+        <div className="flex items-center gap-3 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800 shadow-sm dark:border-emerald-800/40 dark:bg-emerald-900/20 dark:text-emerald-300">
+          <span className="relative flex h-2.5 w-2.5 shrink-0">
+            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+            <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-emerald-500" />
+          </span>
+          <span>
+            <b>Synced from mobile</b> — teardown data was updated from the device sync. Page has refreshed automatically.
+          </span>
+        </div>
+      )}
+
+      {/* ── Offline-mode notice ── */}
+      {log.offline_mode && !log.received_at_server && (
+        <div className="flex items-center gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800 dark:border-amber-800/40 dark:bg-amber-900/20 dark:text-amber-300">
+          <i className="bx bx-wifi-off text-lg text-amber-500" />
+          <span>
+            <b>Offline capture</b> — this teardown was recorded offline and is <b>pending server sync</b>.
+            The page will update automatically once the mobile device uploads it.
+          </span>
+          <span className="ml-auto shrink-0 text-[10px] font-bold text-amber-500">Checking every 8s…</span>
+        </div>
+      )}
+
+      {/* Back + live poll indicator row */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <button
+          onClick={() => navigate('/reports/teardown-logs')}
+          className="inline-flex items-center gap-2 rounded-2xl border border-zinc-200 bg-white px-4 py-2.5 text-sm font-semibold text-zinc-700 shadow-sm transition hover:-translate-y-px hover:shadow-md dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M19 12H5M12 5l-7 7 7 7" />
+          </svg>
+          Back to Live Teardown Logs
+        </button>
+
+        <div className="flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-[10px] font-bold text-emerald-700 dark:border-emerald-800/40 dark:bg-emerald-900/20 dark:text-emerald-400">
+          <span className="relative flex h-1.5 w-1.5">
+            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+            <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-emerald-500" />
+          </span>
+          Live · {lastFetch ? new Date(lastFetch).toLocaleTimeString('en-PH', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true }) : 'Syncing…'}
+        </div>
+      </div>
 
       {/* ── Hero banner ────────────────────────────────────────────────── */}
       <section className="relative overflow-hidden rounded-[28px] bg-[#0d1117] shadow-2xl border border-white/5">
@@ -515,8 +634,45 @@ export default function TeardownLogDetail() {
                       </button>
                     </div>
                   </div>
+                  {/* Location + time bar */}
+                  {(capturedAddress || log.start_time) && (
+                    <div className="flex flex-wrap items-center justify-between gap-2 border-t border-zinc-100 bg-zinc-50 px-4 py-2.5 dark:border-zinc-800 dark:bg-zinc-900/60">
+                      {capturedAddress && (
+                        <div className="flex items-center gap-2 text-xs font-semibold text-zinc-600 dark:text-zinc-300">
+                          <svg width="13" height="13" viewBox="0 0 24 24" fill="#e53e3e"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg>
+                          <span className="font-bold text-zinc-800 dark:text-zinc-100">{capturedAddress}</span>
+                          {log.captured_lat && log.captured_lng && (
+                            <span className="text-zinc-400 font-mono text-[10px]">
+                              {Number(log.captured_lat).toFixed(6)}°N, {Number(log.captured_lng).toFixed(6)}°E
+                            </span>
+                          )}
+                        </div>
+                      )}
+                      {log.start_time && (
+                        <div className="flex items-center gap-1.5 text-[11px] font-bold text-zinc-500 dark:text-zinc-400">
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+                          {new Date(log.start_time).toLocaleString('en-PH', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true })}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                   <div className="relative">
-                    <div ref={mapRef} className="h-[320px] w-full xl:h-[400px]" />
+                    <div ref={mapRef} className="h-[420px] w-full xl:h-[500px]" />
+
+                    {/* Google Maps Street View button */}
+                    {(capturedLat || fromLat) ? (
+                      <a
+                        href={`https://www.google.com/maps?q=${capturedLat || fromLat},${capturedLng || fromLng}&layer=c&cbll=${capturedLat || fromLat},${capturedLng || fromLng}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="absolute bottom-4 right-4 z-[400] flex flex-col items-center justify-center gap-1.5 rounded-2xl bg-white px-5 py-4 shadow-xl transition hover:scale-105 hover:shadow-2xl active:scale-95 dark:bg-zinc-900"
+                        style={{ minWidth: 80, minHeight: 90 }}
+                      >
+                        <svg width="28" height="28" viewBox="0 0 24 24" fill="#e53e3e"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg>
+                        <span className="text-[11px] font-black uppercase tracking-widest text-zinc-700 dark:text-zinc-200">Street</span>
+                      </a>
+                    ) : null}
 
                     {/* Span route summary — top center */}
                     <div className="pointer-events-none absolute left-1/2 top-3 -translate-x-1/2">

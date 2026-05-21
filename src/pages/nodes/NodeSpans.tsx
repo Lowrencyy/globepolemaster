@@ -678,6 +678,8 @@ export default function NodeSpans() {
   const [editForm, setEditForm] = useState<EditForm>(emptyEdit());
   const [saving, setSaving] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
+  // Pole connections panel — shown when clicking a pole that has existing spans
+  const [poleConnPanel, setPoleConnPanel] = useState<{ pole: PoleOption; spans: Span[] } | null>(null);
   const [editError, setEditError] = useState<string | null>(null);
   const [delError, setDelError] = useState<string | null>(null);
   const [sheetError, setSheetError] = useState<string | null>(null);
@@ -1068,22 +1070,44 @@ export default function NodeSpans() {
 
   /* ── Map pole click ── */
   function handleMapPoleClick(p: PoleOption) {
-    if (reassignMode) return; // dragging handles GPS; don't select for spans
-    if (!mapFrom) {
-      setMapFrom(p);
-      setMapTo(null);
-    } else if (mapFrom.id === p.id) {
+    if (reassignMode) return;
+
+    // If already picking TO-pole, complete the pair normally
+    if (mapFrom && mapFrom.id !== p.id) {
+      if (!mapTo) {
+        setMapTo(p);
+        const { from_pole_id: _f, to_pole_id: _t, ...rest } = emptyForm();
+        setSheetForm(rest);
+        setSheetError(null);
+        setIsSheetOpen(true);
+      } else {
+        setMapFrom(p);
+        setMapTo(null);
+        setIsSheetOpen(false);
+      }
+      return;
+    }
+
+    // Deselect if clicking the already-selected from-pole
+    if (mapFrom && mapFrom.id === p.id) {
       setMapFrom(null);
-    } else if (!mapTo) {
-      setMapTo(p);
-      const { from_pole_id: _f, to_pole_id: _t, ...rest } = emptyForm();
-      setSheetForm(rest);
-      setSheetError(null);
-      setIsSheetOpen(true);
+      setPoleConnPanel(null);
+      return;
+    }
+
+    // First click — check if this pole has existing spans
+    const connectedSpans = spans.filter(
+      s => s.from_pole?.id === p.id || s.to_pole?.id === p.id
+    );
+
+    if (connectedSpans.length > 0) {
+      // Show connections panel first
+      setPoleConnPanel({ pole: p, spans: connectedSpans });
     } else {
+      // No existing spans — go straight to from-pole selection
       setMapFrom(p);
       setMapTo(null);
-      setIsSheetOpen(false);
+      setPoleConnPanel(null);
     }
   }
   // Keep the ref in sync so Leaflet click handlers always call the latest version
@@ -2054,6 +2078,84 @@ export default function NodeSpans() {
 
       {/* Span Detail Modal */}
       {detailSpan && <SpanDetailModal span={detailSpan} onClose={() => setDetailSpan(null)} />}
+
+      {/* ── Pole Connections Panel ── */}
+      {poleConnPanel && !isSheetOpen && (
+        <div className="fixed inset-0 z-[997] flex items-end justify-center p-4 sm:items-center">
+          <div className="absolute inset-0 bg-slate-950/60 backdrop-blur-sm" onClick={() => setPoleConnPanel(null)} />
+          <div className="relative w-full max-w-md overflow-hidden rounded-[28px] bg-white shadow-2xl dark:bg-zinc-900">
+            {/* Header */}
+            <div className="flex items-center justify-between border-b border-slate-100 bg-gradient-to-r from-indigo-600 to-violet-600 px-5 py-4 dark:border-zinc-800">
+              <div className="flex items-center gap-3">
+                <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-white/15">
+                  <i className="bx bx-git-branch text-lg text-white" />
+                </div>
+                <div>
+                  <p className="text-sm font-black text-white">
+                    {poleConnPanel.pole.pole?.pole_code ?? `Pole #${poleConnPanel.pole.id}`}
+                  </p>
+                  <p className="text-[11px] text-white/70">{poleConnPanel.spans.length} span{poleConnPanel.spans.length !== 1 ? 's' : ''} connected</p>
+                </div>
+              </div>
+              <button onClick={() => setPoleConnPanel(null)} className="flex h-8 w-8 items-center justify-center rounded-xl bg-white/15 text-white hover:bg-white/25">
+                <i className="bx bx-x text-lg" />
+              </button>
+            </div>
+
+            {/* Existing spans list */}
+            <div className="divide-y divide-slate-100 dark:divide-zinc-800 max-h-72 overflow-y-auto">
+              {poleConnPanel.spans.map(s => {
+                const sc = statusCfg[s.status] ?? statusCfg.pending;
+                const isFrom = s.from_pole?.id === poleConnPanel.pole.id;
+                const otherPole = isFrom ? s.to_pole : s.from_pole;
+                const otherCode = otherPole?.pole?.pole_code ?? `Pole #${otherPole?.id ?? '?'}`;
+                const myCode = poleConnPanel.pole.pole?.pole_code ?? `P${poleConnPanel.pole.id}`;
+                return (
+                  <button
+                    key={s.id}
+                    onClick={() => { setDetailSpan(s); setPoleConnPanel(null); }}
+                    className="flex w-full items-center gap-3 px-5 py-3.5 text-left transition hover:bg-slate-50 dark:hover:bg-zinc-800"
+                  >
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono text-[11px] font-black text-indigo-600 dark:text-indigo-400">
+                          {s.span_code ?? `#${s.id}`}
+                        </span>
+                        <span className={`rounded-full px-2 py-0.5 text-[9px] font-black ${sc.badge}`}>
+                          {sc.label}
+                        </span>
+                      </div>
+                      <div className="mt-1 flex items-center gap-1.5 text-xs text-slate-500">
+                        <span className="font-mono font-bold text-slate-700 dark:text-zinc-200">{myCode}</span>
+                        <i className="bx bx-right-arrow-alt text-slate-300" />
+                        <span className="font-mono font-bold text-slate-700 dark:text-zinc-200">{otherCode}</span>
+                        {s.strand_length && (
+                          <span className="ml-1 text-slate-400">· {Number(s.strand_length) * Number(s.number_of_runs ?? 1)}m</span>
+                        )}
+                      </div>
+                    </div>
+                    <i className="bx bx-chevron-right text-slate-300 shrink-0" />
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Action — declare new span from this pole */}
+            <div className="border-t border-slate-100 px-5 py-4 dark:border-zinc-800">
+              <button
+                onClick={() => {
+                  setMapFrom(poleConnPanel.pole);
+                  setMapTo(null);
+                  setPoleConnPanel(null);
+                }}
+                className="flex w-full items-center justify-center gap-2 rounded-2xl bg-indigo-600 py-2.5 text-sm font-black text-white transition hover:bg-indigo-700"
+              >
+                <i className="bx bx-plus" /> Declare new span from {poleConnPanel.pole.pole?.pole_code ?? `Pole #${poleConnPanel.pole.id}`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Bottom Sheet (map mode span form) */}
       <BottomSheet

@@ -215,6 +215,7 @@ function GpsMapPicker({ lat, lng, onChange }: { lat: string; lng: string; onChan
   const containerRef = useRef<HTMLDivElement>(null)
   const mapObj       = useRef<L.Map | null>(null)
   const markerRef    = useRef<L.Marker | null>(null)
+  const aliveRef     = useRef(true)
   const [locating, setLocating] = useState(false)
   const [gpsError, setGpsError] = useState<string | null>(null)
   const [showMap, setShowMap]   = useState(false)
@@ -255,18 +256,43 @@ function GpsMapPicker({ lat, lng, onChange }: { lat: string; lng: string; onChan
     mapObj.current.setView([numLat, numLng], mapObj.current.getZoom())
   }, [lat, lng])
 
+  // Mark alive/unmounted so geolocation callback doesn't setState after unmount
+  useEffect(() => {
+    aliveRef.current = true
+    return () => { aliveRef.current = false }
+  }, [])
+
   const captureGps = () => {
-    if (!navigator.geolocation) { setGpsError('Geolocation not supported'); return }
-    setLocating(true); setGpsError(null)
-    navigator.geolocation.getCurrentPosition(
-      pos => {
-        onChange(pos.coords.latitude.toFixed(7), pos.coords.longitude.toFixed(7))
-        setLocating(false)
-        setShowMap(true)
-      },
-      err => { setGpsError(err.message); setLocating(false) },
-      { enableHighAccuracy: true, timeout: 15000 },
-    )
+    if (!navigator.geolocation) {
+      setGpsError('Geolocation not supported by this browser')
+      return
+    }
+    setLocating(true)
+    setGpsError(null)
+    try {
+      navigator.geolocation.getCurrentPosition(
+        pos => {
+          if (!aliveRef.current) return
+          onChange(pos.coords.latitude.toFixed(7), pos.coords.longitude.toFixed(7))
+          setLocating(false)
+          setShowMap(true)
+        },
+        err => {
+          if (!aliveRef.current) return
+          const msg =
+            err.code === 1 ? 'Location permission denied. Please allow location access.' :
+            err.code === 2 ? 'Location unavailable. Check GPS signal.' :
+            err.code === 3 ? 'Location timed out. Try again.' :
+            err.message
+          setGpsError(msg)
+          setLocating(false)
+        },
+        { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 },
+      )
+    } catch (e: any) {
+      setGpsError(e?.message ?? 'Failed to get location')
+      setLocating(false)
+    }
   }
 
   return (

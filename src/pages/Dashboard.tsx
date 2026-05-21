@@ -395,7 +395,14 @@ export default function Dashboard() {
     return () => clearTimeout(timer)
   }, [])
 
-  function fetchNodes() {
+  function fetchNodes(silent = false) {
+    const cached = cacheGet<NodeStat[]>('dashboard_nodes')
+    if (cached && !silent) {
+      setNodes(cached)
+      fetchNodes(true)
+      return
+    }
+
     fetch(`${SKYCABLE_API}/nodes`, { headers: h() })
       .then(r => r.json())
       .then(d => {
@@ -408,6 +415,14 @@ export default function Dashboard() {
   }
 
   function fetchTeardowns(silent = false) {
+    const cached = cacheGet<TeardownLog[]>('dashboard_tdlogs')
+    if (cached && !silent) {
+      setTeardowns(cached)
+      setTdLoading(false)
+      fetchTeardowns(true)
+      return
+    }
+
     if (!silent) setTdLoading(true)
 
     fetch(`${SKYCABLE_API}/teardowns?per_page=15`, { headers: h() })
@@ -432,14 +447,14 @@ export default function Dashboard() {
       setNapSurveys(cached)
       setNapSurveyLoading(false)
       // Silent background fetch to update cache
-      fetchNapSurveysForce().catch(() => {})
+      fetchNapSurveysForce(true).catch(() => {})
       return
     }
-    await fetchNapSurveysForce()
+    await fetchNapSurveysForce(false)
   }
 
-  async function fetchNapSurveysForce() {
-    setNapSurveyLoading(true)
+  async function fetchNapSurveysForce(silent = false) {
+    if (!silent) setNapSurveyLoading(true)
     try {
       const headers = {
         Accept: 'application/json',
@@ -528,7 +543,7 @@ export default function Dashboard() {
             setTeardowns(list)
             cacheSet('dashboard_tdlogs', list)
           }),
-        fetchNapSurveysForce()
+        fetchNapSurveysForce(true)
       ])
 
       setLastSynced(Date.now())

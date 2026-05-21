@@ -28,7 +28,7 @@ const STATUS_COLOR: Record<string, string> = {
 }
 
 const STATUS_LABEL: Record<string, string> = {
-  'IN_PROGRESS': 'In Progress',
+  'IN_PROGRESS': 'Ongoing',
   'COMPLETED':   'Completed',
   'PENDING':     'Pending',
 }

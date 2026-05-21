@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import html2canvas from 'html2canvas'
 import { getToken, SKYCABLE_API } from '../../lib/auth'
@@ -64,7 +64,7 @@ const STATUS_META: Record<
     chip: 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-300',
   },
   in_progress: {
-    label: 'In Progress',
+    label: 'Ongoing',
     dot: 'bg-blue-500',
     badge:
       'bg-blue-50 text-blue-700 ring-1 ring-blue-200 dark:bg-blue-500/15 dark:text-blue-300 dark:ring-blue-500/20',
@@ -146,7 +146,7 @@ function authHeaders() {
 
 function statusLabel(status?: string) {
   if (status === 'cleared') return 'Cleared'
-  if (status === 'in_progress') return 'In Progress'
+  if (status === 'in_progress') return 'Ongoing'
   return 'Pending'
 }
 
@@ -225,12 +225,16 @@ export default function NodePolesList() {
   const [exporting, setExporting] = useState(false)
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
+  const [lastPoll, setLastPoll] = useState<number | null>(null)
+  const [changedIds, setChangedIds] = useState<Set<number>>(new Set())
 
   const [showModal, setShowModal] = useState(false)
   const [editingPole, setEditingPole] = useState<PoleRecord | null>(null)
   const [saving, setSaving] = useState(false)
   const [deletingId, setDeletingId] = useState<number | null>(null)
   const [form, setForm] = useState<PoleForm>(EMPTY_FORM)
+
+  const polesRef = React.useRef<PoleRecord[]>([])
 
   async function loadData(showSpinner = true) {
     if (!nodeId) return
@@ -248,11 +252,28 @@ export default function NodePolesList() {
       }
 
       const list: PoleRecord[] = Array.isArray(pd) ? pd : pd?.data ?? []
+
+      // Detect which poles changed status since last fetch
+      if (polesRef.current.length > 0) {
+        const prevMap = new Map(polesRef.current.map(p => [p.id, p.pole?.skycable_status]))
+        const changed = new Set<number>()
+        list.forEach(p => {
+          const prev = prevMap.get(p.id)
+          if (prev !== undefined && prev !== p.pole?.skycable_status) changed.add(p.id)
+        })
+        if (changed.size > 0) {
+          setChangedIds(changed)
+          setTimeout(() => setChangedIds(new Set()), 3000)
+        }
+      }
+
+      polesRef.current = list
       setPoles(list)
       cacheSet(`poles_list_${nodeId}`, list)
+      setLastPoll(Date.now())
     } catch (err) {
       console.error(err)
-      alert('Failed to load poles. Please try again.')
+      if (showSpinner) alert('Failed to load poles. Please try again.')
     } finally {
       if (showSpinner) setLoading(false)
     }
@@ -267,12 +288,16 @@ export default function NodePolesList() {
     if (hitNode) setNode(hitNode)
 
     if (hitPoles) {
+      polesRef.current = hitPoles
       setPoles(hitPoles)
       setLoading(false)
-      loadData(false)
-    } else {
-      loadData(true)
     }
+
+    loadData(!hitPoles)
+
+    // Auto-poll every 10 seconds for live status updates from mobile teardowns
+    const id = setInterval(() => loadData(false), 10_000)
+    return () => clearInterval(id)
   }, [nodeId])
 
   const stats = useMemo(() => {
@@ -506,6 +531,15 @@ export default function NodePolesList() {
               </div>
 
               <div className="flex flex-wrap items-center justify-start gap-2 xl:justify-end">
+                {/* Live polling indicator */}
+                <div className="flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-[10px] font-bold text-emerald-700 dark:border-emerald-800/40 dark:bg-emerald-900/20 dark:text-emerald-400">
+                  <span className="relative flex h-1.5 w-1.5">
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+                    <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                  </span>
+                  Live · {lastPoll ? new Date(lastPoll).toLocaleTimeString('en-PH', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true }) : 'Syncing…'}
+                </div>
+
                 <button type="button" onClick={() => navigate(`/${siteSlug}`)} className={secondaryBtn}>
                   <i className="bx bx-arrow-back text-lg" />
                   Back
@@ -771,6 +805,16 @@ export default function NodePolesList() {
                         onClick={e => e.stopPropagation()}
                       >
                         <div className="flex items-center justify-center gap-1">
+                          {/* Start Teardown — goes to teardown submit for this node, pre-selecting the pole */}
+                          <button
+                            type="button"
+                            onClick={() => navigate(`/sites/${(node?.area?.id ?? idFromSlug(siteSlug)) || siteSlug}/nodes/${nodeId}/teardown?pole_id=${p.id}&pole_code=${encodeURIComponent(p.pole?.pole_code ?? '')}`)}
+                            title="Start Teardown"
+                            className="inline-flex h-9 items-center gap-1.5 rounded-xl bg-emerald-600 px-3 text-[11px] font-black text-white shadow-sm transition hover:bg-emerald-700 active:scale-95"
+                          >
+                            <i className="bx bx-play text-sm" /> Teardown
+                          </button>
+
                           <button
                             type="button"
                             onClick={() => openEditModal(p)}
@@ -887,8 +931,9 @@ export default function NodePolesList() {
                     filtered.map(item => {
                       const meta = getStatusMeta(item.pole?.skycable_status)
 
+                      const isChanged = changedIds.has(item.id)
                       return (
-                        <tr key={item.id} className="border-b border-slate-100 last:border-b-0 even:bg-slate-50/70">
+                        <tr key={item.id} className={`border-b border-slate-100 last:border-b-0 even:bg-slate-50/70 transition-colors duration-700 ${isChanged ? 'bg-emerald-50 dark:bg-emerald-900/20' : ''}`}>
                           <td className="px-4 py-3 font-black tabular-nums text-slate-700">{item.sequence}</td>
                           <td className="px-4 py-3 font-mono text-[11px] font-black text-sky-700">{item.pole?.pole_code ?? '—'}</td>
                           <td className="px-4 py-3 font-mono text-[11px] font-semibold text-slate-500">{item.pole?.lat ?? '—'}</td>

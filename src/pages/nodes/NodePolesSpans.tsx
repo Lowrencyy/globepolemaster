@@ -101,7 +101,7 @@ const POLE_CFG = {
     pill: 'bg-amber-50 text-amber-700 ring-1 ring-amber-200',
   },
   in_progress: {
-    label: 'Active',
+    label: 'Ongoing',
     dot: 'bg-indigo-500',
     hex: '#6366f1',
     pill: 'bg-indigo-50 text-indigo-700 ring-1 ring-indigo-200',
@@ -500,7 +500,24 @@ export default function NodePolesSpans() {
 
       L.marker([Number(p.lat), Number(p.lng)], { icon })
         .addTo(map)
-        .bindPopup(`<b style="font-family:monospace">${p.pole_code}</b><br/><small>${cfg.label}</small>`)
+        .bindPopup(`
+          <div style="font-family:system-ui;min-width:170px;padding:4px 0">
+            <div style="font-size:9px;font-weight:900;text-transform:uppercase;letter-spacing:.12em;color:#94a3b8;margin-bottom:4px">Pole</div>
+            <div style="font-size:15px;font-weight:900;color:#0f172a;font-family:monospace">${p.pole_code}</div>
+            <div style="margin-top:4px">
+              <span style="display:inline-flex;align-items:center;gap:4px;background:${cfg.hex}18;color:${cfg.hex};border:1px solid ${cfg.hex}40;border-radius:999px;padding:2px 8px;font-size:10px;font-weight:800">
+                <span style="width:6px;height:6px;border-radius:50%;background:${cfg.hex};display:inline-block"></span>
+                ${cfg.label}
+              </span>
+            </div>
+            <a
+              href="/sites/${siteId}/nodes/${nodeId}/teardown?pole_id=${p.id}&pole_code=${encodeURIComponent(p.pole_code)}"
+              style="display:block;margin-top:10px;background:#10b981;color:#fff;text-align:center;padding:9px 12px;border-radius:10px;font-weight:900;font-size:12px;text-decoration:none;letter-spacing:.04em;box-shadow:0 4px 12px rgba(16,185,129,.35)"
+            >
+              ▶ Start Teardown
+            </a>
+          </div>
+        `, { maxWidth: 220 })
     })
 
     setTimeout(() => {
@@ -807,13 +824,24 @@ export default function NodePolesSpans() {
 
   const nodeLabel = node?.full_label ?? node?.name ?? `Node ${nodeId}`
 
+  function fmtDate(v: string | null | undefined) {
+    if (!v) return '—'
+    const d = new Date(v.includes('T') ? v : v + 'T00:00:00')
+    if (isNaN(d.getTime())) return v
+    const hasTime = v.includes('T') && !v.endsWith('T00:00:00')
+    return d.toLocaleDateString('en-PH', {
+      month: 'short', day: 'numeric', year: 'numeric',
+      ...(hasTime ? { hour: '2-digit', minute: '2-digit', hour12: true } : {}),
+    })
+  }
+
   const nodeSt: Record<string, { label: string; cls: string }> = {
     pending: {
       label: 'Pending',
       cls: 'bg-amber-50 text-amber-700 ring-1 ring-amber-200',
     },
     in_progress: {
-      label: 'In Progress',
+      label: 'Ongoing',
       cls: 'bg-indigo-50 text-indigo-700 ring-1 ring-indigo-200',
     },
     completed: {
@@ -881,16 +909,21 @@ export default function NodePolesSpans() {
                   Subcon / Team: {node.subcontractor.name} {node.team ? `/ ${node.team.name}` : ''}
                 </span>
               )}
-              {(node?.date_start || node?.due_date) && (
-                <div className="flex items-center gap-2">
+              {(node?.date_start || node?.due_date || node?.date_finished) && (
+                <div className="flex flex-wrap items-center gap-2 mt-1">
                   {node?.date_start && (
                     <span className="flex items-center gap-1 rounded-full bg-indigo-50 px-2.5 py-1 text-[10px] font-bold text-indigo-600 ring-1 ring-indigo-200 dark:bg-indigo-500/10 dark:text-indigo-400 dark:ring-indigo-900/30">
-                      <i className="bx bx-calendar-play" /> Start: {new Date(node.date_start).toLocaleDateString()}
+                      <i className="bx bx-calendar-play" /> Started: {fmtDate(node.date_start)}
                     </span>
                   )}
                   {node?.due_date && (
                     <span className="flex items-center gap-1 rounded-full bg-amber-50 px-2.5 py-1 text-[10px] font-bold text-amber-600 ring-1 ring-amber-200 dark:bg-amber-500/10 dark:text-amber-400 dark:ring-amber-900/30">
-                      <i className="bx bx-calendar-event" /> Due: {new Date(node.due_date).toLocaleDateString()}
+                      <i className="bx bx-calendar-event" /> Due: {fmtDate(node.due_date)}
+                    </span>
+                  )}
+                  {node?.date_finished && (
+                    <span className="flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-1 text-[10px] font-bold text-emerald-600 ring-1 ring-emerald-200 dark:bg-emerald-500/10 dark:text-emerald-400 dark:ring-emerald-900/30">
+                      <i className="bx bx-calendar-check" /> Finished: {fmtDate(node.date_finished)}
                     </span>
                   )}
                 </div>
@@ -1009,7 +1042,7 @@ export default function NodePolesSpans() {
           </div>
         </div>
 
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+        <div className="grid grid-cols-4 gap-4">
           {[
             { label: 'Total Poles',    value: stats.total,                        icon: 'bx bx-current-location', top: 'from-emerald-500 to-teal-500'  },
             { label: 'GPS Ready',      value: `${stats.gps}/${stats.total}`,      icon: 'bx bx-map',              top: 'from-teal-500 to-cyan-500'     },
@@ -1223,6 +1256,39 @@ export default function NodePolesSpans() {
                     </div>
                     <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-slate-50 text-slate-400 dark:bg-zinc-900">
                       <i className={`${k.icon} text-sm`} />
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* ── Date cards ── */}
+            <div className="mt-3 grid grid-cols-3 gap-3">
+              {[
+                { label: 'Date Started', value: node?.date_start,    icon: 'bx bx-calendar-play',  top: 'from-indigo-500 to-violet-500',  color: 'text-indigo-600 dark:text-indigo-300' },
+                { label: 'Due Date',     value: node?.due_date,      icon: 'bx bx-calendar-event', top: 'from-amber-500 to-orange-400',   color: 'text-amber-600 dark:text-amber-300'  },
+                { label: 'Date Finished',value: node?.date_finished, icon: 'bx bx-calendar-check', top: 'from-emerald-500 to-teal-400',   color: 'text-emerald-600 dark:text-emerald-300' },
+              ].map((d, i) => (
+                <div key={i} className="rounded-[20px] bg-white shadow-sm ring-1 ring-slate-200/70 dark:bg-zinc-950 dark:ring-zinc-800">
+                  <div className={`h-1 bg-gradient-to-r ${d.top}`} />
+                  <div className="flex items-start justify-between p-3">
+                    <div className="min-w-0">
+                      <p className="text-[9px] font-black uppercase tracking-wider text-slate-400">{d.label}:</p>
+                      <p className={`mt-2 text-[13px] font-black tracking-tight ${d.color}`}>
+                        {(() => {
+                          if (!d.value) return <span className="text-slate-300 dark:text-zinc-600">—</span>
+                          const dt = new Date(d.value.includes('T') ? d.value : d.value + 'T00:00:00')
+                          if (isNaN(dt.getTime())) return <span className="text-slate-300 dark:text-zinc-600">{d.value}</span>
+                          const hasTime = d.value.includes('T') && !d.value.endsWith('T00:00:00')
+                          return dt.toLocaleDateString('en-PH', {
+                            month: 'short', day: 'numeric', year: 'numeric',
+                            ...(hasTime ? { hour: '2-digit', minute: '2-digit', hour12: true } : {}),
+                          })
+                        })()}
+                      </p>
+                    </div>
+                    <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-slate-50 text-slate-400 dark:bg-zinc-900">
+                      <i className={`${d.icon} text-sm`} />
                     </div>
                   </div>
                 </div>

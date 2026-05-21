@@ -137,7 +137,16 @@ export default function TeardownLogs() {
 
   useEffect(() => {
     const hit = cacheGet<TeardownLog[]>(CACHE_KEY)
-    if (hit) { setLogs(hit); setLoading(false) }
+    if (hit) {
+      const sorted = [...hit].sort((a, b) => {
+        if (!a.start_time && !b.start_time) return a.id - b.id
+        if (!a.start_time) return 1
+        if (!b.start_time) return -1
+        return new Date(a.start_time).getTime() - new Date(b.start_time).getTime()
+      })
+      setLogs(sorted)
+      setLoading(false)
+    }
 
     fetch(`${SKYCABLE_API}/teardowns`, {
       headers: {
@@ -148,7 +157,14 @@ export default function TeardownLogs() {
     })
       .then(r => r.json())
       .then(data => {
-        const list: TeardownLog[] = Array.isArray(data) ? data : (data?.data ?? [])
+        const raw: TeardownLog[] = Array.isArray(data) ? data : (data?.data ?? [])
+        // Sort by start_time ascending so sequence 1 = first teardown started
+        const list = [...raw].sort((a, b) => {
+          if (!a.start_time && !b.start_time) return a.id - b.id
+          if (!a.start_time) return 1   // no start time → end
+          if (!b.start_time) return -1
+          return new Date(a.start_time).getTime() - new Date(b.start_time).getTime()
+        })
         cacheSet(CACHE_KEY, list)
         setLogs(list)
       })
@@ -201,20 +217,25 @@ export default function TeardownLogs() {
       {/* Card grid */}
       {logs.length > 0 && (
         <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-4">
-          {logs.map(log => {
+          {logs.map((log, idx) => {
             const pct    = collectionPct(log)
             const badge  = pct !== null ? pctBadge(pct) : null
             const span   = log.span?.span_code ?? `Log #${log.id}`
             const lineman = log.lineman
               ? `${log.lineman.first_name} ${log.lineman.last_name}`
               : null
+            const seq = idx + 1
 
             return (
               <div
                 key={log.id}
                 onClick={() => navigate(`/reports/teardown-logs/${log.id}`)}
-                className="card dark:bg-zinc-800 dark:border-zinc-700 cursor-pointer hover:ring-2 hover:ring-violet-400/60 hover:shadow-lg hover:shadow-violet-500/10 transition-all group"
+                className="card relative dark:bg-zinc-800 dark:border-zinc-700 cursor-pointer hover:ring-2 hover:ring-violet-400/60 hover:shadow-lg hover:shadow-violet-500/10 transition-all group"
               >
+                {/* Sequence badge */}
+                <div className="absolute top-2.5 left-2.5 z-10 flex h-6 min-w-[24px] items-center justify-center rounded-full bg-black/70 px-2 backdrop-blur-sm">
+                  <span className="text-[10px] font-black text-white">#{seq}</span>
+                </div>
                 {/* Span strip — from pole → to pole */}
                 {(() => {
                   const fromPole = log.span?.fromPole || (log.span as any)?.from_pole;

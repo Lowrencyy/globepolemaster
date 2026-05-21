@@ -73,7 +73,10 @@ function SafeImage({ src, alt, className, style, onClick }: {
     setLoading(true)
 
     fetch(src, {
-      headers: { 'ngrok-skip-browser-warning': '1' }
+      headers: {
+        'ngrok-skip-browser-warning': '1',
+        Authorization: `Bearer ${getToken()}`,
+      }
     })
       .then(r => r.blob())
       .then(blob => {
@@ -142,37 +145,79 @@ export default function NodePoleReport() {
     if (hitNode || hitRows) { setLoading(false); setRefreshing(true) }
     else setLoading(true)
 
-    Promise.all([
-      fetch(`${SKYCABLE_API}/nodes/${nodeId}`, { headers: authHeaders() }).then(r => r.json()),
-      fetch(`${SKYCABLE_API}/teardown/node-images/${nodeId}`, { headers: authHeaders() }).then(r => r.json()),
-    ])
-      .then(([nd, rd]) => {
+    async function loadImages() {
+      try {
+        const nd = await fetch(`${SKYCABLE_API}/nodes/${nodeId}`, { headers: authHeaders() }).then(r => r.json())
         if (!alive) return
         if (nd?.id) { setNode(nd); cacheSet(`pr_info_${nodeId}`, nd) }
-        
-        const images: PoleImage[] = Array.isArray(rd) ? rd : (rd?.data ?? [])
-        
-        // Group images by pole_code + inventory_type
-        const groups: Record<string, PoleGroup> = {}
-        images.forEach(img => {
-          const key = `${img.inventory_type}_${img.pole_code}`
-          if (!groups[key]) {
-            groups[key] = {
-              pole_code: img.pole_code,
-              inventory_type: img.inventory_type,
-            }
-          }
-          if (img.image_type === 'before') groups[key].before = img.file_path
-          if (img.image_type === 'after') groups[key].after = img.file_path
-          if (img.image_type === 'pole_tag') groups[key].pole_tag = img.file_path
-        })
 
+        const groups: Record<string, PoleGroup> = {}
+
+        // Primary: try dedicated node-images endpoint
+        const imgRes = await fetch(`${SKYCABLE_API}/teardown/node-images/${nodeId}`, { headers: authHeaders() })
+        if (imgRes.ok) {
+          const rd = await imgRes.json()
+          const images: PoleImage[] = Array.isArray(rd) ? rd : (rd?.data ?? [])
+          images.forEach(img => {
+            const key = `${img.inventory_type ?? 'skycable'}_${img.pole_code}`
+            if (!groups[key]) groups[key] = { pole_code: img.pole_code, inventory_type: img.inventory_type ?? 'skycable' }
+            if (img.image_type === 'before') groups[key].before = img.file_path
+            if (img.image_type === 'after') groups[key].after = img.file_path
+            if (img.image_type === 'pole_tag') groups[key].pole_tag = img.file_path
+          })
+        }
+
+        // Fallback / supplement: extract photos from teardown log details for this node
+        if (Object.keys(groups).length === 0) {
+          const tdRes = await fetch(`${SKYCABLE_API}/teardowns?node_id=${nodeId}&per_page=500`, { headers: authHeaders() })
+          if (tdRes.ok) {
+            const tdData = await tdRes.json()
+            const logs: any[] = Array.isArray(tdData) ? tdData : (tdData?.data ?? [])
+
+            // Fetch each teardown detail to get embedded photos (list may not include them)
+            await Promise.all(logs.map(async (log) => {
+              let detail = log
+              // If photos not included in list response, fetch detail
+              if (!detail.photos || detail.photos.length === 0) {
+                try {
+                  const r = await fetch(`${SKYCABLE_API}/teardowns/${log.id}`, { headers: authHeaders() })
+                  if (r.ok) detail = await r.json()
+                } catch {}
+              }
+
+              const photos: { photo_type: string; image_path: string }[] = detail.photos ?? []
+              if (photos.length === 0) return
+
+              // Get pole codes from span
+              const span = detail.span ?? log.span
+              const fromCode = span?.fromPole?.pole?.pole_code
+                ?? span?.from_pole?.pole?.pole_code
+                ?? `Log#${log.id}`
+              const toCode = span?.toPole?.pole?.pole_code
+                ?? span?.to_pole?.pole?.pole_code
+                ?? null
+
+              photos.forEach((p: { photo_type: string; image_path: string }) => {
+                const isTo = p.photo_type.startsWith('to_')
+                const poleCode = isTo ? (toCode ?? fromCode) : fromCode
+                const key = `skycable_${poleCode}`
+                if (!groups[key]) groups[key] = { pole_code: poleCode, inventory_type: 'skycable' }
+                if (p.photo_type.includes('before')) groups[key].before   ??= p.image_path
+                if (p.photo_type.includes('after'))  groups[key].after    ??= p.image_path
+                if (p.photo_type.includes('tag'))    groups[key].pole_tag ??= p.image_path
+              })
+            }))
+          }
+        }
+
+        if (!alive) return
         const list = Object.values(groups)
         setRows(list)
         cacheSet(`pr_rows_v2_${nodeId}`, list)
-      })
-      .catch(() => {})
-      .finally(() => { if (!alive) return; setLoading(false); setRefreshing(false) })
+      } catch {}
+      finally { if (alive) { setLoading(false); setRefreshing(false) } }
+    }
+    loadImages()
 
     return () => { alive = false }
   }, [nodeId])
@@ -366,9 +411,6 @@ export default function NodePoleReport() {
                         <span className="inline-flex items-center justify-center rounded-xl px-2 py-1.5 text-xs font-black"
                           style={{ background: BRAND.softer, color: BRAND.blue, border: `1px solid ${BRAND.borderStrong}` }}>
                           {row.pole_code ?? '—'}
-                        </span>
-                        <span className={`text-[9px] font-bold uppercase tracking-wider ${row.inventory_type === 'globe' ? 'text-red-500' : 'text-blue-500'}`}>
-                          {row.inventory_type}
                         </span>
                       </div>
                     </td>
