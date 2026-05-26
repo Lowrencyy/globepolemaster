@@ -3,6 +3,8 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import telcoImg from '../../assets/images/telco.png'
 import { getToken, isAdmin, SKYCABLE_API } from '../../lib/auth'
 import { slugify } from '../../lib/utils'
+import { fetchTile, arcgisTileUrl } from '../../lib/tile-cache'
+import { cacheGet, cacheSet, TTL } from '../../lib/cache'
 
 interface Area {
   id: number
@@ -59,6 +61,22 @@ interface NodeForm {
   date_start: string
   due_date: string
   date_finished: string
+}
+
+// ── Cached satellite tile image ───────────────────────────────────────────────
+// Fetches via tile-cache (in-memory + Cache API) so tiles only download once
+// per session and survive page reloads via the browser Cache API.
+function CachedTile({ z, y, x, style }: { z: number; y: number; x: number; style: React.CSSProperties }) {
+  const url = arcgisTileUrl(z, y, x)
+  const [src, setSrc] = useState<string>(url) // start with network URL as fallback
+
+  useEffect(() => {
+    let alive = true
+    fetchTile(url).then(blobUrl => { if (alive) setSrc(blobUrl) })
+    return () => { alive = false }
+  }, [url])
+
+  return <img src={src} alt="" draggable={false} style={style} />
 }
 
 // ── Tile math ─────────────────────────────────────────────────────────────────
@@ -160,8 +178,6 @@ function NodeVicinityMap({ nodeId, nodeName }: { nodeId: number; nodeName: strin
   const offX = w / 2 - fracX * imgW
   const offY = h / 2 - fracY * imgH
 
-  const tileBase = `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${zoom}/${tileY}`
-
   const sw = latLngToTileFrac(minLat, minLng, zoom)
   const ne = latLngToTileFrac(maxLat, maxLng, zoom)
   const bxL = offX + (sw.xFrac - tileX) * imgW
@@ -171,11 +187,23 @@ function NodeVicinityMap({ nodeId, nodeName }: { nodeId: number; nodeName: strin
 
   return (
     <div ref={divRef} className="relative w-full overflow-hidden rounded-xl border border-white/5 shadow-inner transition-transform duration-500 group-hover:scale-[1.02]" style={{ height: MAP_H, background: '#0f172a' }}>
-      {/* Satellite tiles */}
-      {[-1, 0, 1].map(dx => (
-        <img key={dx} src={`${tileBase}/${tileX + dx}`} alt="" draggable={false}
-          style={{ position: 'absolute', left: offX + dx * imgW, top: offY, width: imgW, height: imgH, userSelect: 'none', filter: 'brightness(0.95) contrast(1.05)' }} />
-      ))}
+      {/* 3×3 satellite tile grid — full coverage, no dead spots, cached via tile-cache */}
+      {([-1, 0, 1] as const).flatMap(dy =>
+        ([-1, 0, 1] as const).map(dx => (
+          <CachedTile
+            key={`${dx},${dy}`}
+            z={zoom} y={tileY + dy} x={tileX + dx}
+            style={{
+              position: 'absolute',
+              left: offX + dx * imgW,
+              top: offY + dy * imgH,
+              width: imgW, height: imgH,
+              userSelect: 'none',
+              filter: 'brightness(0.95) contrast(1.05)',
+            }}
+          />
+        ))
+      )}
 
       {/* Exquisite Glowing gradient overlay at the top and bottom for readability */}
       <div className="absolute inset-x-0 top-0 h-12 bg-gradient-to-b from-slate-950/60 to-transparent pointer-events-none z-1" />
@@ -394,18 +422,30 @@ function NodeFormFields({ form, setForm, formErr, subcons, teams, teamsLoading, 
   )
 }
 
-// Module-level persistent cache for superfast client transitions without flash loading
+// Module-level persistent cache for superfast SPA transitions (no flash on back-nav)
 const siteAreaCache = new Map<string, Area>()
 const siteNodesCache = new Map<string, Node[]>()
+
+function areaKey(id: string) { return `sitenodes_area_${id}` }
+function nodesKey(id: string) { return `sitenodes_nodes_${id}` }
 
 export default function SiteNodes() {
   const { siteId } = useParams<{ siteId: string }>()
   const navigate = useNavigate()
   const admin = isAdmin()
 
-  const [area, setArea] = useState<Area | null>(() => siteId ? (siteAreaCache.get(siteId) ?? null) : null)
-  const [nodes, setNodes] = useState<Node[]>(() => siteId ? (siteNodesCache.get(siteId) ?? []) : [])
-  const [loading, setLoading] = useState(() => siteId ? !siteNodesCache.has(siteId) : true)
+  const [area, setArea] = useState<Area | null>(() => {
+    if (!siteId) return null
+    return siteAreaCache.get(siteId) ?? cacheGet<Area>(areaKey(siteId), TTL.DEFAULT) ?? null
+  })
+  const [nodes, setNodes] = useState<Node[]>(() => {
+    if (!siteId) return []
+    return siteNodesCache.get(siteId) ?? cacheGet<Node[]>(nodesKey(siteId), TTL.DEFAULT) ?? []
+  })
+  const [loading, setLoading] = useState(() => {
+    if (!siteId) return true
+    return !siteNodesCache.has(siteId) && !cacheGet<Node[]>(nodesKey(siteId), TTL.DEFAULT)
+  })
   const [search, setSearch] = useState('')
   const [filter, setFilter] = useState<'all' | NodeStatus>('all')
 
@@ -439,7 +479,8 @@ export default function SiteNodes() {
 
   function loadData(hideSpinner = false) {
     if (!siteId) return
-    if (!siteNodesCache.has(siteId) && !hideSpinner) {
+    const hasCache = siteNodesCache.has(siteId) || !!cacheGet<Node[]>(nodesKey(siteId), TTL.DEFAULT)
+    if (!hasCache && !hideSpinner) {
       setLoading(true)
     }
     Promise.all([
@@ -450,15 +491,20 @@ export default function SiteNodes() {
       const nVal = Array.isArray(nodesData) ? nodesData : (nodesData?.data ?? [])
       siteAreaCache.set(siteId, aVal)
       siteNodesCache.set(siteId, nVal)
+      cacheSet(areaKey(siteId), aVal, TTL.DEFAULT)
+      cacheSet(nodesKey(siteId), nVal, TTL.DEFAULT)
       setArea(aVal)
       setNodes(nVal)
     }).catch(() => { }).finally(() => setLoading(false))
   }
 
   useEffect(() => {
-    if (siteId && siteNodesCache.has(siteId)) {
-      setArea(siteAreaCache.get(siteId) ?? null)
-      setNodes(siteNodesCache.get(siteId) ?? [])
+    if (!siteId) return
+    const cachedArea = siteAreaCache.get(siteId) ?? cacheGet<Area>(areaKey(siteId), TTL.DEFAULT)
+    const cachedNodes = siteNodesCache.get(siteId) ?? cacheGet<Node[]>(nodesKey(siteId), TTL.DEFAULT)
+    if (cachedNodes) {
+      if (cachedArea) setArea(cachedArea)
+      setNodes(cachedNodes)
       setLoading(false)
     } else {
       setLoading(true)
@@ -491,7 +537,7 @@ export default function SiteNodes() {
     setSelected(null); setForm(emptyForm()); setFormErr('')
   }
 
-  async function handleAdd(e: React.FormEvent) {
+  async function handleAdd(e: React.SyntheticEvent) {
     e.preventDefault()
     if (!form.name.trim()) { setFormErr('Node name is required.'); return }
     setSaving(true); setFormErr('')
@@ -524,7 +570,7 @@ export default function SiteNodes() {
     } finally { setSaving(false) }
   }
 
-  async function handleEdit(e: React.FormEvent) {
+  async function handleEdit(e: React.SyntheticEvent) {
     e.preventDefault()
     if (!selected || !form.name.trim()) { setFormErr('Node name is required.'); return }
     setSaving(true); setFormErr('')
@@ -610,7 +656,7 @@ export default function SiteNodes() {
   ]
 
   return (
-    <div className="flex flex-col gap-6 pb-12 max-w-[1600px] mx-auto">
+    <div className="flex flex-col gap-6 pb-12 w-full px-4 sm:px-6">
 
       {/* Exquisite Hero Header */}
       <div className="relative overflow-hidden rounded-3xl border border-slate-200/80 bg-gradient-to-br from-white via-slate-50/50 to-indigo-50/30 p-8 shadow-sm transition-all dark:border-slate-800 dark:bg-gradient-to-br dark:from-slate-900 dark:via-slate-900/90 dark:to-indigo-950/20">
@@ -764,7 +810,7 @@ export default function SiteNodes() {
                 return (
                   <div
                     key={node.id}
-                    onClick={() => navigate(`/sites/${slugify(node.area?.name ?? String(siteId))}-${siteId}/nodes/${slugify(node.full_label ?? node.name)}-${node.id}`)}
+                    onClick={() => navigate(`/sites/${slugify(area?.name ?? String(siteId))}-${siteId}/nodes/${slugify(node.full_label ?? node.name)}-${node.id}`)}
                     className="group relative flex flex-col justify-between w-full rounded-3xl border border-slate-100 bg-white p-2.5 pb-4 shadow-xs transition-all duration-300 cursor-pointer hover:-translate-y-1 hover:shadow-xl dark:border-slate-800/80 dark:bg-slate-900"
                   >
                     {/* Embedded Satellite Component Map Frame */}

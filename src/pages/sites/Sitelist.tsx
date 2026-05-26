@@ -9,7 +9,7 @@ import {
 } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { SKYCABLE_API, getToken, isAdmin } from '../../lib/auth'
-import { cacheGet, cacheSet } from '../../lib/cache'
+import { cacheGet, cacheSet, TTL } from '../../lib/cache'
 import telcoImg from '../../assets/images/telco.png'
 
 const CACHE_KEY = 'sitelist'
@@ -365,21 +365,28 @@ export default function Sitelist() {
     loadSites()
   }, [])
 
-  // Fetch all skycable poles with GPS and group by area name
+  // Fetch all skycable poles with GPS and group by area name (2-min cache)
   useEffect(() => {
+    const POLE_MAP_KEY = 'sitelist_pole_map'
+    const cached = cacheGet<any[]>(POLE_MAP_KEY, TTL.MAP)
+    const buildMap = (rows: any[]) => {
+      const map = new Map<string, PolePin[]>()
+      ;(Array.isArray(rows) ? rows : []).forEach((p: any) => {
+        if (!p.lat || !p.lng || !p.area) return
+        const key = (p.area as string).toLowerCase().trim()
+        if (!map.has(key)) map.set(key, [])
+        map.get(key)!.push({ lat: Number(p.lat), lng: Number(p.lng), status: p.skycable_status ?? 'pending', area: key })
+      })
+      return map
+    }
+    if (cached) { setPolesByArea(buildMap(cached)); return }
     fetch(`${SKYCABLE_API}/poles/map`, {
       headers: { Authorization: `Bearer ${getToken()}`, Accept: 'application/json', 'ngrok-skip-browser-warning': '1' },
     })
       .then(r => r.json())
       .then((rows: any[]) => {
-        const map = new Map<string, PolePin[]>()
-        ;(Array.isArray(rows) ? rows : []).forEach((p: any) => {
-          if (!p.lat || !p.lng || !p.area) return
-          const key = (p.area as string).toLowerCase().trim()
-          if (!map.has(key)) map.set(key, [])
-          map.get(key)!.push({ lat: Number(p.lat), lng: Number(p.lng), status: p.skycable_status ?? 'pending', area: key })
-        })
-        setPolesByArea(map)
+        cacheSet(POLE_MAP_KEY, rows, TTL.MAP)
+        setPolesByArea(buildMap(rows))
       })
       .catch(() => {})
   }, [])

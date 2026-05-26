@@ -33,8 +33,75 @@ interface TeardownLog {
   photos: Array<{ id: number; photo_type: string; image_path: string }>
 }
 
+interface PoleReport {
+  id: number
+  pole_id: number
+  node_id: number | null
+  submitted_by: number
+  condition: string | null
+  material: string | null
+  height_ft: string | null
+  landmark: string | null
+  notes: string | null
+  latitude: number | null
+  longitude: number | null
+  gps_captured_at: string | null
+  slots: any[] | null
+  created_at: string
+  pole: { id: number; pole_code: string } | null
+  node: { id: number; name: string } | null
+  submitter: {
+    id: number
+    first_name: string
+    last_name: string
+    team: { id: number; name: string } | null
+  } | null
+  photos: Array<{ id: number; image_type: string; file_path: string }> | null
+}
+
+// Combined feed item
+type FeedItem =
+  | { type: 'span'; data: TeardownLog }
+  | { type: 'pole'; data: PoleReport }
+
+function feedDate(item: FeedItem): number {
+  const raw = item.type === 'span' ? item.data.created_at : item.data.created_at
+  return new Date(raw).getTime()
+}
+
 function imgUrl(path: string) {
-  return `${API_BASE}/api/v1/files/${path}`
+  return path.startsWith('http') ? path : `${API_BASE}/api/v1/files/${path}`
+}
+
+// Module-level blob cache — survives SPA nav, avoids re-downloading on revisit
+const _imgCache = new Map<string, string>()
+const _imgFlight = new Map<string, Promise<string | null>>()
+
+// Per-pole-report photo cache — keyed by report id, stores correct photos from individual endpoint
+const _polePhotoCache = new Map<number, Array<{ id: number; image_type: string; file_path: string }>>()
+const _polePhotoFlight = new Map<number, Promise<Array<{ id: number; image_type: string; file_path: string }>>>()
+
+// Per-span-teardown photo cache — keyed by log id, stores correct photos from individual endpoint
+const _spanPhotoCache = new Map<number, Array<{ id: number; photo_type: string; image_path: string }>>()
+const _spanPhotoFlight = new Map<number, Promise<Array<{ id: number; photo_type: string; image_path: string }>>>()
+
+function fetchCachedBlob(src: string): Promise<string | null> {
+  const hit = _imgCache.get(src)
+  if (hit) return Promise.resolve(hit)
+  const inflight = _imgFlight.get(src)
+  if (inflight) return inflight
+  const p = fetch(src, {
+    headers: {
+      'ngrok-skip-browser-warning': '1',
+      Authorization: `Bearer ${getToken()}`,
+    },
+  })
+    .then(r => r.blob())
+    .then(blob => { const u = URL.createObjectURL(blob); _imgCache.set(src, u); return u })
+    .catch(() => null)
+    .finally(() => _imgFlight.delete(src))
+  _imgFlight.set(src, p)
+  return p
 }
 
 function SafeImage({ src, alt, className, style, onClick }: {
@@ -44,32 +111,16 @@ function SafeImage({ src, alt, className, style, onClick }: {
   style?: React.CSSProperties
   onClick?: (e: React.MouseEvent) => void
 }) {
-  const [blobUrl, setBlobUrl] = useState<string | null>(null)
-  const [loading, setLoading] = useState(true)
+  const [blobUrl, setBlobUrl] = useState<string | null>(() => src ? (_imgCache.get(src) ?? null) : null)
+  const [loading, setLoading] = useState(() => !!src && !_imgCache.has(src))
 
   useEffect(() => {
     if (!src) return
+    if (_imgCache.has(src)) { setBlobUrl(_imgCache.get(src)!); setLoading(false); return }
     let alive = true
     setLoading(true)
-
-    fetch(src, {
-      headers: { 'ngrok-skip-browser-warning': '1' }
-    })
-      .then(r => r.blob())
-      .then(blob => {
-        if (!alive) return
-        const url = URL.createObjectURL(blob)
-        setBlobUrl(url)
-      })
-      .catch(() => {})
-      .finally(() => {
-        if (alive) setLoading(false)
-      })
-
-    return () => {
-      alive = false
-      if (blobUrl) URL.revokeObjectURL(blobUrl)
-    }
+    fetchCachedBlob(src).then(u => { if (!alive) return; setBlobUrl(u); setLoading(false) })
+    return () => { alive = false }
   }, [src])
 
   if (!src) return null
@@ -124,53 +175,283 @@ function statusColor(status: string) {
   }
 }
 
-// ── Component ─────────────────────────────────────────────────────────────────
+const authHeaders = () => ({
+  Authorization: `Bearer ${getToken()}`,
+  Accept: 'application/json',
+  'ngrok-skip-browser-warning': '1',
+})
 
-const CACHE_KEY = 'tdlogs_list'
+// ── Mini photo thumb ──────────────────────────────────────────────────────────
 
-export default function TeardownLogs() {
+function MiniPhoto({ src, label }: { src: string | null; label: string }) {
+  if (!src) {
+    return (
+      <div className="relative flex-1 overflow-hidden rounded-xl bg-zinc-100 dark:bg-zinc-800" style={{ aspectRatio: '1' }}>
+        <div className="flex h-full flex-col items-center justify-center gap-0.5">
+          <svg className="h-4 w-4 text-zinc-300 dark:text-zinc-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 15.75l5.159-5.159a2.25 2.25 0 013.182 0l5.159 5.159m-1.5-1.5l1.409-1.409a2.25 2.25 0 013.182 0l2.909 2.909M3 20.25h18M9.75 9.75a2.25 2.25 0 100-4.5 2.25 2.25 0 000 4.5z" />
+          </svg>
+          <span className="text-[8px] font-bold uppercase tracking-wide text-zinc-300 dark:text-zinc-600">{label}</span>
+        </div>
+      </div>
+    )
+  }
+  return (
+    <div className="relative flex-1 overflow-hidden rounded-xl bg-zinc-900" style={{ aspectRatio: '1' }}>
+      <SafeImage src={src} alt={label} className="h-full w-full object-cover" />
+      <span className="absolute bottom-0 left-0 right-0 bg-black/60 py-0.5 text-center text-[8px] font-black uppercase tracking-wide text-white">{label}</span>
+    </div>
+  )
+}
+
+// ── Span teardown card ────────────────────────────────────────────────────────
+
+function fetchSpanPhotos(id: number): Promise<Array<{ id: number; photo_type: string; image_path: string }>> {
+  if (_spanPhotoCache.has(id)) return Promise.resolve(_spanPhotoCache.get(id)!)
+  const inflight = _spanPhotoFlight.get(id)
+  if (inflight) return inflight
+  const p = fetch(`${SKYCABLE_API}/teardowns/${id}`, { headers: authHeaders() })
+    .then(r => r.json())
+    .then(data => {
+      const item = data?.data ?? data
+      const photos: Array<{ id: number; photo_type: string; image_path: string }> = item?.photos ?? []
+      _spanPhotoCache.set(id, photos)
+      return photos
+    })
+    .catch(() => {
+      _spanPhotoCache.set(id, [])
+      return [] as Array<{ id: number; photo_type: string; image_path: string }>
+    })
+    .finally(() => _spanPhotoFlight.delete(id))
+  _spanPhotoFlight.set(id, p)
+  return p
+}
+
+function SpanCard({ log, seq }: { log: TeardownLog; seq: number }) {
   const navigate = useNavigate()
+  const pct     = collectionPct(log)
+  const spanCode = log.span?.span_code ?? `Log #${log.id}`
+  const lineman  = log.lineman ? `${log.lineman.first_name} ${log.lineman.last_name}` : null
+  const nodeName = log.span?.node?.name ?? null
 
-  const [logs, setLogs]       = useState<TeardownLog[]>(() => cacheGet<TeardownLog[]>(CACHE_KEY) ?? [])
-  const [loading, setLoading] = useState(true)
-  const [error, setError]     = useState<string | null>(null)
+  const fromPole = log.span?.fromPole || (log.span as any)?.from_pole
+  const toPole   = log.span?.toPole   || (log.span as any)?.to_pole
+  const fromCode = fromPole?.pole?.pole_code ?? '—'
+  const toCode   = toPole?.pole?.pole_code   ?? '—'
+
+  // Fetch correct photos from individual endpoint (list endpoint omits photos)
+  const [photos, setPhotos] = useState<Array<{ id: number; photo_type: string; image_path: string }>>(
+    () => _spanPhotoCache.get(log.id) ?? []
+  )
 
   useEffect(() => {
-    const hit = cacheGet<TeardownLog[]>(CACHE_KEY)
-    if (hit) {
-      const sorted = [...hit].sort((a, b) => {
-        if (!a.start_time && !b.start_time) return a.id - b.id
-        if (!a.start_time) return 1
-        if (!b.start_time) return -1
-        return new Date(a.start_time).getTime() - new Date(b.start_time).getTime()
-      })
-      setLogs(sorted)
-      setLoading(false)
-    }
+    if (_spanPhotoCache.has(log.id)) return
+    fetchSpanPhotos(log.id).then(setPhotos)
+  }, [log.id])
 
-    fetch(`${SKYCABLE_API}/teardowns`, {
-      headers: {
-        Authorization: `Bearer ${getToken()}`,
-        Accept: 'application/json',
-        'ngrok-skip-browser-warning': '1',
-      },
+  const p = (type: string) => {
+    const found = photos.find(ph => ph.photo_type === type)
+    return found ? imgUrl(found.image_path) : null
+  }
+
+  return (
+    <div
+      onClick={() => navigate(`/reports/teardown-logs/${log.id}`)}
+      className="group flex h-[360px] w-full flex-col overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-xl hover:ring-2 hover:ring-violet-400/40 cursor-pointer dark:border-zinc-700 dark:bg-zinc-900"
+    >
+      {/* Top accent + header */}
+      <div className="h-0.5 w-full shrink-0 bg-gradient-to-r from-blue-500 via-violet-500 to-indigo-500" />
+      <div className="flex shrink-0 items-center justify-between gap-2 bg-[#0d1117] px-3.5 py-3">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="flex h-5 min-w-[20px] items-center justify-center rounded-full bg-white/10 px-1.5 text-[9px] font-black text-white">#{seq}</span>
+          <span className="font-mono text-[11px] font-bold text-zinc-300 truncate">{spanCode}</span>
+        </div>
+        <span className="shrink-0 rounded-full bg-violet-500/20 px-2 py-0.5 text-[9px] font-black uppercase tracking-wider text-violet-300">Full Report</span>
+      </div>
+
+      {/* Span poles row */}
+      <div className="flex shrink-0 items-center gap-2 border-b border-zinc-100 bg-zinc-50 px-3.5 py-2 dark:border-zinc-800 dark:bg-zinc-900/60">
+        <span className="rounded-lg bg-blue-500/10 px-2 py-0.5 font-mono text-[10px] font-black text-blue-600 dark:text-blue-400 truncate max-w-[42%]">{fromCode}</span>
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-zinc-400"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+        <span className="rounded-lg bg-violet-500/10 px-2 py-0.5 font-mono text-[10px] font-black text-violet-600 dark:text-violet-400 truncate max-w-[42%]">{toCode}</span>
+        <span className="ml-auto shrink-0 text-[9px] text-zinc-400">{timeAgo(log.created_at)}</span>
+      </div>
+
+      {/* 3 photos — To pole only, same layout as PoleCard */}
+      <div className="flex flex-1 flex-col justify-center p-3">
+        <p className="mb-1.5 text-[9px] font-black uppercase tracking-widest text-violet-500">To · {toCode}</p>
+        <div className="flex gap-1.5">
+          <MiniPhoto src={p('to_before')}   label="Before" />
+          <MiniPhoto src={p('to_after')}    label="After"  />
+          <MiniPhoto src={p('to_pole_tag')} label="Tag"    />
+        </div>
+      </div>
+
+      {/* Footer */}
+      <div className="flex shrink-0 flex-wrap items-center gap-1.5 border-t border-zinc-100 px-3.5 py-2.5 dark:border-zinc-800">
+        {nodeName && <span className="text-[10px] font-semibold text-zinc-500 dark:text-zinc-400 truncate max-w-[120px]">{nodeName}</span>}
+        <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-bold text-emerald-600 dark:text-emerald-400">{log.actual_cable}m cable</span>
+        {pct !== null && <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${pctBadge(pct).bg}`}>{pct}%</span>}
+        {lineman && <span className="rounded-full bg-violet-500/10 px-2 py-0.5 text-[10px] font-semibold text-violet-600 dark:text-violet-400 truncate max-w-[100px]">{lineman}</span>}
+        <span className={`ml-auto rounded-full px-2 py-0.5 text-[10px] font-bold ${statusColor(log.status)}`}>{log.status.replace(/_/g, ' ')}</span>
+      </div>
+    </div>
+  )
+}
+
+// ── Pole report card ──────────────────────────────────────────────────────────
+
+function polePhotoUrl(filePath: string) {
+  return `${API_BASE}/api/v1/files/${filePath}`
+}
+
+function fetchPolePhotos(id: number): Promise<Array<{ id: number; image_type: string; file_path: string }>> {
+  if (_polePhotoCache.has(id)) return Promise.resolve(_polePhotoCache.get(id)!)
+  const inflight = _polePhotoFlight.get(id)
+  if (inflight) return inflight
+  const p = fetch(`${SKYCABLE_API}/pole-reports/${id}`, { headers: authHeaders() })
+    .then(r => r.json())
+    .then(data => {
+      const photos: Array<{ id: number; image_type: string; file_path: string }> = data?.photos ?? []
+      _polePhotoCache.set(id, photos)
+      return photos
     })
+    .catch(() => {
+      _polePhotoCache.set(id, [])
+      return [] as Array<{ id: number; image_type: string; file_path: string }>
+    })
+    .finally(() => _polePhotoFlight.delete(id))
+  _polePhotoFlight.set(id, p)
+  return p
+}
+
+function PoleCard({ report, seq }: { report: PoleReport; seq: number }) {
+  const navigate = useNavigate()
+  const poleCode  = report.pole?.pole_code ?? `Pole #${report.pole_id}`
+  const nodeName  = report.node?.name ?? null
+  const submitter = report.submitter
+    ? `${report.submitter.first_name} ${report.submitter.last_name}`.trim()
+    : null
+  const teamName  = report.submitter?.team?.name ?? null
+  const hasGps    = report.latitude !== null && report.longitude !== null
+
+  // Fetch correct photos from individual endpoint (list endpoint returns wrong photo associations)
+  const [photos, setPhotos] = useState<Array<{ id: number; image_type: string; file_path: string }>>(
+    () => _polePhotoCache.get(report.id) ?? []
+  )
+
+  useEffect(() => {
+    if (_polePhotoCache.has(report.id)) return
+    fetchPolePhotos(report.id).then(setPhotos)
+  }, [report.id])
+
+  const beforePhoto = photos.find(p => p.image_type === 'before')
+  const afterPhoto  = photos.find(p => p.image_type === 'after')
+  const tagPhoto    = photos.find(p => p.image_type === 'pole_tag')
+
+  return (
+    <div
+      onClick={() => navigate(`/reports/teardown-logs/${report.id}?type=pole`)}
+      className="group flex h-[360px] w-full flex-col overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-xl hover:ring-2 hover:ring-emerald-400/40 cursor-pointer dark:border-zinc-700 dark:bg-zinc-900"
+    >
+      {/* Top accent */}
+      <div className="h-0.5 w-full shrink-0 bg-gradient-to-r from-emerald-400 via-teal-500 to-green-500" />
+
+      {/* Header */}
+      <div className="flex shrink-0 items-center justify-between gap-2 bg-[#061a12] px-3.5 py-3">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="flex h-5 min-w-[20px] items-center justify-center rounded-full bg-white/10 px-1.5 text-[9px] font-black text-white">#{seq}</span>
+          <span className="font-mono text-[11px] font-bold text-emerald-300 truncate">{poleCode}</span>
+        </div>
+        <span className="shrink-0 rounded-full bg-emerald-500/20 px-2 py-0.5 text-[9px] font-black uppercase tracking-wider text-emerald-300">Pole Report</span>
+      </div>
+
+      {/* Node + meta row */}
+      <div className="flex shrink-0 items-center gap-2 border-b border-zinc-100 bg-zinc-50 px-3.5 py-2 dark:border-zinc-800 dark:bg-zinc-900/60">
+        <span className="truncate text-[10px] font-semibold text-zinc-500 dark:text-zinc-400">{nodeName ?? '—'}</span>
+        {hasGps && <span className="ml-auto shrink-0 rounded-full bg-green-500/10 px-1.5 py-0.5 text-[9px] font-bold text-green-600 dark:text-green-400">GPS ✓</span>}
+        <span className="shrink-0 text-[9px] text-zinc-400">{timeAgo(report.created_at)}</span>
+      </div>
+
+      {/* 3 photos */}
+      <div className="flex flex-1 flex-col justify-center p-3">
+        <p className="mb-1.5 text-[9px] font-black uppercase tracking-widest text-emerald-500">Pole Documentation</p>
+        <div className="flex gap-1.5">
+          <MiniPhoto src={beforePhoto ? polePhotoUrl(beforePhoto.file_path) : null} label="Before" />
+          <MiniPhoto src={afterPhoto  ? polePhotoUrl(afterPhoto.file_path)  : null} label="After"  />
+          <MiniPhoto src={tagPhoto    ? polePhotoUrl(tagPhoto.file_path)    : null} label="Tag"    />
+        </div>
+      </div>
+
+      {/* Footer */}
+      <div className="flex shrink-0 flex-wrap items-center gap-1.5 border-t border-zinc-100 px-3.5 py-2.5 dark:border-zinc-800">
+        {submitter && <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold text-emerald-600 dark:text-emerald-400 truncate max-w-[120px]">{submitter}</span>}
+        {teamName  && <span className="rounded-full bg-violet-500/10 px-2 py-0.5 text-[10px] font-semibold text-violet-600 dark:text-violet-400 truncate max-w-[100px]">{teamName}</span>}
+        {report.condition && <span className="rounded-full bg-zinc-100 px-2 py-0.5 text-[10px] font-semibold text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">{report.condition}</span>}
+        <span className="ml-auto rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-black text-emerald-600 dark:text-emerald-400">Cleared</span>
+      </div>
+    </div>
+  )
+}
+
+// ── Component ─────────────────────────────────────────────────────────────────
+
+const CACHE_KEY      = 'tdlogs_list'
+const CACHE_KEY_POLE = 'tdlogs_pole_list'
+
+export default function TeardownLogs() {
+  const [spanLogs, setSpanLogs]   = useState<TeardownLog[]>(() => cacheGet<TeardownLog[]>(CACHE_KEY) ?? [])
+  const [poleLogs, setPoleLogs]   = useState<PoleReport[]>(() => cacheGet<PoleReport[]>(CACHE_KEY_POLE) ?? [])
+  const [loading, setLoading]     = useState(true)
+  const [error, setError]         = useState<string | null>(null)
+
+  useEffect(() => {
+    let done = 0
+    const finish = () => { if (++done === 2) setLoading(false) }
+
+    // Span-based teardowns
+    fetch(`${SKYCABLE_API}/teardowns`, { headers: authHeaders() })
       .then(r => r.json())
       .then(data => {
         const raw: TeardownLog[] = Array.isArray(data) ? data : (data?.data ?? [])
-        // Sort by start_time ascending so sequence 1 = first teardown started
         const list = [...raw].sort((a, b) => {
           if (!a.start_time && !b.start_time) return a.id - b.id
-          if (!a.start_time) return 1   // no start time → end
+          if (!a.start_time) return 1
           if (!b.start_time) return -1
           return new Date(a.start_time).getTime() - new Date(b.start_time).getTime()
         })
         cacheSet(CACHE_KEY, list)
-        setLogs(list)
+        setSpanLogs(list)
       })
       .catch(() => { if (!cacheGet(CACHE_KEY)) setError('Failed to load teardown logs') })
-      .finally(() => setLoading(false))
+      .finally(finish)
+
+    // Pole reports
+    fetch(`${SKYCABLE_API}/pole-reports?per_page=100`, { headers: authHeaders() })
+      .then(r => r.json())
+      .then(data => {
+        const raw: PoleReport[] = Array.isArray(data) ? data : (data?.data ?? [])
+        console.log('[TeardownLogs] pole-reports response:', raw.map(r => ({
+          id: r.id,
+          pole: r.pole?.pole_code,
+          photos: r.photos?.map(p => ({ image_type: p.image_type, file_path: p.file_path })),
+        })))
+        cacheSet(CACHE_KEY_POLE, raw)
+        setPoleLogs(raw)
+      })
+      .catch(() => {})
+      .finally(finish)
   }, [])
+
+  // Merge + sort newest-first
+  const feed: FeedItem[] = [
+    ...spanLogs.map(d => ({ type: 'span' as const, data: d })),
+    ...poleLogs.map(d => ({ type: 'pole' as const, data: d })),
+  ].sort((a, b) => feedDate(b) - feedDate(a))
+
+  const totalCount = feed.length
+  const spanCount  = spanLogs.length
+  const poleCount  = poleLogs.length
 
   return (
     <div className="flex flex-col gap-5">
@@ -187,13 +468,19 @@ export default function TeardownLogs() {
             Live Feed
           </span>
           <span className="text-xs text-gray-500 dark:text-zinc-400 bg-gray-100 dark:bg-zinc-700 px-3 py-1.5 rounded-xl font-medium">
-            {logs.length} records
+            {totalCount} records
+          </span>
+          <span className="text-xs text-violet-500 dark:text-violet-400 bg-violet-500/10 px-3 py-1.5 rounded-xl font-semibold">
+            {spanCount} spans
+          </span>
+          <span className="text-xs text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 px-3 py-1.5 rounded-xl font-semibold">
+            {poleCount} pole reports
           </span>
         </div>
       </div>
 
       {/* Loading */}
-      {loading && logs.length === 0 && (
+      {loading && feed.length === 0 && (
         <div className="flex items-center justify-center py-24">
           <div className="flex flex-col items-center gap-3">
             <div className="w-8 h-8 border-2 border-violet-500 border-t-transparent rounded-full animate-spin" />
@@ -210,105 +497,18 @@ export default function TeardownLogs() {
       )}
 
       {/* Empty */}
-      {!loading && !error && logs.length === 0 && (
+      {!loading && !error && feed.length === 0 && (
         <div className="text-center py-24 text-gray-400 dark:text-zinc-500 text-sm">No teardown logs found.</div>
       )}
 
       {/* Card grid */}
-      {logs.length > 0 && (
+      {feed.length > 0 && (
         <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-4">
-          {logs.map((log, idx) => {
-            const pct    = collectionPct(log)
-            const badge  = pct !== null ? pctBadge(pct) : null
-            const span   = log.span?.span_code ?? `Log #${log.id}`
-            const lineman = log.lineman
-              ? `${log.lineman.first_name} ${log.lineman.last_name}`
-              : null
-            const seq = idx + 1
-
-            return (
-              <div
-                key={log.id}
-                onClick={() => navigate(`/reports/teardown-logs/${log.id}`)}
-                className="card relative dark:bg-zinc-800 dark:border-zinc-700 cursor-pointer hover:ring-2 hover:ring-violet-400/60 hover:shadow-lg hover:shadow-violet-500/10 transition-all group"
-              >
-                {/* Sequence badge */}
-                <div className="absolute top-2.5 left-2.5 z-10 flex h-6 min-w-[24px] items-center justify-center rounded-full bg-black/70 px-2 backdrop-blur-sm">
-                  <span className="text-[10px] font-black text-white">#{seq}</span>
-                </div>
-                {/* Span strip — from pole → to pole */}
-                {(() => {
-                  const fromPole = log.span?.fromPole || (log.span as any)?.from_pole;
-                  const toPole   = log.span?.toPole   || (log.span as any)?.to_pole;
-                  const fromCode = fromPole?.pole?.pole_code
-                  const toCode   = toPole?.pole?.pole_code
-                  const thumb    = log.photos?.find(p => ['from_before','to_before','from_after'].includes(p.photo_type))
-
-                  return thumb ? (
-                    <div className="h-22 rounded-t-[inherit] overflow-hidden relative">
-                      <SafeImage src={imgUrl(thumb.image_path)} alt="" className="h-full w-full object-cover" />
-                      <div className="absolute inset-0 bg-linear-to-t from-black/60 via-transparent to-transparent" />
-                      {(fromCode || toCode) && (
-                        <div className="absolute bottom-2 left-3 right-3 flex items-center gap-1.5">
-                          <span className="rounded-md bg-black/70 px-1.5 py-0.5 font-mono text-[10px] font-bold text-blue-300 backdrop-blur truncate">{fromCode ?? '?'}</span>
-                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-white/60"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
-                          <span className="rounded-md bg-black/70 px-1.5 py-0.5 font-mono text-[10px] font-bold text-violet-300 backdrop-blur truncate">{toCode ?? '?'}</span>
-                        </div>
-                      )}
-                    </div>
-                  ) : (
-                    <div className="h-22 rounded-t-[inherit] bg-[#0d1117] flex items-center justify-center gap-2 px-4 overflow-hidden">
-                      <span className="rounded-lg bg-blue-500/15 px-2.5 py-1.5 font-mono text-[11px] font-black text-blue-400 truncate max-w-[40%]">{fromCode ?? '—'}</span>
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-zinc-500"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
-                      <span className="rounded-lg bg-violet-500/15 px-2.5 py-1.5 font-mono text-[11px] font-black text-violet-400 truncate max-w-[40%]">{toCode ?? '—'}</span>
-                    </div>
-                  )
-                })()}
-
-                {/* Card body */}
-                <div className="p-3.5">
-                  {/* Span code + timestamp */}
-                  <div className="flex items-start justify-between gap-2 mb-2">
-                    <p className="text-[11px] font-mono text-violet-500 font-semibold group-hover:underline truncate">{span}</p>
-                    <span className="text-[10px] text-gray-400 dark:text-zinc-500 shrink-0 mt-0.5">{timeAgo(log.created_at)}</span>
-                  </div>
-
-                  {/* Node */}
-                  {log.span?.node && (
-                    <p className="text-sm font-bold text-gray-800 dark:text-zinc-100 mb-2 truncate">{log.span.node.name}</p>
-                  )}
-
-                  {/* Badges */}
-                  <div className="flex flex-wrap gap-1.5">
-                    <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-slate-100 dark:bg-zinc-700 text-slate-600 dark:text-zinc-300">
-                      {log.actual_cable}m cable
-                    </span>
-
-                    {lineman && (
-                      <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-violet-500/15 text-violet-600 dark:text-violet-400 truncate max-w-30">
-                        {lineman}
-                      </span>
-                    )}
-
-                    {badge && (
-                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${badge.bg}`}>
-                        {badge.label}
-                      </span>
-                    )}
-
-                    <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${statusColor(log.status)}`}>
-                      {log.status.replace(/_/g, ' ')}
-                    </span>
-
-                    {log.offline_mode && (
-                      <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-600 dark:text-amber-400">
-                        Offline
-                      </span>
-                    )}
-                  </div>
-                </div>
-              </div>
-            )
+          {feed.map((item, idx) => {
+            if (item.type === 'span') {
+              return <SpanCard key={`span-${item.data.id}`} log={item.data} seq={idx + 1} />
+            }
+            return <PoleCard key={`pole-${item.data.id}`} report={item.data} seq={idx + 1} />
           })}
         </div>
       )}

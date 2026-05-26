@@ -300,6 +300,9 @@ export default function NodePolesSpans() {
     actual_ps_housing: 0,
     expected_cable: 0,
     actual_cable: 0,
+    date_start: '' as string,
+    due_date: '' as string,
+    date_finished: '' as string,
   })
 
   const [poleModal, setPoleModal] = useState(false)
@@ -883,55 +886,20 @@ export default function NodePolesSpans() {
   return (
     <div className="min-h-screen bg-[#f7f8fc] pb-12 text-slate-950 dark:bg-zinc-950 dark:text-white">
       <style>{`@keyframes lm-ripple{0%{transform:scale(.9);opacity:.7}100%{transform:scale(2.2);opacity:0}}.lm-ripple{position:absolute;inset:0;border-radius:50%;animation:lm-ripple 2s ease-out infinite;pointer-events:none}`}</style>
-      <div className="mx-auto flex max-w-[1600px] flex-col gap-6 px-4 py-5 sm:px-6">
-        <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-          <div className="min-w-0 flex-1">
-            <nav className="mb-2 flex items-center gap-1.5 text-xs text-slate-400">
-              <Link to="/sites" className="transition hover:text-emerald-600">
-                Sites
-              </Link>
-              <i className="bx bx-chevron-right text-sm" />
-              <Link to={`/sites/${siteId}/nodes`} className="transition hover:text-emerald-600">
-                Nodes
-              </Link>
-              <i className="bx bx-chevron-right text-sm" />
-              <span className="font-bold text-slate-600 dark:text-slate-300">{nodeLabel}</span>
-            </nav>
+      <div className="flex flex-col gap-6 px-4 py-5 sm:px-6">
+        <div>
+          <nav className="mb-1.5 flex items-center gap-1.5 text-xs text-slate-400">
+            <Link to="/sites" className="transition hover:text-emerald-600">Sites</Link>
+            <i className="bx bx-chevron-right text-sm" />
+            <Link to={`/sites/${siteId}/nodes`} className="transition hover:text-emerald-600">Nodes</Link>
+            <i className="bx bx-chevron-right text-sm" />
+            <span className="font-bold text-slate-600 dark:text-slate-300">{nodeLabel}</span>
+          </nav>
 
-            <div className="flex flex-wrap items-center gap-2.5">
-              <h1 className="text-3xl font-black tracking-tight">{nodeLabel}</h1>
-              <span className={`rounded-full px-2.5 py-1 text-[10px] font-black ${currentNodeStatus.cls}`}>
-                Status: {currentNodeStatus.label}
-              </span>
+          <div className="flex items-center justify-between gap-4">
+            <h1 className="text-3xl font-black tracking-tight">{nodeLabel}</h1>
 
-              {node?.subcontractor && (
-                <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-[10px] font-bold text-emerald-600 ring-1 ring-emerald-200 dark:bg-emerald-500/10 dark:text-emerald-400 dark:ring-emerald-900/30">
-                  Subcon / Team: {node.subcontractor.name} {node.team ? `/ ${node.team.name}` : ''}
-                </span>
-              )}
-              {(node?.date_start || node?.due_date || node?.date_finished) && (
-                <div className="flex flex-wrap items-center gap-2 mt-1">
-                  {node?.date_start && (
-                    <span className="flex items-center gap-1 rounded-full bg-indigo-50 px-2.5 py-1 text-[10px] font-bold text-indigo-600 ring-1 ring-indigo-200 dark:bg-indigo-500/10 dark:text-indigo-400 dark:ring-indigo-900/30">
-                      <i className="bx bx-calendar-play" /> Started: {fmtDate(node.date_start)}
-                    </span>
-                  )}
-                  {node?.due_date && (
-                    <span className="flex items-center gap-1 rounded-full bg-amber-50 px-2.5 py-1 text-[10px] font-bold text-amber-600 ring-1 ring-amber-200 dark:bg-amber-500/10 dark:text-amber-400 dark:ring-amber-900/30">
-                      <i className="bx bx-calendar-event" /> Due: {fmtDate(node.due_date)}
-                    </span>
-                  )}
-                  {node?.date_finished && (
-                    <span className="flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-1 text-[10px] font-bold text-emerald-600 ring-1 ring-emerald-200 dark:bg-emerald-500/10 dark:text-emerald-400 dark:ring-emerald-900/30">
-                      <i className="bx bx-calendar-check" /> Finished: {fmtDate(node.date_finished)}
-                    </span>
-                  )}
-                </div>
-              )}
-            </div>
-          </div>
-
-          <div className="flex w-full flex-wrap items-center justify-end gap-2 xl:w-auto xl:shrink-0">
+            <div className="flex flex-wrap items-center justify-end gap-2 shrink-0">
             {/* Cache Control Panel */}
             <div className="flex items-center gap-2 rounded-2xl bg-white/50 backdrop-blur-md border border-slate-200 px-3 py-1.5 shadow-sm text-xs select-none dark:bg-zinc-900/50 dark:border-zinc-800">
               {/* Live Connection Badge */}
@@ -996,6 +964,9 @@ export default function NodePolesSpans() {
                       actual_ps_housing: node?.actual_ps_housing ?? node?.span_summaries_sum_actual_ps_housing ?? 0,
                       expected_cable: node?.expected_cable ?? 0,
                       actual_cable: node?.actual_cable ?? 0,
+                      date_start: node?.date_start ?? '',
+                      due_date: node?.due_date ?? '',
+                      date_finished: node?.date_finished ?? '',
                     })
                     setMetricsModal(true)
                   }}
@@ -1039,6 +1010,7 @@ export default function NodePolesSpans() {
                 <i className="bx bx-plus" /> Add Pole
               </button>
             )}
+            </div>
           </div>
         </div>
 
@@ -1144,8 +1116,8 @@ export default function NodePolesSpans() {
           </div>
         </div>}
 
-        <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
-          <div className="overflow-hidden rounded-[30px] bg-[#030718] shadow-sm ring-1 ring-slate-900/10">
+        <div className="grid grid-cols-1 items-stretch gap-6 xl:grid-cols-2">
+          <div className="flex h-full flex-col overflow-hidden rounded-[30px] bg-[#030718] shadow-sm ring-1 ring-slate-900/10">
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/15 px-5 py-5">
               <div>
                 <h2 className="text-3xl font-black tracking-tight text-white">Vicinity Map</h2>
@@ -1182,7 +1154,7 @@ export default function NodePolesSpans() {
               </div>
             </div>
 
-            <div className="relative h-[550px]">
+            <div className="relative min-h-[550px] flex-1">
               {stats.gps === 0 && (
                 <div className="absolute inset-0 z-[401] flex items-center justify-center bg-[#030718]">
                   <div className="rounded-[24px] border border-white/15 bg-white/10 px-6 py-5 text-center text-white backdrop-blur">
@@ -1193,107 +1165,81 @@ export default function NodePolesSpans() {
                 </div>
               )}
 
-              <div ref={mapRef} className="h-full w-full bg-[#030718]" />
+              <div ref={mapRef} className="absolute inset-0 bg-[#030718]" />
             </div>
           </div>
 
-          <div className="rounded-[30px] bg-white p-5 shadow-sm ring-1 ring-slate-200/70 dark:bg-zinc-900 dark:ring-zinc-800">
-            <div className="mb-6 flex items-start justify-between">
+          <div className="flex h-full flex-col gap-5 rounded-[30px] bg-white p-6 shadow-sm ring-1 ring-slate-200/70 dark:bg-zinc-900 dark:ring-zinc-800 xl:min-h-[650px]">
+            <div className="flex items-center justify-between">
               <div>
-                <h2 className="text-3xl font-black tracking-tight">Work Summary</h2>
-                <p className="text-xs font-bold text-slate-400">Fast operational snapshot</p>
+                <h2 className="text-2xl font-black tracking-tight">Work Summary</h2>
+                <p className="text-[11px] font-semibold text-slate-400">Operational snapshot</p>
               </div>
-
-              <button className="rounded-xl bg-emerald-600 px-4 py-2 text-xs font-black text-white shadow-sm transition hover:bg-emerald-700">
-                Export
-              </button>
             </div>
 
-            <div className="space-y-5">
+            {/* Progress bars */}
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
               {([
-                ['GPS completion', stats.gpsPct],
-                ['Pole clearing', stats.clearPct],
-                ...(stats.progressPct != null ? [['Overall Progress', stats.progressPct]] : []),
-              ] as [string, number][]).map(([label, value]) => (
-                <div key={label} className="rounded-[22px] bg-slate-50 px-4 py-4 dark:bg-zinc-950">
-                  <div className="mb-2 flex items-center justify-between text-xs font-black">
-                    <span className="text-slate-500 dark:text-zinc-400">{label}:</span>
-                    <span className="text-emerald-600">{value}%</span>
+                ['GPS Completion', stats.gpsPct, 'bg-emerald-500'],
+                ['Pole Clearing', stats.clearPct, 'bg-indigo-500'],
+                ...(stats.progressPct != null ? [['Overall Progress', stats.progressPct, 'bg-violet-500']] : []),
+              ] as [string, number, string][]).map(([label, value, bar]) => (
+                <div key={label} className="rounded-2xl bg-slate-50 px-4 py-3 dark:bg-zinc-950">
+                  <div className="mb-2 flex min-h-8 items-start justify-between gap-3 text-[10px] font-black uppercase tracking-wide">
+                    <span className="leading-4 text-slate-400">{label}</span>
+                    <span className="shrink-0 text-sm leading-4 text-slate-800 dark:text-slate-100">
+                      {label === 'Overall Progress' ? Number(value).toFixed(2) : Number(value).toFixed(0)}%
+                    </span>
                   </div>
-
-                  <div className="h-2 overflow-hidden rounded-full bg-slate-200 dark:bg-zinc-800">
-                    <div
-                      className="h-full rounded-full bg-gradient-to-r from-emerald-500 via-teal-500 to-emerald-400"
-                      style={{ width: `${value}%` }}
-                    />
+                  <div className="h-2 overflow-hidden rounded-full bg-slate-100 dark:bg-zinc-800">
+                    <div className={`h-full rounded-full ${bar} transition-all`} style={{ width: `${value}%` }} />
                   </div>
                 </div>
               ))}
             </div>
 
-            <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <div className="h-px bg-slate-100 dark:bg-zinc-800" />
+
+            {/* Info grid */}
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-[0.85fr_0.85fr_0.85fr_1.45fr]">
               {[
-                { label: 'Est. Cable:', value: `${Number(stats.cable ?? 0).toFixed(0)}m`, icon: 'bx bx-plug', top: 'from-emerald-500 to-teal-500' },
-                { label: 'Actual Cable:', value: stats.actualCable != null ? `${Number(stats.actualCable).toFixed(0)}m` : '—', icon: 'bx bx-plug', top: 'from-teal-500 to-cyan-500' },
-                { label: 'Status:', value: currentNodeStatus.label, icon: 'bx bx-loader-circle', top: 'from-amber-500 to-orange-400', dot: true },
-                { label: 'Subcon:', value: node?.subcontractor?.name ?? '—', icon: 'bx bx-group', top: 'from-slate-500 to-slate-400' },
+                { label: 'Est. Cable',   value: `${Number(stats.cable ?? 0).toFixed(0)}m`,                                                     icon: 'bx bx-plug',          color: 'text-emerald-600' },
+                { label: 'Actual Cable', value: stats.actCable != null ? `${Number(stats.actCable).toFixed(0)}m` : '—',                          icon: 'bx bx-plug',          color: 'text-teal-600'    },
+                { label: 'Status',       value: currentNodeStatus.label,                                                                          icon: 'bx bx-loader-circle', color: 'text-amber-600'   },
+                { label: 'Subcon / Team',value: `${node?.subcontractor?.name ?? '—'}${node?.team ? ` / ${node.team.name}` : ''}`,               icon: 'bx bx-group',         color: 'text-slate-700 dark:text-slate-200' },
               ].map((k, i) => (
-                <div key={i} className="rounded-[20px] bg-white shadow-sm ring-1 ring-slate-200/70 dark:bg-zinc-950 dark:ring-zinc-800">
-                  <div className={`h-1 bg-gradient-to-r ${k.top}`} />
-                  <div className="flex items-start justify-between p-3">
-                    <div className="min-w-0">
-                      <p className="text-[9px] font-black uppercase tracking-wider text-slate-400">
-                        {k.label === 'Subcon:' ? 'Subcon / Team:' : k.label}
-                      </p>
-                      <div className="mt-2 flex items-center gap-1.5">
-                        {k.dot && <div className={`h-1.5 w-1.5 shrink-0 rounded-full ${node?.status === 'completed' ? 'bg-emerald-500' : 'bg-amber-500'}`} />}
-                        <p className="truncate text-[13px] font-black tracking-tight">
-                          {k.label === 'Subcon:' ? (
-                            <>{node?.subcontractor?.name} {node?.team ? `/ ${node.team.name}` : ''}</>
-                          ) : k.value}
-                        </p>
-                      </div>
-                    </div>
-                    <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-slate-50 text-slate-400 dark:bg-zinc-900">
-                      <i className={`${k.icon} text-sm`} />
-                    </div>
+                <div key={i} className="flex min-h-[88px] items-center gap-3 rounded-2xl bg-slate-50 px-3.5 py-3 dark:bg-zinc-950">
+                  <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-xl bg-white text-slate-400 shadow-sm dark:bg-zinc-800">
+                    <i className={`${k.icon} text-sm`} />
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-[8px] font-black uppercase tracking-wider text-slate-400">{k.label}</p>
+                    <p className={`mt-1 break-words text-[12px] font-black leading-4 ${k.color}`}>{k.value}</p>
                   </div>
                 </div>
               ))}
             </div>
 
-            {/* ── Date cards ── */}
-            <div className="mt-3 grid grid-cols-3 gap-3">
+            <div className="h-px bg-slate-100 dark:bg-zinc-800" />
+
+            {/* Date cards */}
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
               {[
-                { label: 'Date Started', value: node?.date_start,    icon: 'bx bx-calendar-play',  top: 'from-indigo-500 to-violet-500',  color: 'text-indigo-600 dark:text-indigo-300' },
-                { label: 'Due Date',     value: node?.due_date,      icon: 'bx bx-calendar-event', top: 'from-amber-500 to-orange-400',   color: 'text-amber-600 dark:text-amber-300'  },
-                { label: 'Date Finished',value: node?.date_finished, icon: 'bx bx-calendar-check', top: 'from-emerald-500 to-teal-400',   color: 'text-emerald-600 dark:text-emerald-300' },
+                { label: 'Date Started', value: node?.date_start,    icon: 'bx bx-calendar-play',  color: 'text-indigo-600 dark:text-indigo-400' },
+                { label: 'Due Date',     value: node?.due_date,      icon: 'bx bx-calendar-event', color: 'text-amber-600 dark:text-amber-400'   },
+                { label: 'Date Finished',value: node?.date_finished, icon: 'bx bx-calendar-check', color: 'text-emerald-600 dark:text-emerald-400' },
               ].map((d, i) => (
-                <div key={i} className="rounded-[20px] bg-white shadow-sm ring-1 ring-slate-200/70 dark:bg-zinc-950 dark:ring-zinc-800">
-                  <div className={`h-1 bg-gradient-to-r ${d.top}`} />
-                  <div className="flex items-start justify-between p-3">
-                    <div className="min-w-0">
-                      <p className="text-[9px] font-black uppercase tracking-wider text-slate-400">{d.label}:</p>
-                      <p className={`mt-2 text-[13px] font-black tracking-tight ${d.color}`}>
-                        {(() => {
-                          if (!d.value) return <span className="text-slate-300 dark:text-zinc-600">—</span>
-                          const dt = new Date(d.value.includes('T') ? d.value : d.value + 'T00:00:00')
-                          if (isNaN(dt.getTime())) return <span className="text-slate-300 dark:text-zinc-600">{d.value}</span>
-                          const hasTime = d.value.includes('T') && !d.value.endsWith('T00:00:00')
-                          return dt.toLocaleDateString('en-PH', {
-                            month: 'short', day: 'numeric', year: 'numeric',
-                            ...(hasTime ? { hour: '2-digit', minute: '2-digit', hour12: true } : {}),
-                          })
-                        })()}
-                      </p>
-                    </div>
-                    <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-slate-50 text-slate-400 dark:bg-zinc-900">
-                      <i className={`${d.icon} text-sm`} />
-                    </div>
+                <div key={i} className="min-h-[86px] rounded-2xl bg-slate-50 px-4 py-3 dark:bg-zinc-950">
+                  <div className="flex items-center gap-1.5 text-[9px] font-black uppercase tracking-wider text-slate-400">
+                    <i className={`${d.icon} text-xs`} />{d.label}
                   </div>
+                  <p className={`mt-1.5 text-[12px] font-black ${d.color}`}>
+                    {d.value ? fmtDate(d.value) : <span className="text-slate-300 dark:text-zinc-600">—</span>}
+                  </p>
                 </div>
               ))}
             </div>
+          </div>
         </div>
       </div>
 
@@ -1808,113 +1754,91 @@ export default function NodePolesSpans() {
 
         {metricsModal && (
           <Modal
-            title="Edit Node Metrics"
-            sub="Manage hardware targets and actual counts"
+            title="Edit Node"
+            sub="Update metrics, cable targets and schedule dates"
             color="from-emerald-600 to-teal-600"
-            icon="bx bx-stats"
+            icon="bx bx-edit-alt"
+            size="max-w-2xl"
             onClose={() => setMetricsModal(false)}
             footer={
               <div className="flex gap-3 w-full">
-                <button
-                  type="button"
-                  onClick={() => setMetricsModal(false)}
-                  className="flex-1 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-black text-slate-700 transition hover:bg-slate-50"
-                >
+                <button type="button" onClick={() => setMetricsModal(false)}
+                  className="flex-1 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-black text-slate-700 transition hover:bg-slate-50 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200">
                   Cancel
                 </button>
-                <button
-                  type="button"
-                  onClick={saveMetrics}
-                  disabled={savingMetrics}
-                  className="flex-1 rounded-2xl bg-emerald-600 px-4 py-3 text-sm font-black text-white shadow-lg shadow-emerald-600/20 transition hover:bg-emerald-700 disabled:opacity-50"
-                >
-                  {savingMetrics ? 'Saving…' : 'Save Metrics'}
+                <button type="button" onClick={saveMetrics} disabled={savingMetrics}
+                  className="flex-1 rounded-2xl bg-emerald-600 px-4 py-3 text-sm font-black text-white shadow-lg shadow-emerald-600/20 transition hover:bg-emerald-700 disabled:opacity-50">
+                  {savingMetrics ? 'Saving…' : 'Save Changes'}
                 </button>
               </div>
             }
           >
-            <div className="grid grid-cols-2 gap-6">
-              <div className="space-y-4">
+            {/* Metrics grid */}
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-3">
                 <p className="text-[10px] font-black uppercase tracking-widest text-indigo-500">Target (Expected)</p>
                 {[
-                  { label: 'Nodes', key: 'expected_nodes' },
-                  { label: 'Amps', key: 'expected_amplifier' },
-                  { label: 'Amplifier', key: 'expected_extender' },
-                  { label: 'TSCs', key: 'expected_tsc' },
+                  { label: 'Node Box',     key: 'expected_nodes' },
+                  { label: 'Amplifier',    key: 'expected_amplifier' },
+                  { label: 'Extender',     key: 'expected_extender' },
+                  { label: 'TSC',          key: 'expected_tsc' },
                   { label: 'Power Supply', key: 'expected_powersupply' },
-                  { label: 'PS Case', key: 'expected_ps_housing' },
+                  { label: 'PS Case',      key: 'expected_ps_housing' },
+                  { label: 'Cable (m)',    key: 'expected_cable' },
                 ].map(f => (
                   <div key={f.key}>
                     <label className="mb-1 block text-[10px] font-bold uppercase text-slate-400">{f.label}:</label>
-                    <input
-                      type="number"
-                      value={metricsData[f.key as keyof typeof metricsData]}
-                      onChange={e => setMetricsData(prev => ({ ...prev, [f.key]: parseInt(e.target.value) || 0 }))}
-                      className={iCls()}
-                    />
+                    <input type="number" value={metricsData[f.key as keyof typeof metricsData] as number}
+                      onChange={e => setMetricsData(prev => ({ ...prev, [f.key]: parseFloat(e.target.value) || 0 }))}
+                      className={iCls()} />
                   </div>
                 ))}
-                <div>
-                  <label className="mb-1 block text-[10px] font-bold uppercase text-slate-400">Exp. Cable (m):</label>
-                  <input
-                    type="number"
-                    value={metricsData.expected_cable}
-                    onChange={e => setMetricsData(prev => ({ ...prev, expected_cable: parseFloat(e.target.value) || 0 }))}
-                    className={iCls()}
-                  />
-                </div>
               </div>
 
-              <div className="space-y-4">
+              <div className="space-y-3">
                 <p className="text-[10px] font-black uppercase tracking-widest text-emerald-500">Collected (Actual)</p>
                 {[
-                  { label: 'Nodes', key: 'actual_node' },
-                  { label: 'Amps', key: 'actual_amplifier' },
-                  { label: 'Amplifier', key: 'actual_extender' },
-                  { label: 'TSCs', key: 'actual_tsc' },
+                  { label: 'Node Box',     key: 'actual_node' },
+                  { label: 'Amplifier',    key: 'actual_amplifier' },
+                  { label: 'Extender',     key: 'actual_extender' },
+                  { label: 'TSC',          key: 'actual_tsc' },
                   { label: 'Power Supply', key: 'actual_powersupply' },
-                  { label: 'PS Case', key: 'actual_ps_housing' },
+                  { label: 'PS Case',      key: 'actual_ps_housing' },
+                  { label: 'Cable (m)',    key: 'actual_cable' },
                 ].map(f => (
                   <div key={f.key}>
                     <label className="mb-1 block text-[10px] font-bold uppercase text-slate-400">{f.label}:</label>
-                    <input
-                      type="number"
-                      value={metricsData[f.key as keyof typeof metricsData]}
-                      onChange={e => setMetricsData(prev => ({ ...prev, [f.key]: parseInt(e.target.value) || 0 }))}
-                      className={iCls()}
-                    />
+                    <input type="number" value={metricsData[f.key as keyof typeof metricsData] as number}
+                      onChange={e => setMetricsData(prev => ({ ...prev, [f.key]: parseFloat(e.target.value) || 0 }))}
+                      className={iCls()} />
                   </div>
                 ))}
-                <div>
-                  <label className="mb-1 block text-[10px] font-bold uppercase text-slate-400">Act. Cable (m):</label>
-                  <input
-                    type="number"
-                    value={metricsData.actual_cable}
-                    onChange={e => setMetricsData(prev => ({ ...prev, actual_cable: parseFloat(e.target.value) || 0 }))}
-                    className={iCls()}
-                  />
-                </div>
               </div>
             </div>
+
+            {/* Dates */}
+            <div className="mt-4 border-t border-slate-100 pt-4 dark:border-zinc-800">
+              <p className="mb-3 text-[10px] font-black uppercase tracking-widest text-slate-400">Schedule Dates</p>
+              <div className="grid grid-cols-3 gap-3">
+                {[
+                  { label: 'Date Started', key: 'date_start' },
+                  { label: 'Due Date',     key: 'due_date' },
+                  { label: 'Date Finished',key: 'date_finished' },
+                ].map(f => (
+                  <div key={f.key}>
+                    <label className="mb-1 block text-[10px] font-bold uppercase text-slate-400">{f.label}:</label>
+                    <input type="datetime-local"
+                      value={(metricsData[f.key as keyof typeof metricsData] as string) ?? ''}
+                      onChange={e => setMetricsData(prev => ({ ...prev, [f.key]: e.target.value }))}
+                      className={iCls()} />
+                  </div>
+                ))}
+              </div>
+            </div>
+
           </Modal>
         )}
 
-
-        <div className="mt-8 rounded-[30px] border border-emerald-100 bg-emerald-50/30 p-6 dark:border-emerald-900/20 dark:bg-emerald-500/5">
-          <div className="flex items-start gap-4">
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-emerald-100 text-emerald-600 dark:bg-emerald-500/20">
-              <i className="bx bx-info-circle text-xl" />
-            </div>
-            <div>
-              <p className="text-[11px] font-black uppercase tracking-[0.2em] text-emerald-600">Operational Summary</p>
-              <p className="mt-2 text-sm font-medium leading-relaxed text-slate-600 dark:text-zinc-400">
-                This node contains <b className="text-emerald-700 dark:text-emerald-300">{stats.total}</b> total poles with <b className="text-emerald-700 dark:text-emerald-300">{stats.gps}</b> verified GPS coordinates.
-                Use the tools above to manage pole assets and teardown sequencing. Click <b className="text-emerald-700 dark:text-emerald-300">View Spans</b> to manage cable spans for this node.
-              </p>
-            </div>
-          </div>
-        </div>
       </div>
-    </div>
   )
 }

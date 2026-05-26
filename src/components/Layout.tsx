@@ -11,7 +11,7 @@ function syncDarkClass() {
   }
 }
 
-export default function Layout({ children }: { children: ReactNode }) {
+export default function Layout({ children, fullWidth = false }: { children: ReactNode; fullWidth?: boolean }) {
   useEffect(() => {
     syncDarkClass()
     const observer = new MutationObserver(syncDarkClass)
@@ -49,7 +49,7 @@ export default function Layout({ children }: { children: ReactNode }) {
       <Topbar />
       <div className="main-content group-data-[sidebar-size=sm]:ml-[70px] min-h-screen flex flex-col">
         <div className="page-content dark:bg-zinc-700 flex-1 pb-16">
-          <div className="container-fluid px-[0.625rem]">
+          <div className={`container-fluid ${fullWidth ? 'px-0' : 'px-[0.625rem]'}`}>
             {children}
           </div>
         </div>

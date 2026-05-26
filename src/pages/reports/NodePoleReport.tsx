@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { getToken, SKYCABLE_API, API_BASE } from '../../lib/auth'
 import { cacheGet, cacheSet } from '../../lib/cache'
 import { idFromSlug } from '../../lib/utils'
+import jsPDF from 'jspdf'
 
 interface PoleImage {
   id: number
@@ -19,6 +20,7 @@ interface PoleGroup {
   before?: string | null
   after?: string | null
   pole_tag?: string | null
+  justification?: string | null
 }
 
 interface NodeInfo {
@@ -57,6 +59,43 @@ function imgUrl(path: string | null | undefined): string | null {
   return `${API_BASE}/api/v1/files/${path}`
 }
 
+// ── Module-level image blob cache ─────────────────────────────────────────────
+// Persists across SPA navigations so images only download once per session.
+// Keys are full src URLs. Values are object URLs created from fetched blobs.
+const _imgBlobCache   = new Map<string, string>()           // src → blobUrl
+const _imgInFlight    = new Map<string, Promise<string | null>>() // src → in-flight promise
+
+function fetchCachedBlob(src: string): Promise<string | null> {
+  // Already cached — return immediately
+  if (_imgBlobCache.has(src)) return Promise.resolve(_imgBlobCache.get(src)!)
+
+  // Deduplicate concurrent requests for the same src
+  const existing = _imgInFlight.get(src)
+  if (existing) return existing
+
+  const promise = fetch(src, {
+    headers: {
+      'ngrok-skip-browser-warning': '1',
+      Authorization: `Bearer ${getToken()}`,
+    },
+  })
+    .then(r => {
+      if (!r.ok) return null
+      return r.blob()
+    })
+    .then(blob => {
+      if (!blob) return null
+      const url = URL.createObjectURL(blob)
+      _imgBlobCache.set(src, url)
+      return url
+    })
+    .catch(() => null)
+    .finally(() => _imgInFlight.delete(src))
+
+  _imgInFlight.set(src, promise)
+  return promise
+}
+
 function SafeImage({ src, alt, className, style, onClick }: {
   src: string | null
   alt?: string
@@ -64,35 +103,32 @@ function SafeImage({ src, alt, className, style, onClick }: {
   style?: React.CSSProperties
   onClick?: (e: React.MouseEvent) => void
 }) {
-  const [blobUrl, setBlobUrl] = useState<string | null>(null)
-  const [loading, setLoading] = useState(true)
+  // Initialise from cache — if already downloaded, no loading state at all
+  const [blobUrl, setBlobUrl] = useState<string | null>(() =>
+    src ? (_imgBlobCache.get(src) ?? null) : null
+  )
+  const [loading, setLoading] = useState(() =>
+    !!src && !_imgBlobCache.has(src)
+  )
 
   useEffect(() => {
     if (!src) return
+    // Already in cache — show immediately, skip fetch
+    if (_imgBlobCache.has(src)) {
+      setBlobUrl(_imgBlobCache.get(src)!)
+      setLoading(false)
+      return
+    }
     let alive = true
     setLoading(true)
-
-    fetch(src, {
-      headers: {
-        'ngrok-skip-browser-warning': '1',
-        Authorization: `Bearer ${getToken()}`,
-      }
+    fetchCachedBlob(src).then(url => {
+      if (!alive) return
+      setBlobUrl(url)
+      setLoading(false)
     })
-      .then(r => r.blob())
-      .then(blob => {
-        if (!alive) return
-        const url = URL.createObjectURL(blob)
-        setBlobUrl(url)
-      })
-      .catch(() => {})
-      .finally(() => {
-        if (alive) setLoading(false)
-      })
-
-    return () => {
-      alive = false
-      if (blobUrl) URL.revokeObjectURL(blobUrl)
-    }
+    return () => { alive = false }
+    // NOTE: do NOT revoke blob URLs here — they are owned by the module-level
+    // cache and must stay valid for future renders of the same image.
   }, [src])
 
   if (!src) return null
@@ -105,9 +141,18 @@ function SafeImage({ src, alt, className, style, onClick }: {
     )
   }
 
+  if (!blobUrl) {
+    return (
+      <div className={`${className} flex items-center justify-center bg-zinc-50 text-[11px] font-semibold text-zinc-400`}
+        style={{ borderStyle: 'dashed', borderWidth: 1, borderColor: '#D8DCFF' }}>
+        No Photo
+      </div>
+    )
+  }
+
   return (
     <img
-      src={blobUrl || ''}
+      src={blobUrl}
       alt={alt}
       className={className}
       style={style}
@@ -126,9 +171,9 @@ export default function NodePoleReport() {
     nodeId ? cacheGet<NodeInfo>(`pr_info_${nodeId}`) : null
   )
   const [rows, setRows] = useState<PoleGroup[]>(() =>
-    nodeId ? cacheGet<PoleGroup[]>(`pr_rows_v2_${nodeId}`) ?? [] : []
+    nodeId ? cacheGet<PoleGroup[]>(`pr_rows_v3_${nodeId}`) ?? [] : []
   )
-  const [loading, setLoading] = useState(() => !cacheGet<PoleGroup[]>(`pr_rows_v2_${nodeId}`))
+  const [loading, setLoading] = useState(() => !cacheGet<PoleGroup[]>(`pr_rows_v3_${nodeId}`))
   const [refreshing, setRefreshing] = useState(false)
 
   const [lightbox, setLightbox] = useState<{ src: string; caption: string } | null>(null)
@@ -138,84 +183,100 @@ export default function NodePoleReport() {
     let alive = true
 
     const hitNode = cacheGet<NodeInfo>(`pr_info_${nodeId}`)
-    const hitRows = cacheGet<PoleGroup[]>(`pr_rows_v2_${nodeId}`)
+    const hitRows = cacheGet<PoleGroup[]>(`pr_rows_v4_${nodeId}`)
 
     if (hitNode) setNode(hitNode)
-    if (hitRows) setRows(hitRows)
-    if (hitNode || hitRows) { setLoading(false); setRefreshing(true) }
+    if (hitRows && hitRows.length > 0) { setRows(hitRows); setLoading(false); setRefreshing(true) }
     else setLoading(true)
 
     async function loadImages() {
+      const groups: Record<string, PoleGroup> = {}
+
+      function addPhoto(key: string, poleCode: string, type: string, path: string | null | undefined) {
+        if (!path) return
+        if (!groups[key]) groups[key] = { pole_code: poleCode, inventory_type: 'skycable' }
+        if (type === 'before'   && !groups[key].before)   groups[key].before   = path
+        if (type === 'after'    && !groups[key].after)    groups[key].after    = path
+        if (type === 'pole_tag' && !groups[key].pole_tag) groups[key].pole_tag = path
+      }
+
       try {
-        const nd = await fetch(`${SKYCABLE_API}/nodes/${nodeId}`, { headers: authHeaders() }).then(r => r.json())
+        const nd = await fetch(`${SKYCABLE_API}/nodes/${nodeId}`, { headers: authHeaders() })
+          .then(r => r.ok ? r.json() : null).catch(() => null)
         if (!alive) return
         if (nd?.id) { setNode(nd); cacheSet(`pr_info_${nodeId}`, nd) }
+      } catch {}
 
-        const groups: Record<string, PoleGroup> = {}
-
-        // Primary: try dedicated node-images endpoint
-        const imgRes = await fetch(`${SKYCABLE_API}/teardown/node-images/${nodeId}`, { headers: authHeaders() })
-        if (imgRes.ok) {
-          const rd = await imgRes.json()
+      // Source 1: PoleTeardownImage records for this node
+      try {
+        const res = await fetch(`${API_BASE}/api/v1/teardown/node-images/${nodeId}`, { headers: authHeaders() })
+        if (res.ok) {
+          const rd = await res.json()
           const images: PoleImage[] = Array.isArray(rd) ? rd : (rd?.data ?? [])
           images.forEach(img => {
             const key = `${img.inventory_type ?? 'skycable'}_${img.pole_code}`
-            if (!groups[key]) groups[key] = { pole_code: img.pole_code, inventory_type: img.inventory_type ?? 'skycable' }
-            if (img.image_type === 'before') groups[key].before = img.file_path
-            if (img.image_type === 'after') groups[key].after = img.file_path
-            if (img.image_type === 'pole_tag') groups[key].pole_tag = img.file_path
+            addPhoto(key, img.pole_code, img.image_type, img.file_path)
           })
         }
+      } catch {}
 
-        // Fallback / supplement: extract photos from teardown log details for this node
-        if (Object.keys(groups).length === 0) {
-          const tdRes = await fetch(`${SKYCABLE_API}/teardowns?node_id=${nodeId}&per_page=500`, { headers: authHeaders() })
-          if (tdRes.ok) {
-            const tdData = await tdRes.json()
-            const logs: any[] = Array.isArray(tdData) ? tdData : (tdData?.data ?? [])
+      // Source 2: Pole reports for this node
+      try {
+        const res = await fetch(`${SKYCABLE_API}/pole-reports?node_id=${nodeId}&per_page=200`, { headers: authHeaders() })
+        if (res.ok) {
+          const data = await res.json()
+          const reports: any[] = Array.isArray(data) ? data : (data?.data ?? [])
+          reports.forEach(report => {
+            const poleCode = report.pole?.pole_code ?? `Pole#${report.pole_id}`
+            const key = `skycable_${poleCode}`;
+            (report.photos ?? []).forEach((p: any) => {
+              addPhoto(key, poleCode, p.image_type, p.file_path)
+            })
+            if (!groups[key]) groups[key] = { pole_code: poleCode, inventory_type: 'skycable' }
+            if (!groups[key].justification) {
+              const parts = [report.notes?.trim(), report.landmark?.trim()].filter(Boolean)
+              if (parts.length) groups[key].justification = parts.join(' · ')
+            }
+          })
+        }
+      } catch {}
 
-            // Fetch each teardown detail to get embedded photos (list may not include them)
+      // Source 3: Fallback — span teardown photos (only if nothing found yet)
+      if (Object.keys(groups).length === 0) {
+        try {
+          const res = await fetch(`${SKYCABLE_API}/teardowns?node_id=${nodeId}&per_page=500`, { headers: authHeaders() })
+          if (res.ok) {
+            const data = await res.json()
+            const logs: any[] = Array.isArray(data) ? data : (data?.data ?? [])
             await Promise.all(logs.map(async (log) => {
-              let detail = log
-              // If photos not included in list response, fetch detail
-              if (!detail.photos || detail.photos.length === 0) {
-                try {
+              try {
+                let detail = log
+                if (!detail.photos?.length) {
                   const r = await fetch(`${SKYCABLE_API}/teardowns/${log.id}`, { headers: authHeaders() })
                   if (r.ok) detail = await r.json()
-                } catch {}
-              }
-
-              const photos: { photo_type: string; image_path: string }[] = detail.photos ?? []
-              if (photos.length === 0) return
-
-              // Get pole codes from span
-              const span = detail.span ?? log.span
-              const fromCode = span?.fromPole?.pole?.pole_code
-                ?? span?.from_pole?.pole?.pole_code
-                ?? `Log#${log.id}`
-              const toCode = span?.toPole?.pole?.pole_code
-                ?? span?.to_pole?.pole?.pole_code
-                ?? null
-
-              photos.forEach((p: { photo_type: string; image_path: string }) => {
-                const isTo = p.photo_type.startsWith('to_')
-                const poleCode = isTo ? (toCode ?? fromCode) : fromCode
-                const key = `skycable_${poleCode}`
-                if (!groups[key]) groups[key] = { pole_code: poleCode, inventory_type: 'skycable' }
-                if (p.photo_type.includes('before')) groups[key].before   ??= p.image_path
-                if (p.photo_type.includes('after'))  groups[key].after    ??= p.image_path
-                if (p.photo_type.includes('tag'))    groups[key].pole_tag ??= p.image_path
-              })
+                }
+                const photos: any[] = detail.photos ?? []
+                const span     = detail.span ?? log.span
+                const fromCode = span?.fromPole?.pole?.pole_code ?? span?.from_pole?.pole?.pole_code ?? `Log#${log.id}`
+                const toCode   = span?.toPole?.pole?.pole_code   ?? span?.to_pole?.pole?.pole_code   ?? null
+                photos.forEach((p: any) => {
+                  const code = p.photo_type?.startsWith('to_') ? (toCode ?? fromCode) : fromCode
+                  const key  = `skycable_${code}`
+                  const type = p.photo_type?.includes('before') ? 'before' : p.photo_type?.includes('after') ? 'after' : p.photo_type?.includes('tag') ? 'pole_tag' : ''
+                  addPhoto(key, code, type, p.image_path)
+                })
+              } catch {}
             }))
           }
-        }
+        } catch {}
+      }
 
-        if (!alive) return
-        const list = Object.values(groups)
-        setRows(list)
-        cacheSet(`pr_rows_v2_${nodeId}`, list)
-      } catch {}
-      finally { if (alive) { setLoading(false); setRefreshing(false) } }
+      if (!alive) return
+      const list = Object.values(groups)
+      setRows(list)
+      cacheSet(`pr_rows_v4_${nodeId}`, list)
+      setLoading(false)
+      setRefreshing(false)
     }
     loadImages()
 
@@ -253,9 +314,249 @@ export default function NodePoleReport() {
     return () => { document.getElementById('npr-print-styles')?.remove() }
   }, [])
 
-  function handlePrint() {
-    window.print()
+  const [exporting, setExporting] = useState(false)
+
+  function getImgNaturalSize(dataUrl: string): Promise<{ w: number; h: number }> {
+    return new Promise(resolve => {
+      const img = new Image()
+      img.onload  = () => resolve({ w: img.naturalWidth, h: img.naturalHeight })
+      img.onerror = () => resolve({ w: 1, h: 1 })
+      img.src = dataUrl
+    })
   }
+
+  async function fetchDataUrl(url: string): Promise<string | null> {
+    try {
+      // Reuse cached blob if already downloaded — avoids duplicate network calls during PDF export
+      const blobUrl = await fetchCachedBlob(url)
+      if (!blobUrl) return null
+      const res = await fetch(blobUrl) // fetch from local blob: URL — instant, no network
+      const blob = await res.blob()
+      return new Promise(resolve => {
+        const reader = new FileReader()
+        reader.onload = () => resolve(reader.result as string)
+        reader.onerror = () => resolve(null)
+        reader.readAsDataURL(blob)
+      })
+    } catch { return null }
+  }
+
+  async function handleExportPDF() {
+    if (rows.length === 0 || exporting) return
+    setExporting(true)
+    try {
+      const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
+      const PW = 210, PH = 297
+      const ML = 7, MR = 7, MT = 7, MB = 10
+      const innerW = PW - ML - MR   // 196mm
+
+      // ── Column widths (total = innerW = 196mm) ──────────────────────
+      const C_NUM   = 11   // Pic No.
+      const C_TAG   = 22   // Pole Tag (code)
+      const C_JUST  = 38   // Justification
+      const C_PHOTO = (innerW - C_NUM - C_TAG - C_JUST) / 3
+
+      const ROWS_PER_PAGE = 5
+      const nodeLine = node ? `${node.name}${node.full_label ? ' — ' + node.full_label : ''}` : `Node #${nodeId}`
+      const dateStr  = new Date().toLocaleDateString('en-PH', { year: 'numeric', month: 'long', day: 'numeric' })
+
+      // Column x positions
+      const xNum   = ML
+      const xTag   = ML + C_NUM
+      const xBef   = xTag  + C_TAG
+      const xAft   = xBef  + C_PHOTO
+      const xPole  = xAft  + C_PHOTO
+      const xJust  = xPole + C_PHOTO
+
+      // ── Page header renderer ────────────────────────────────────────
+      function drawPageHeader(startY: number): number {
+        let y = startY
+
+        // Top dark bar
+        pdf.setFillColor(30, 40, 100)
+        pdf.rect(ML, y, innerW, 9, 'F')
+        pdf.setTextColor(255, 255, 255)
+        pdf.setFontSize(8)
+        pdf.setFont('helvetica', 'bold')
+        pdf.text('POLE PICTURE — BEFORE & AFTER', ML + 3, y + 6)
+        pdf.setFont('helvetica', 'normal')
+        pdf.setFontSize(7.5)
+        pdf.text(dateStr, PW - MR - 3, y + 6, { align: 'right' })
+        y += 9
+
+        // Node info line
+        pdf.setFillColor(220, 225, 255)
+        pdf.rect(ML, y, innerW, 6, 'F')
+        pdf.setTextColor(30, 40, 110)
+        pdf.setFontSize(7)
+        pdf.setFont('helvetica', 'bold')
+        pdf.text(`Node: ${nodeLine}`, ML + 3, y + 4.2)
+        y += 6
+
+        // Column header row
+        pdf.setFillColor(240, 242, 250)
+        pdf.setDrawColor(60, 60, 60)
+        pdf.setLineWidth(0.5)
+        pdf.rect(ML, y, innerW, 7, 'FD')
+
+        // Inner column separators in header
+        ;[xTag, xBef, xAft, xPole, xJust].forEach(x => {
+          pdf.setDrawColor(60, 60, 60)
+          pdf.setLineWidth(0.3)
+          pdf.line(x, y, x, y + 7)
+        })
+
+        pdf.setTextColor(20, 20, 20)
+        pdf.setFontSize(6.5)
+        pdf.setFont('helvetica', 'bold')
+        const hdrs = ['Pic\nNo.', 'Pole Tag', 'Before', 'After', 'Pole Tag', 'Justification']
+        const hxs  = [xNum + C_NUM/2, xTag + C_TAG/2, xBef + C_PHOTO/2, xAft + C_PHOTO/2, xPole + C_PHOTO/2, xJust + C_JUST/2]
+        hdrs.forEach((h, i) => pdf.text(h, hxs[i], y + 4.5, { align: 'center' }))
+        y += 7
+
+        return y
+      }
+
+      // ── Photo helper — preserves natural aspect ratio (portrait stays portrait) ──
+      function drawPhoto(
+        dataUrl: string | null,
+        px: number, py: number,
+        pw: number, ph: number,
+        naturalW = 1, naturalH = 1,
+      ) {
+        const maxW = pw - 2
+        const maxH = ph - 2
+
+        if (dataUrl) {
+          try {
+            // Scale to fit inside cell while keeping original proportions
+            const ratio = naturalH / naturalW
+            let dw = maxW
+            let dh = dw * ratio
+            if (dh > maxH) { dh = maxH; dw = dh / ratio }
+
+            // Centre within cell
+            const ox = px + 1 + (maxW - dw) / 2
+            const oy = py + 1 + (maxH - dh) / 2
+
+            pdf.addImage(dataUrl, 'JPEG', ox, oy, dw, dh, undefined, 'FAST')
+          } catch {
+            pdf.setFillColor(230, 232, 245)
+            pdf.rect(px + 1, py + 1, maxW, maxH, 'F')
+            pdf.setTextColor(160, 165, 200)
+            pdf.setFontSize(6)
+            pdf.text('No Photo', px + pw / 2, py + ph / 2, { align: 'center' })
+          }
+        } else {
+          pdf.setFillColor(230, 232, 245)
+          pdf.rect(px + 1, py + 1, maxW, maxH, 'F')
+          pdf.setTextColor(160, 165, 200)
+          pdf.setFontSize(6)
+          pdf.text('No Photo', px + pw / 2, py + ph / 2, { align: 'center' })
+        }
+      }
+
+      // ── Footer ──────────────────────────────────────────────────────
+      function drawFooter(pageNum: number, totalPages: number) {
+        pdf.setDrawColor(60, 60, 60)
+        pdf.setLineWidth(0.3)
+        pdf.line(ML, PH - MB + 1, PW - MR, PH - MB + 1)
+        pdf.setTextColor(80, 80, 100)
+        pdf.setFontSize(6.5)
+        pdf.setFont('helvetica', 'normal')
+        pdf.text('TelcoVantage Philippines', ML, PH - MB + 5)
+        pdf.text(`Page ${pageNum} of ${totalPages}`, PW - MR, PH - MB + 5, { align: 'right' })
+      }
+
+      // ── Pre-fetch all photos + measure natural dimensions ───────────
+      type PhotoEntry = { dataUrl: string | null; nw: number; nh: number }
+      const allPhotos: PhotoEntry[][] = await Promise.all(
+        rows.map(row => Promise.all(
+          [row.before, row.after, row.pole_tag].map(async path => {
+            if (!path) return { dataUrl: null, nw: 1, nh: 1 }
+            const dataUrl = await fetchDataUrl(`${API_BASE}/api/v1/files/${path}`)
+            if (!dataUrl) return { dataUrl: null, nw: 1, nh: 1 }
+            const { w, h } = await getImgNaturalSize(dataUrl)
+            return { dataUrl, nw: w, nh: h }
+          })
+        ))
+      )
+
+      const totalPages = Math.ceil(rows.length / ROWS_PER_PAGE)
+
+      // ── Render pages ─────────────────────────────────────────────────
+      for (let page = 0; page < totalPages; page++) {
+        if (page > 0) pdf.addPage()
+
+        let y = drawPageHeader(MT)
+
+        // Available height for rows on this page
+        const availH = PH - y - MB - 6   // leave footer space
+        const ROW_H  = availH / ROWS_PER_PAGE
+
+        const pageRows = rows.slice(page * ROWS_PER_PAGE, (page + 1) * ROWS_PER_PAGE)
+
+        for (let ri = 0; ri < pageRows.length; ri++) {
+          const row      = pageRows[ri]
+          const globalI  = page * ROWS_PER_PAGE + ri
+          const rowY     = y + ri * ROW_H
+          // Outer row border (thick black)
+          pdf.setDrawColor(40, 40, 40)
+          pdf.setLineWidth(0.6)
+          pdf.rect(ML, rowY, innerW, ROW_H, 'D')
+
+          // Inner column dividers
+          pdf.setLineWidth(0.3)
+          ;[xTag, xBef, xAft, xPole, xJust].forEach(x => {
+            pdf.line(x, rowY, x, rowY + ROW_H)
+          })
+
+          // Pic No.
+          pdf.setTextColor(20, 20, 20)
+          pdf.setFontSize(8)
+          pdf.setFont('helvetica', 'bold')
+          pdf.text(String(globalI + 1), xNum + C_NUM / 2, rowY + ROW_H / 2 + 2, { align: 'center' })
+
+          // Pole Tag code
+          pdf.setFontSize(7)
+          pdf.setFont('helvetica', 'bold')
+          const code = row.pole_code ?? '—'
+          pdf.text(code, xTag + C_TAG / 2, rowY + ROW_H / 2 + 1.5, { align: 'center', maxWidth: C_TAG - 2 })
+
+          // Photos: Before / After / Pole Tag
+          const photos = allPhotos[globalI] ?? []
+          const photoXs = [xBef, xAft, xPole]
+          const PAD = 1.5
+          photoXs.forEach((px, ci) => {
+            const p = photos[ci] ?? { dataUrl: null, nw: 1, nh: 1 }
+            drawPhoto(p.dataUrl, px, rowY, C_PHOTO, ROW_H, p.nw, p.nh)
+            // Photo label at bottom inside cell
+            pdf.setTextColor(60, 60, 80)
+            pdf.setFontSize(5.5)
+            pdf.setFont('helvetica', 'bold')
+            pdf.text(['BEFORE', 'AFTER', 'POLE TAG'][ci], px + C_PHOTO / 2, rowY + ROW_H - PAD, { align: 'center' })
+          })
+
+          // Justification
+          if (row.justification) {
+            pdf.setTextColor(40, 40, 60)
+            pdf.setFontSize(6)
+            pdf.setFont('helvetica', 'normal')
+            pdf.text(row.justification, xJust + 2, rowY + 6, { maxWidth: C_JUST - 4 })
+          }
+
+        }
+
+        drawFooter(page + 1, totalPages)
+      }
+
+      const safeName = (node?.name ?? `node-${nodeId}`).replace(/[^a-z0-9]/gi, '_').toLowerCase()
+      pdf.save(`pole-report_${safeName}_${new Date().toISOString().slice(0, 10)}.pdf`)
+    } finally {
+      setExporting(false)
+    }
+  }
+
 
   const withBefore = rows.filter(r => r.before).length
   const withAfter = rows.filter(r => r.after).length
@@ -311,15 +612,19 @@ export default function NodePoleReport() {
             </button>
             <button
               type="button"
-              onClick={handlePrint}
-              disabled={rows.length === 0}
+              onClick={handleExportPDF}
+              disabled={rows.length === 0 || exporting}
               className="inline-flex h-10 items-center gap-2 rounded-xl px-4 text-sm font-bold disabled:cursor-not-allowed disabled:opacity-50"
               style={{
-                background: rows.length === 0 ? '#94a3b8' : 'linear-gradient(135deg, #2E3791 0%, #4450C4 100%)',
+                background: rows.length === 0 || exporting ? '#94a3b8' : 'linear-gradient(135deg, #2E3791 0%, #4450C4 100%)',
                 color: '#ffffff',
+                minWidth: 140,
               }}
             >
-              <i className="bx bx-file-pdf text-base" /> Export PDF
+              {exporting
+                ? <><i className="bx bx-loader-circle bx-spin text-base" /> Generating…</>
+                : <><i className="bx bx-file-pdf text-base" /> Export PDF</>
+              }
             </button>
           </div>
         </div>
@@ -381,17 +686,18 @@ export default function NodePoleReport() {
           </div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[900px] border-collapse text-sm">
+            <table className="w-full min-w-[1100px] border-collapse text-sm">
               <colgroup>
-                <col style={{ width: 60 }} />
+                <col style={{ width: 56 }} />
                 <col style={{ width: 110 }} />
                 <col />
                 <col />
                 <col />
+                <col style={{ width: 200 }} />
               </colgroup>
               <thead>
                 <tr style={{ background: BRAND.panel }}>
-                  {['Pic #', 'Pole Tag', 'Before', 'After', 'Pole Pic'].map(h => (
+                  {['Pic #', 'Pole Tag', 'Before', 'After', 'Pole Pic', 'Justification'].map(h => (
                     <th key={h} className="border px-3 py-2.5 text-center text-[10px] font-black uppercase tracking-[0.12em]"
                       style={{ borderColor: BRAND.borderStrong, color: BRAND.textDark }}>
                       {h}
@@ -402,12 +708,15 @@ export default function NodePoleReport() {
               <tbody>
                 {rows.map((row, i) => (
                   <tr key={`${row.inventory_type}_${row.pole_code}`} style={{ background: i % 2 === 0 ? '#ffffff' : BRAND.softer }}>
-                    <td className="border px-2 py-2 text-center align-top" style={{ borderColor: BRAND.border }}>
+
+                    {/* Pic # — centered */}
+                    <td className="border text-center align-middle" style={{ borderColor: BRAND.border }}>
                       <span className="font-mono text-sm font-black" style={{ color: BRAND.textDark }}>{i + 1}</span>
                     </td>
 
-                    <td className="border px-2 py-3 text-center align-top" style={{ borderColor: BRAND.border }}>
-                      <div className="flex flex-col items-center gap-1">
+                    {/* Pole Tag — centered vertically & horizontally */}
+                    <td className="border text-center align-middle" style={{ borderColor: BRAND.border }}>
+                      <div className="flex h-full items-center justify-center">
                         <span className="inline-flex items-center justify-center rounded-xl px-2 py-1.5 text-xs font-black"
                           style={{ background: BRAND.softer, color: BRAND.blue, border: `1px solid ${BRAND.borderStrong}` }}>
                           {row.pole_code ?? '—'}
@@ -415,31 +724,50 @@ export default function NodePoleReport() {
                       </div>
                     </td>
 
+                    {/* Photos — fixed height, label centered below */}
                     {([
-                      { data: row.before, caption: `BEFORE — ${row.pole_code ?? 'N/A'}` },
-                      { data: row.after, caption: `AFTER — ${row.pole_code ?? 'N/A'}` },
-                      { data: row.pole_tag, caption: `POLE PIC — ${row.pole_code ?? 'N/A'}` },
-                    ] as { data: string | null | undefined; caption: string }[]).map(({ data, caption }, ci) => (
-                      <td key={ci} className="border p-1 text-center align-top" style={{ borderColor: BRAND.border }}>
-                        <div className="flex min-h-[280px] items-center justify-center rounded-lg border p-1"
-                          style={{ borderColor: '#8fc9b4', background: '#fff' }}>
-                          {imgUrl(data) ? (
-                            <SafeImage
-                              src={imgUrl(data)!}
-                              alt={caption}
-                              className="block max-h-[270px] w-auto max-w-full cursor-pointer rounded object-contain transition hover:scale-[1.02]"
-                              style={{ border: '1px solid #dff2eb' }}
-                              onClick={() => setLightbox({ src: imgUrl(data)!, caption })}
-                            />
-                          ) : (
-                            <div className="flex w-full min-h-[270px] items-center justify-center rounded border text-[11px] font-bold uppercase tracking-wider"
-                              style={{ borderColor: BRAND.border, color: BRAND.muted2, background: BRAND.softer, borderStyle: 'dashed' }}>
-                              No Photo
-                            </div>
-                          )}
+                      { data: row.before,   label: 'BEFORE',   caption: `BEFORE — ${row.pole_code ?? 'N/A'}` },
+                      { data: row.after,    label: 'AFTER',    caption: `AFTER — ${row.pole_code ?? 'N/A'}` },
+                      { data: row.pole_tag, label: 'POLE TAG', caption: `POLE TAG — ${row.pole_code ?? 'N/A'}` },
+                    ] as { data: string | null | undefined; label: string; caption: string }[]).map(({ data, label, caption }, ci) => (
+                      <td key={ci} className="border p-0 text-center align-middle" style={{ borderColor: BRAND.border }}>
+                        <div className="flex flex-col items-center" style={{ background: '#fff' }}>
+                          {/* Image area — fixed height */}
+                          <div className="flex h-[240px] w-full items-center justify-center p-1 border-b"
+                            style={{ borderColor: '#dff2eb', background: '#fff' }}>
+                            {imgUrl(data) ? (
+                              <SafeImage
+                                src={imgUrl(data)!}
+                                alt={caption}
+                                className="block max-h-[230px] w-auto max-w-full cursor-pointer rounded object-contain transition hover:scale-[1.02]"
+                                onClick={() => setLightbox({ src: imgUrl(data)!, caption })}
+                              />
+                            ) : (
+                              <div className="flex h-full w-full items-center justify-center rounded border text-[11px] font-bold uppercase tracking-wider"
+                                style={{ borderColor: BRAND.border, color: BRAND.muted2, background: BRAND.softer, borderStyle: 'dashed' }}>
+                                No Photo
+                              </div>
+                            )}
+                          </div>
+                          {/* Label — centered below image */}
+                          <div className="flex items-center justify-center py-1.5">
+                            <span className="text-[10px] font-black uppercase tracking-[0.12em]"
+                              style={{ color: BRAND.muted2 }}>{label}</span>
+                          </div>
                         </div>
                       </td>
                     ))}
+
+                    {/* Justification — centered */}
+                    <td className="border text-center align-middle" style={{ borderColor: BRAND.border }}>
+                      <div className="flex min-h-[280px] items-center justify-center p-3" style={{ background: '#fff' }}>
+                        {row.justification ? (
+                          <p className="text-xs leading-relaxed text-center" style={{ color: BRAND.textDark }}>{row.justification}</p>
+                        ) : (
+                          <span className="text-[10px] font-semibold" style={{ color: BRAND.muted2 }}>—</span>
+                        )}
+                      </div>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -454,7 +782,7 @@ export default function NodePoleReport() {
             Generated: {new Date().toLocaleString('en-PH', { dateStyle: 'long', timeStyle: 'short' })}
           </p>
           <p className="text-[9px] font-black uppercase tracking-[0.16em]" style={{ color: BRAND.muted2 }}>
-            Globe Telecom · Skycable Operations
+            TelcoVantage Philippines
           </p>
         </div>
       </div>
@@ -486,7 +814,7 @@ export default function NodePoleReport() {
                 { data: row.before, label: 'Before' },
                 { data: row.after, label: 'After' },
                 { data: row.pole_tag, label: 'Pole Pic' },
-              ] as { data: PoleRow['before']; label: string }[]).map(({ data, label }) => (
+              ] as { data: PoleGroup['before']; label: string }[]).map(({ data, label }) => (
                 <div key={label} className="npr-photo-box">
                   {imgUrl(data) ? (
                     <SafeImage src={imgUrl(data)!} alt={label} />

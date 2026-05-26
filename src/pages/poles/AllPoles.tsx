@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState, type ReactNode, type SyntheticEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode, type SyntheticEvent } from 'react'
 import { isAdmin, canManageStatus, getToken, SKYCABLE_API } from '../../lib/auth'
 import { cacheGet, cacheSet } from '../../lib/cache'
+import { debounce } from '../../lib/request-dedup'
 
 const CACHE_NODES = 'allpoles_nodes'
 const CACHE_AREAS = 'allpoles_areas'
@@ -218,6 +219,7 @@ export default function AllPoles() {
 
   const perPage = 50
   const h = { Authorization: `Bearer ${getToken()}`, Accept: 'application/json', 'ngrok-skip-browser-warning': '1' }
+  const siteNodesFetchRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
     const hit = cacheGet<Area[]>(CACHE_AREAS)
@@ -238,16 +240,27 @@ export default function AllPoles() {
       .finally(() => setLoading(false))
   }, [])
 
-  // When area changes in the form, load that site's nodes
+  // When area changes in the form, load that site's nodes — debounced 300ms
   useEffect(() => {
     const areaId = formData.area_id
     if (!areaId) { setSiteNodes([]); return }
-    setSiteNodesLoading(true)
-    fetch(`${SKYCABLE_API}/nodes?area_id=${areaId}`, { headers: h })
-      .then(r => r.json())
-      .then(data => setSiteNodes(Array.isArray(data) ? data : (data?.data ?? [])))
-      .catch(() => setSiteNodes([]))
-      .finally(() => setSiteNodesLoading(false))
+    if (siteNodesFetchRef.current) clearTimeout(siteNodesFetchRef.current)
+    siteNodesFetchRef.current = setTimeout(() => {
+      siteNodesFetchRef.current = null
+      const cacheKey = `allpoles_sitenodes_${areaId}`
+      const cached = cacheGet<SiteNode[]>(cacheKey)
+      if (cached) { setSiteNodes(cached); return }
+      setSiteNodesLoading(true)
+      fetch(`${SKYCABLE_API}/nodes?area_id=${areaId}`, { headers: h })
+        .then(r => r.json())
+        .then(data => {
+          const list = Array.isArray(data) ? data : (data?.data ?? [])
+          setSiteNodes(list)
+          cacheSet(cacheKey, list)
+        })
+        .catch(() => setSiteNodes([]))
+        .finally(() => setSiteNodesLoading(false))
+    }, 300)
   }, [formData.area_id])
 
   const stats = useMemo(() => ({

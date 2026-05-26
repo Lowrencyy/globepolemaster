@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useMemo, useState } from 'react'
+import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import FieldCoverageMap, { TILE_LAYERS } from '../components/FieldCoverageMap'
 import type { MapView } from '../components/FieldCoverageMap'
@@ -221,6 +221,24 @@ interface TeardownLog {
   lineman: { id: number; first_name: string; last_name: string } | null
 }
 
+interface PoleReportLog {
+  id: number
+  pole_id: number
+  created_at: string
+  pole: { id: number; pole_code: string } | null
+  node: { id: number; name: string } | null
+  submitter: {
+    id: number
+    first_name: string
+    last_name: string
+    team: { id: number; name: string } | null
+  } | null
+}
+
+type FeedRow =
+  | { kind: 'span'; data: TeardownLog }
+  | { kind: 'pole'; data: PoleReportLog }
+
 // ── UI helpers ────────────────────────────────────────────────────────────────
 
 function SafeCell({
@@ -335,6 +353,7 @@ export default function Dashboard() {
   const [surveyTab, setSurveyTab] = useState<'all' | 'active' | 'inactive' | 'for_removal'>('all')
   const [nodes, setNodes] = useState<NodeStat[]>(() => cacheGet<NodeStat[]>('dashboard_nodes') ?? [])
   const [teardowns, setTeardowns] = useState<TeardownLog[]>(() => cacheGet<TeardownLog[]>('dashboard_tdlogs') ?? [])
+  const [poleReports, setPoleReports] = useState<PoleReportLog[]>(() => cacheGet<PoleReportLog[]>('dashboard_pole_reports') ?? [])
   const [tdLoading, setTdLoading] = useState(() => !cacheGet<TeardownLog[]>('dashboard_tdlogs'))
   const [pulse, setPulse] = useState(false)
   const [dailyDate, setDailyDate] = useState(() => new Date().toISOString().slice(0, 10))
@@ -356,6 +375,7 @@ export default function Dashboard() {
     return times.length > 0 ? Math.min(...times) : null
   })
   const [syncText, setSyncText] = useState('Never')
+  const lastManualSyncRef = useRef<number>(0)
 
   // Dynamic relative time calculations for sync label
   useEffect(() => {
@@ -425,20 +445,28 @@ export default function Dashboard() {
 
     if (!silent) setTdLoading(true)
 
-    fetch(`${SKYCABLE_API}/teardowns?per_page=15`, { headers: h() })
-      .then(r => r.json())
-      .then(d => {
+    Promise.allSettled([
+      fetch(`${SKYCABLE_API}/teardowns?per_page=15`, { headers: h() }).then(r => r.json()),
+      fetch(`${SKYCABLE_API}/pole-reports?per_page=15`, { headers: h() }).then(r => r.json()),
+    ]).then(([spanRes, poleRes]) => {
+      if (spanRes.status === 'fulfilled') {
+        const d = spanRes.value
         const list: TeardownLog[] = Array.isArray(d) ? d : d?.data ?? []
         setTeardowns(list)
         cacheSet('dashboard_tdlogs', list)
-        setLastSynced(Date.now())
-        setPulse(true)
-        setTimeout(() => setPulse(false), 800)
-      })
-      .catch(() => {})
-      .finally(() => {
-        if (!silent) setTdLoading(false)
-      })
+      }
+      if (poleRes.status === 'fulfilled') {
+        const d = poleRes.value
+        const list: PoleReportLog[] = Array.isArray(d) ? d : d?.data ?? []
+        setPoleReports(list)
+        cacheSet('dashboard_pole_reports', list)
+      }
+      setLastSynced(Date.now())
+      setPulse(true)
+      setTimeout(() => setPulse(false), 800)
+    }).catch(() => {}).finally(() => {
+      if (!silent) setTdLoading(false)
+    })
   }
 
   async function fetchNapSurveys() {
@@ -518,12 +546,15 @@ export default function Dashboard() {
   }
 
   async function handleManualSync() {
-    if (syncing || !isOnline) return
+    const now = Date.now()
+    if (syncing || !isOnline || now - lastManualSyncRef.current < 30_000) return
+    lastManualSyncRef.current = now
     setSyncing(true)
 
     try {
       cacheDel('dashboard_nodes')
       cacheDel('dashboard_tdlogs')
+      cacheDel('dashboard_pole_reports')
       cacheDel('dashboard_nap_surveys')
       cacheDel('dashboard_map_pins')
       setSyncTrigger(prev => prev + 1)
@@ -543,6 +574,13 @@ export default function Dashboard() {
             setTeardowns(list)
             cacheSet('dashboard_tdlogs', list)
           }),
+        fetch(`${SKYCABLE_API}/pole-reports?per_page=15`, { headers: h() })
+          .then(r => r.json())
+          .then(d => {
+            const list: PoleReportLog[] = Array.isArray(d) ? d : d?.data ?? []
+            setPoleReports(list)
+            cacheSet('dashboard_pole_reports', list)
+          }).catch(() => {}),
         fetchNapSurveysForce(true)
       ])
 
@@ -592,7 +630,15 @@ export default function Dashboard() {
     return { total, completed, inProgress, pct, pendingTd }
   }, [nodes, teardowns])
 
-  const recentTeardowns = teardowns
+  const recentTeardowns = useMemo<FeedRow[]>(() => {
+    const rows: FeedRow[] = [
+      ...teardowns.map(d => ({ kind: 'span' as const, data: d })),
+      ...poleReports.map(d => ({ kind: 'pole' as const, data: d })),
+    ]
+    return rows.sort((a, b) =>
+      new Date(b.data.created_at).getTime() - new Date(a.data.created_at).getTime()
+    ).slice(0, 15)
+  }, [teardowns, poleReports])
 
   const filteredSurveys = useMemo(
     () => (surveyTab === 'all' ? napSurveys : napSurveys.filter(s => s.boxStatus === surveyTab)),
@@ -923,7 +969,61 @@ export default function Dashboard() {
                       </thead>
 
                       <tbody>
-                        {recentTeardowns.map(log => {
+                        {recentTeardowns.map((row, idx) => {
+                          if (row.kind === 'pole') {
+                            const r = row.data
+                            const lineman = r.submitter
+                              ? `${r.submitter.first_name} ${r.submitter.last_name}`
+                              : '—'
+                            const teamName = r.submitter?.team?.name ?? '—'
+                            return (
+                              <tr
+                                key={`pole-${r.id}`}
+                                onClick={() => navigate(`/reports/teardown-logs/${r.id}?type=pole`)}
+                                className="border-b border-slate-100 dark:border-zinc-700/60 last:border-0 bg-emerald-50/30 dark:bg-emerald-900/5 cursor-pointer hover:bg-emerald-50/60 dark:hover:bg-emerald-900/10 transition-colors"
+                              >
+                                <td className="p-3 font-mono text-xs font-semibold text-emerald-600 whitespace-nowrap">
+                                  #{r.id}
+                                </td>
+                                <td className="p-3 text-sm font-medium text-gray-700 dark:text-gray-100 font-mono">
+                                  <div className="flex items-center gap-1.5">
+                                    <span className="text-[9px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400 shrink-0">
+                                      Pole
+                                    </span>
+                                    <SafeCell className="max-w-[100px]" title={r.pole?.pole_code ?? ''}>
+                                      {r.pole?.pole_code ?? '—'}
+                                    </SafeCell>
+                                  </div>
+                                </td>
+                                <td className="p-3 text-xs text-gray-600 dark:text-zinc-300">
+                                  <SafeCell className="max-w-[190px]" title={r.node?.name ?? ''}>
+                                    {r.node?.name ?? '—'}
+                                  </SafeCell>
+                                </td>
+                                <td className="p-3 text-xs text-gray-600 dark:text-zinc-300">
+                                  <SafeCell className="max-w-[150px]" title={lineman}>
+                                    {lineman}
+                                  </SafeCell>
+                                </td>
+                                <td className="p-3 text-xs text-gray-600 dark:text-zinc-300">
+                                  <SafeCell className="max-w-[150px]" title={teamName}>
+                                    {teamName}
+                                  </SafeCell>
+                                </td>
+                                <td className="p-3 text-xs text-gray-400 dark:text-zinc-500">—</td>
+                                <td className="p-3 whitespace-nowrap">
+                                  <span className="inline-flex text-[10px] font-semibold px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-700 dark:text-emerald-400">
+                                    cleared
+                                  </span>
+                                </td>
+                                <td className="p-3 text-[11px] text-gray-400 dark:text-zinc-500 whitespace-nowrap">
+                                  {timeAgo(r.created_at)}
+                                </td>
+                              </tr>
+                            )
+                          }
+
+                          const log = row.data
                           const lineman = log.lineman
                             ? `${log.lineman.first_name} ${log.lineman.last_name}`
                             : '—'
@@ -932,52 +1032,41 @@ export default function Dashboard() {
 
                           return (
                             <tr
-                              key={log.id}
+                              key={`span-${log.id}`}
                               onClick={() => navigate(`/reports/teardown-logs/${log.id}`)}
                               className="border-b border-slate-100 dark:border-zinc-700/60 last:border-0 cursor-pointer hover:bg-violet-50/40 dark:hover:bg-violet-900/10 transition-colors"
                             >
                               <td className="p-3 font-mono text-xs font-semibold text-violet-500 whitespace-nowrap">
                                 #{log.id}
                               </td>
-
                               <td className="p-3 text-sm font-medium text-gray-700 dark:text-gray-100 font-mono">
                                 <SafeCell className="max-w-[130px]" title={log.span?.span_code ?? ''}>
                                   {log.span?.span_code ?? '—'}
                                 </SafeCell>
                               </td>
-
                               <td className="p-3 text-xs text-gray-600 dark:text-zinc-300">
                                 <SafeCell className="max-w-[190px]" title={nodeName}>
                                   {nodeName}
                                 </SafeCell>
                               </td>
-
                               <td className="p-3 text-xs text-gray-600 dark:text-zinc-300">
                                 <SafeCell className="max-w-[150px]" title={lineman}>
                                   {lineman}
                                 </SafeCell>
                               </td>
-
                               <td className="p-3 text-xs text-gray-600 dark:text-zinc-300">
                                 <SafeCell className="max-w-[150px]" title={teamName}>
                                   {teamName}
                                 </SafeCell>
                               </td>
-
                               <td className="p-3 text-xs font-medium text-gray-700 dark:text-zinc-100 whitespace-nowrap">
                                 {log.actual_cable}m
                               </td>
-
                               <td className="p-3 whitespace-nowrap">
-                                <span
-                                  className={`inline-flex text-[10px] font-semibold px-2 py-0.5 rounded-full ${statusColor(
-                                    log.status
-                                  )}`}
-                                >
+                                <span className={`inline-flex text-[10px] font-semibold px-2 py-0.5 rounded-full ${statusColor(log.status)}`}>
                                   {statusLabel(log.status)}
                                 </span>
                               </td>
-
                               <td className="p-3 text-[11px] text-gray-400 dark:text-zinc-500 whitespace-nowrap">
                                 {timeAgo(log.created_at)}
                               </td>
@@ -1023,7 +1112,7 @@ export default function Dashboard() {
               </div>
             </div>
 
-            <div className="flex-1 overflow-hidden rounded-b-2xl min-h-[380px]">
+            <div className="overflow-hidden rounded-b-2xl" style={{ height: 420 }}>
               <FieldCoverageMap mapView={mapView} onMapViewChange={setMapView} syncTrigger={syncTrigger} />
             </div>
           </div>

@@ -545,7 +545,7 @@ function BottomSheet({
 ═══════════════════════════════════════════════════════════════════ */
 
 /* ── Span Detail Modal ──────────────────────────────────────────── */
-function SpanDetailModal({ span, onClose }: { span: Span; onClose: () => void }) {
+function SpanDetailModal({ span, onClose, onEdit }: { span: Span; onClose: () => void; onEdit: () => void }) {
   const sc = statusCfg[span.status] ?? statusCfg.pending;
   const expectedCable = span.summary?.expected_cable ?? span.actual_cable;
 
@@ -582,6 +582,12 @@ function SpanDetailModal({ span, onClose }: { span: Span; onClose: () => void })
                 <span className={`h-1.5 w-1.5 rounded-full ${sc.dot}`} />
                 {sc.label}
               </span>
+              <button
+                onClick={onEdit}
+                className="flex h-8 items-center gap-1.5 rounded-xl bg-emerald-500/20 px-3 text-xs font-bold text-white hover:bg-emerald-500/35 transition"
+              >
+                <i className="bx bx-edit text-sm" /> Edit
+              </button>
               <button onClick={onClose} className="flex h-8 w-8 items-center justify-center rounded-xl bg-white/15 text-white hover:bg-white/25">
                 <i className="bx bx-x text-lg" />
               </button>
@@ -1365,7 +1371,15 @@ export default function NodeSpans() {
         method: "DELETE",
         headers: authHeaders(),
       });
-      if (!res.ok) throw new Error("Failed to delete");
+      if (!res.ok) {
+        // Try to get the backend error message
+        let msg = "Failed to delete";
+        try {
+          const body = await res.json();
+          msg = body.message ?? body.error ?? msg;
+        } catch {}
+        throw new Error(msg);
+      }
       setIsDelOpen(false);
       setSelected(null);
       setSpans((prev) => prev.filter((s) => s.id !== selected.id));
@@ -2077,7 +2091,35 @@ export default function NodeSpans() {
       </div>
 
       {/* Span Detail Modal */}
-      {detailSpan && <SpanDetailModal span={detailSpan} onClose={() => setDetailSpan(null)} />}
+      {detailSpan && (
+        <SpanDetailModal
+          span={detailSpan}
+          onClose={() => setDetailSpan(null)}
+          onEdit={() => {
+            const s = detailSpan;
+            const gc = (type: string) => {
+              const v = getComp(s, type);
+              return v != null ? String(v) : "";
+            };
+            setSelected(s);
+            setEditForm({
+              from_pole_id: s.from_pole?.id ?? "",
+              to_pole_id: s.to_pole?.id ?? "",
+              strand_length: s.strand_length != null ? String(s.strand_length) : "",
+              number_of_runs: s.number_of_runs != null ? String(s.number_of_runs) : "",
+              nodes_count: gc("node"),
+              amplifier: gc("amplifier"),
+              extender: gc("extender"),
+              tsc: gc("tsc"),
+              power_supply: gc("powersupply"),
+              power_supply_case: gc("powersupply_case"),
+              status: s.status,
+            });
+            setDetailSpan(null);
+            setIsEditOpen(true);
+          }}
+        />
+      )}
 
       {/* ── Pole Connections Panel ── */}
       {poleConnPanel && !isSheetOpen && (
@@ -2492,8 +2534,13 @@ export default function NodeSpans() {
             </dl>
           </div>
           {delError && (
-            <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-600">
-              {delError}
+            <div className="space-y-1.5">
+              <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-2.5 text-sm font-medium text-red-600 dark:border-red-800/40 dark:bg-red-900/20 dark:text-red-400">
+                {delError}
+              </div>
+              <p className="px-1 text-[11px] text-slate-400 dark:text-zinc-500">
+                This span may have teardown logs attached. Delete those first before removing the span.
+              </p>
             </div>
           )}
           <div className="flex gap-3">

@@ -167,7 +167,7 @@ function PoleDetailPage() {
 
 
 function SiteNodesPage() {
-  return <Layout><SiteNodes /></Layout>
+  return <Layout fullWidth><SiteNodes /></Layout>
 }
 
 function NodePolesSpansPage() {

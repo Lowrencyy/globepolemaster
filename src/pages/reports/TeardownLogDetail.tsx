@@ -1,22 +1,12 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import { useEffect, useRef, useState, type CSSProperties, type MouseEvent } from 'react'
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom'
 import { getToken, SKYCABLE_API, API_BASE } from '../../lib/auth'
-import { cacheGet, cacheSet } from '../../lib/cache'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 
-// ── Types ─────────────────────────────────────────────────────────────────────
+// ── Shared types ──────────────────────────────────────────────────────────────
 
-interface SpanComponent {
-  id: number
-  span_id: number
-  component_type: 'node' | 'amplifier' | 'extender' | 'tsc' | 'cable' | 'powersupply' | 'powersupply_case'
-  expected_count: number | string
-  actual_count: number | string
-  unit: string
-}
-
-interface TeardownDetail {
+interface TeardownLog {
   id: number
   span_id: number
   team_id: number | null
@@ -24,97 +14,62 @@ interface TeardownDetail {
   start_time: string | null
   end_time: string | null
   duration_minutes: number | null
-  expected_cable: number | string
-  actual_cable: number | string
-  nodes_collected: number | string
-  amplifiers_collected: number | string
-  extenders_collected: number | string
-  tsc_collected: number | string
-  powersupply_collected: number | string
-  ps_housing_collected: number | string
+  expected_cable: number
+  actual_cable: number
   status: string
   offline_mode: boolean
   notes: string | null
-  before_photo: string | null
-  after_photo: string | null
-  pole_tag_photo: string | null
-  bunching_photo: string | null
-  captured_lat: number | string | null
-  captured_lng: number | string | null
-  received_at_server: string | null
-  rejection_reason: string | null
   created_at: string
   span: {
     id: number
     span_code: string | null
-    length_meters: number | string | null
-    strand_length: number | string | null
-    number_of_runs: number | string | null
-    actual_cable: number | string | null
+    length_meters: number | string
     status: string
-    node_id: number
-    fromPole: {
-      id: number
-      pole: { id: number; pole_code: string; lat: number | string | null; lng: number | string | null } | null
-    } | null
-    toPole: {
-      id: number
-      pole: { id: number; pole_code: string; lat: number | string | null; lng: number | string | null } | null
-    } | null
-    components: SpanComponent[]
+    node: { id: number; name: string } | null
+    fromPole: { id: number; pole: { id: number; pole_code: string; lat?: number | null; lng?: number | null } | null } | null
+    toPole:   { id: number; pole: { id: number; pole_code: string; lat?: number | null; lng?: number | null } | null } | null
   } | null
   team: { id: number; name: string } | null
   lineman: { id: number; first_name: string; last_name: string } | null
   photos: Array<{ id: number; photo_type: string; image_path: string }>
-  slots: Array<{ id: number; pole_id: number; slot_label: string }>
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-function spanLengthM(span: TeardownDetail['span']): number | null {
-  if (!span) return null
-  const ac = Number(span.actual_cable ?? 0)
-  if (ac > 0) return ac
-  const sl = Number(span.strand_length ?? 0)
-  const runs = Number(span.number_of_runs ?? 1)
-  if (sl > 0) return sl * runs
-  const lm = Number(span.length_meters ?? 0)
-  return lm > 0 ? lm : null
+interface PoleReportDetail {
+  id: number
+  pole_id: number
+  node_id: number | null
+  submitted_by: number
+  condition: string | null
+  material: string | null
+  height_ft: string | null
+  landmark: string | null
+  notes: string | null
+  latitude: number | null
+  longitude: number | null
+  gps_captured_at: string | null
+  slots: unknown[] | null
+  created_at: string
+  pole: { id: number; pole_code: string; lat?: number | null; lng?: number | null } | null
+  node: { id: number; name: string } | null
+  submitter: {
+    id: number
+    first_name: string
+    last_name: string
+    team?: { id: number; name: string } | null
+  } | null
+  photos: Array<{ id: number; image_type: string; file_path: string }> | null
 }
 
-function fmt(n: string | number | null | undefined, dec = 2) {
-  return Number(n ?? 0)
-    .toFixed(dec)
-    .replace(/\B(?=(\d{3})+(?!\d))/g, ',')
-}
+// ── Shared helpers ────────────────────────────────────────────────────────────
 
-function computeDuration(start: string | null, end: string | null, fallbackMins: number | null): string {
-  if (start && end) {
-    const mins = Math.max(0, Math.floor((new Date(end).getTime() - new Date(start).getTime()) / 60000))
-    const h = Math.floor(mins / 60)
-    const m = mins % 60
-    const parts = []
-    if (h > 0) parts.push(`${h} hr${h !== 1 ? 's' : ''}`)
-    parts.push(`${m} min${m !== 1 ? 's' : ''}`)
-    return parts.join(' ')
-  }
-  if (fallbackMins != null) {
-    const h = Math.floor(fallbackMins / 60)
-    const m = fallbackMins % 60
-    const parts = []
-    if (h > 0) parts.push(`${h} hr${h !== 1 ? 's' : ''}`)
-    parts.push(`${m} min${m !== 1 ? 's' : ''}`)
-    return parts.join(' ')
-  }
-  return '—'
-}
+const authH = () => ({
+  Authorization: `Bearer ${getToken()}`,
+  Accept: 'application/json',
+  'ngrok-skip-browser-warning': '1',
+})
 
-function fmtDateTime(s: string | null) {
-  if (!s) return '—'
-  return new Date(s).toLocaleString('en-PH', {
-    weekday: 'short', month: 'short', day: 'numeric', year: 'numeric',
-    hour: '2-digit', minute: '2-digit', hour12: true,
-  })
+function imgUrl(path: string) {
+  return path.startsWith('http') ? path : `${API_BASE}/api/v1/files/${path}`
 }
 
 function fmtDate(s: string | null) {
@@ -125,847 +80,655 @@ function fmtDate(s: string | null) {
   })
 }
 
-function workSpan(start: string | null, end: string | null) {
-  return computeDuration(start, end, null)
+function fmtDateTime(s: string | null) {
+  if (!s) return '—'
+  return new Date(s).toLocaleString('en-PH', {
+    weekday: 'short', month: 'short', day: 'numeric', year: 'numeric',
+    hour: '2-digit', minute: '2-digit', hour12: true,
+  })
 }
 
-function statusTone(ok: boolean) {
-  return ok
-    ? 'bg-emerald-100 text-emerald-800 border border-emerald-200 dark:bg-emerald-900/25 dark:text-emerald-300 dark:border-emerald-800/60'
-    : 'bg-orange-100 text-orange-800 border border-orange-200 dark:bg-orange-900/25 dark:text-orange-300 dark:border-orange-800/60'
+// Module-level image blob cache — survives SPA nav, no re-download on revisit
+const _imgCache = new Map<string, string>()
+const _imgFlight = new Map<string, Promise<string | null>>()
+
+function fetchCachedBlob(src: string): Promise<string | null> {
+  const hit = _imgCache.get(src)
+  if (hit) return Promise.resolve(hit)
+  const inflight = _imgFlight.get(src)
+  if (inflight) return inflight
+  const p = fetch(src, { headers: { 'ngrok-skip-browser-warning': '1', Authorization: `Bearer ${getToken()}` } })
+    .then(r => r.blob())
+    .then(blob => { const u = URL.createObjectURL(blob); _imgCache.set(src, u); return u })
+    .catch(() => null)
+    .finally(() => _imgFlight.delete(src))
+  _imgFlight.set(src, p)
+  return p
 }
 
-
-function SafeImage({ src, alt, className, style, onClick }: {
-  src: string
-  alt?: string
-  className?: string
-  style?: React.CSSProperties
-  onClick?: (e: React.MouseEvent) => void
+function SafeImage({
+  src, alt, className, style, onClick,
+}: {
+  src: string; alt?: string; className?: string; style?: CSSProperties; onClick?: (e: MouseEvent) => void
 }) {
-  const [blobUrl, setBlobUrl] = useState<string | null>(null)
-  const [loading, setLoading] = useState(true)
+  const [blobUrl, setBlobUrl] = useState<string | null>(() => _imgCache.get(src) ?? null)
+  const [loading, setLoading] = useState(!_imgCache.has(src))
 
   useEffect(() => {
     let alive = true
+    if (_imgCache.has(src)) { setBlobUrl(_imgCache.get(src)!); setLoading(false); return }
     setLoading(true)
-
-    fetch(src, {
-      headers: {
-        'ngrok-skip-browser-warning': '1',
-        Authorization: `Bearer ${getToken()}`,
-      }
-    })
-      .then(r => r.blob())
-      .then(blob => {
-        if (!alive) return
-        const url = URL.createObjectURL(blob)
-        setBlobUrl(url)
-      })
-      .catch(() => {})
-      .finally(() => {
-        if (alive) setLoading(false)
-      })
-
-    return () => {
-      alive = false
-      if (blobUrl) URL.revokeObjectURL(blobUrl)
-    }
+    fetchCachedBlob(src).then(u => { if (!alive) return; setBlobUrl(u); setLoading(false) })
+    return () => { alive = false }
   }, [src])
 
   if (loading) {
     return (
       <div className={`${className} flex items-center justify-center bg-zinc-100 dark:bg-zinc-800 animate-pulse`}>
-        <div className="w-5 h-5 border-2 border-zinc-300 border-t-zinc-500 rounded-full animate-spin" />
+        <div className="h-5 w-5 animate-spin rounded-full border-2 border-zinc-300 border-t-zinc-500" />
       </div>
     )
   }
+  return <img src={blobUrl || ''} alt={alt} className={className} style={style} onClick={onClick} />
+}
 
+// ── Leaflet map styles ────────────────────────────────────────────────────────
+
+const MAP_STYLES = `
+  .leaflet-container { width:100%;height:100%;font-family:inherit;background:#0f172a }
+  .leaflet-control-zoom { border:0!important;box-shadow:0 14px 30px rgba(15,23,42,.18)!important }
+  .leaflet-control-zoom a { width:34px!important;height:34px!important;line-height:34px!important;border:0!important;color:#0f172a!important;font-weight:900!important }
+  .leaflet-control-attribution { border-radius:12px 0 0 0;background:rgba(255,255,255,.84)!important;backdrop-filter:blur(10px);font-size:10px }
+`
+
+// ── Photo grid slot ───────────────────────────────────────────────────────────
+
+function PhotoSlot({
+  label, src, onZoom,
+}: { label: string; src: string | null; onZoom: (src: string) => void }) {
   return (
-    <img
-      src={blobUrl || ''}
-      alt={alt}
-      className={className}
-      style={style}
-      onClick={onClick}
-    />
+    <div
+      className={`group relative flex flex-col overflow-hidden rounded-2xl border bg-zinc-950 shadow-sm transition-all duration-200 ${
+        src
+          ? 'cursor-zoom-in border-zinc-200 hover:-translate-y-0.5 hover:shadow-xl hover:ring-2 hover:ring-blue-400/30 dark:border-zinc-700'
+          : 'border-zinc-100 dark:border-zinc-800'
+      }`}
+      onClick={() => src && onZoom(src)}
+    >
+      {/* colour accent bar */}
+      <div className={`h-0.5 w-full shrink-0 ${src ? 'bg-gradient-to-r from-blue-500 via-violet-500 to-indigo-500' : 'bg-zinc-100 dark:bg-zinc-800'}`} />
+
+      <div className="relative flex-1" style={{ height: 180 }}>
+        {src ? (
+          <>
+            <SafeImage src={src} alt={label} className="h-full w-full object-cover transition duration-300 group-hover:scale-[1.02] group-hover:brightness-90" />
+            <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/10 to-transparent" />
+            <span className="absolute bottom-2.5 left-3 text-[9px] font-black uppercase tracking-[0.2em] text-white drop-shadow">{label}</span>
+            {/* zoom hint */}
+            <div className="absolute right-2 top-2 flex h-6 w-6 items-center justify-center rounded-full bg-black/40 opacity-0 backdrop-blur-sm transition group-hover:opacity-100">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg>
+            </div>
+          </>
+        ) : (
+          <div className="flex h-full flex-col items-center justify-center gap-2 bg-zinc-50 dark:bg-zinc-900/60">
+            <svg className="h-6 w-6 text-zinc-300 dark:text-zinc-700" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 15.75l5.159-5.159a2.25 2.25 0 013.182 0l5.159 5.159m-1.5-1.5l1.409-1.409a2.25 2.25 0 013.182 0l2.909 2.909M3 20.25h18M9.75 9.75a2.25 2.25 0 100-4.5 2.25 2.25 0 000 4.5z" />
+            </svg>
+            <span className="text-[9px] font-bold uppercase tracking-widest text-zinc-300 dark:text-zinc-600">{label}</span>
+          </div>
+        )}
+      </div>
+    </div>
   )
 }
 
-// ── Component ─────────────────────────────────────────────────────────────────
+// ── Back button ───────────────────────────────────────────────────────────────
+
+function BackBtn({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className="inline-flex items-center gap-2 rounded-2xl border border-zinc-200 bg-white px-4 py-2.5 text-sm font-bold text-zinc-700 shadow-sm transition hover:-translate-y-px hover:shadow-md dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200"
+    >
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M19 12H5M12 5l-7 7 7 7" />
+      </svg>
+      Back to Teardown Logs
+    </button>
+  )
+}
+
+// ── Lightbox ──────────────────────────────────────────────────────────────────
+
+function Lightbox({ src, onClose }: { src: string; onClose: () => void }) {
+  return (
+    <div className="fixed inset-0 z-[2000] flex items-center justify-center bg-black/90 p-4" onClick={onClose}>
+      <button
+        className="absolute right-5 top-5 flex h-11 w-11 items-center justify-center rounded-2xl bg-white/10 text-xl text-white transition hover:bg-white/20"
+        onClick={onClose}
+      >×</button>
+      <SafeImage
+        src={src} alt="Preview"
+        className="max-h-[92vh] max-w-[94vw] rounded-3xl shadow-2xl"
+        onClick={e => e.stopPropagation()}
+      />
+    </div>
+  )
+}
+
+// ── Main component ────────────────────────────────────────────────────────────
 
 export default function TeardownLogDetail() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+  const isPole = searchParams.get('type')?.toLowerCase() === 'pole'
 
-  const cacheKey = `tdlog_${id}`
+  // ── Full teardown log state ──
+  const [log, setLog]         = useState<TeardownLog | null>(null)
+  const [logLoading, setLogLoading] = useState(!isPole)
+  const [logError, setLogError]     = useState<string | null>(null)
 
-  const [log, setLog]       = useState<TeardownDetail | null>(() => cacheGet<TeardownDetail>(cacheKey))
-  const [loading, setLoading] = useState(true)
-  const [error, setError]   = useState<string | null>(null)
-  const [lightbox, setLightbox] = useState<string | null>(null)
-  const [lastFetch, setLastFetch] = useState<number | null>(null)
-  const [justUpdated, setJustUpdated] = useState(false)
-  const prevLogRef = useRef<TeardownDetail | null>(null)
-  const [capturedAddress, setCapturedAddress] = useState<string | null>(null)
+  // ── Pole report state ──
+  const [poleReport, setPoleReport]   = useState<PoleReportDetail | null>(null)
+  const [poleLoading, setPoleLoading] = useState(isPole)
+  const [poleError, setPoleError]     = useState<string | null>(null)
 
-  const mapRef      = useRef<HTMLDivElement>(null)
-  const mapInstance = useRef<any>(null)
-  const lineRef     = useRef<any>(null)
-  const [lineOn, setLineOn] = useState(true)
-
-  function fetchLog(isFirst = false) {
+  useEffect(() => {
     if (!id) return
-    fetch(`${SKYCABLE_API}/teardowns/${id}`, {
-      headers: {
-        Authorization: `Bearer ${getToken()}`,
-        Accept: 'application/json',
-        'ngrok-skip-browser-warning': '1',
-      },
-    })
-      .then(r => r.json())
-      .then(data => {
-        if (data?.id) {
-          // Detect meaningful changes after an offline sync
-          const prev = prevLogRef.current
-          if (prev) {
-            const changed =
-              prev.status !== data.status ||
-              prev.offline_mode !== data.offline_mode ||
-              prev.received_at_server !== data.received_at_server ||
-              prev.span?.fromPole?.pole?.pole_code !== data.span?.fromPole?.pole?.pole_code ||
-              prev.span?.toPole?.pole?.pole_code !== data.span?.toPole?.pole?.pole_code
-            if (changed) {
-              setJustUpdated(true)
-              setTimeout(() => setJustUpdated(false), 4000)
-            }
-          }
-          prevLogRef.current = data
-          cacheSet(cacheKey, data)
-          setLog(data)
-          setLastFetch(Date.now())
-        } else if (isFirst && !log) {
-          setError('Log not found')
-        }
-      })
-      .catch(() => { if (isFirst && !log) setError('Failed to load teardown log') })
-      .finally(() => { if (isFirst) setLoading(false) })
+    if (isPole) {
+      fetch(`${SKYCABLE_API}/pole-reports/${id}`, { headers: authH() })
+        .then(r => r.json())
+        .then(data => { if (data?.id) setPoleReport(data); else setPoleError('Pole report not found') })
+        .catch(() => setPoleError('Failed to load pole report'))
+        .finally(() => setPoleLoading(false))
+    } else {
+      fetch(`${SKYCABLE_API}/teardowns/${id}`, { headers: authH() })
+        .then(r => r.json())
+        .then(data => {
+          const item = data?.data ?? data
+          if (item?.id) setLog(item); else setLogError('Teardown log not found')
+        })
+        .catch(() => setLogError('Failed to load teardown log'))
+        .finally(() => setLogLoading(false))
+    }
+  }, [id, isPole])
+
+  const back = () => navigate('/reports/teardown-logs')
+
+  if (logLoading || poleLoading) {
+    return (
+      <div className="flex items-center justify-center py-28">
+        <div className="h-10 w-10 animate-spin rounded-full border-2 border-violet-500 border-t-transparent" />
+      </div>
+    )
   }
 
+  if (!isPole && (logError || !log)) {
+    return (
+      <div className="flex items-center justify-center py-28">
+        <p className="text-sm font-medium text-red-500">{logError ?? 'Teardown log not found'}</p>
+      </div>
+    )
+  }
+
+  if (isPole && (poleError || !poleReport)) {
+    return (
+      <div className="flex items-center justify-center py-28">
+        <p className="text-sm font-medium text-red-500">{poleError ?? 'Pole report not found'}</p>
+      </div>
+    )
+  }
+
+  if (isPole && poleReport) {
+    return <PoleReportView report={poleReport} onBack={back} />
+  }
+
+  return <TeardownView log={log!} onBack={back} />
+}
+
+// ── Full teardown (span) detail ───────────────────────────────────────────────
+
+function TeardownView({ log, onBack }: { log: TeardownLog; onBack: () => void }) {
+  const [lightbox, setLightbox] = useState<string | null>(null)
+  const mapRef  = useRef<HTMLDivElement>(null)
+  const mapInst = useRef<L.Map | null>(null)
+
+  const span      = log.span
+  const spanCode  = span?.span_code ?? `Log #${log.id}`
+  const nodeName  = span?.node?.name ?? '—'
+  const lineman   = log.lineman ? `${log.lineman.first_name} ${log.lineman.last_name}` : '—'
+  const teamName  = log.team?.name ?? '—'
+
+  const fromPole = span?.fromPole || (span as any)?.from_pole
+  const toPole   = span?.toPole   || (span as any)?.to_pole
+  const fromCode = fromPole?.pole?.pole_code ?? '—'
+  const toCode   = toPole?.pole?.pole_code   ?? '—'
+
+  const fromLat = Number(fromPole?.pole?.lat ?? 0)
+  const fromLng = Number(fromPole?.pole?.lng ?? 0)
+  const toLat   = Number(toPole?.pole?.lat   ?? 0)
+  const toLng   = Number(toPole?.pole?.lng   ?? 0)
+  const hasFromGps = fromLat !== 0 && fromLng !== 0
+  const hasToGps   = toLat   !== 0 && toLng   !== 0
+  const hasAnyGps  = hasFromGps || hasToGps
+
   useEffect(() => {
-    if (log) {
-      setLoading(false)
-      prevLogRef.current = log
-    }
-    fetchLog(true)
+    if (!hasAnyGps || !mapRef.current || mapInst.current) return
 
-    // Poll every 8s — picks up changes as soon as mobile syncs to backend
-    const timer = setInterval(() => fetchLog(false), 8_000)
-    return () => clearInterval(timer)
-  }, [id])
+    const pins: [number, number][] = [
+      ...(hasFromGps ? [[fromLat, fromLng]] as [number, number][] : []),
+      ...(hasToGps   ? [[toLat,   toLng  ]] as [number, number][] : []),
+    ]
 
-  // Reverse geocode captured GPS → human-readable address
-  useEffect(() => {
-    const lat = Number(log?.captured_lat ?? 0)
-    const lng = Number(log?.captured_lng ?? 0)
-    if (!lat || !lng) return
-    fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=16&addressdetails=1`, {
-      headers: { 'Accept-Language': 'en' }
-    })
-      .then(r => r.json())
-      .then(d => {
-        const a = d?.address ?? {}
-        const parts = [
-          a.road ?? a.pedestrian ?? a.footway,
-          a.suburb ?? a.neighbourhood ?? a.village,
-          a.city ?? a.town ?? a.municipality,
-        ].filter(Boolean)
-        if (parts.length) setCapturedAddress(parts.join(', '))
-      })
-      .catch(() => {})
-  }, [log?.captured_lat, log?.captured_lng])
+    const center = pins.length === 1 ? pins[0] : [
+      (fromLat + toLat) / 2,
+      (fromLng + toLng) / 2,
+    ] as [number, number]
 
-  useEffect(() => {
-    if (!log || !mapRef.current || mapInstance.current) return
+    const map = L.map(mapRef.current, { zoomControl: true, attributionControl: false }).setView(center, 16)
+    mapInst.current = map
 
-    const fromPole = log.span?.fromPole || (log.span as any)?.from_pole
-    const toPole   = log.span?.toPole   || (log.span as any)?.to_pole
+    L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+      maxZoom: 22, maxNativeZoom: 18,
+    }).addTo(map)
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/light_only_labels/{z}/{x}/{y}{r}.png', {
+      maxZoom: 22, maxNativeZoom: 20, opacity: 0.85, subdomains: 'abcd',
+    }).addTo(map)
 
-    // Captured GPS (from the mobile at time of photo) is the primary location
-    const capturedLat = Number(log.captured_lat ?? 0)
-    const capturedLng = Number(log.captured_lng ?? 0)
-
-    const fromLat = Number(fromPole?.pole?.lat ?? 0) || capturedLat
-    const fromLng = Number(fromPole?.pole?.lng ?? 0) || capturedLng
-    const toLat   = Number(toPole?.pole?.lat ?? 0)
-    const toLng   = Number(toPole?.pole?.lng ?? 0)
-    const hasGps  = (capturedLat && capturedLng) || (fromLat && fromLng) || (toLat && toLng)
-    if (!hasGps) return
-
-    const centerLat = capturedLat || fromLat || toLat
-    const centerLng = capturedLng || fromLng || toLng
-
-    // Start at zoom 19 (street-level) centered on captured GPS
-    const map = L.map(mapRef.current, { zoomControl: true, maxZoom: 19 }).setView([centerLat, centerLng], 19)
-    mapInstance.current = map
-
-    // Street tiles — shows road names, buildings, street detail
-    L.tileLayer(
-      'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
-      { attribution: '© OpenStreetMap', maxZoom: 19, subdomains: 'abc' }
-    ).addTo(map)
-
-    function makeIcon(color: string) {
-      return L.divIcon({
-        className: '',
-        html: `<div style="width:34px;height:34px;border-radius:50% 50% 50% 0;background:${color};border:3px solid rgba(255,255,255,.96);box-shadow:0 8px 20px rgba(0,0,0,.28);transform:rotate(-45deg)"></div>`,
-        iconSize: [34, 34], iconAnchor: [17, 34], popupAnchor: [0, -36],
-      })
-    }
-
-    const fromCode = log.span?.fromPole?.pole?.pole_code ?? '?'
-    const toCode   = log.span?.toPole?.pole?.pole_code   ?? '?'
-    const bounds: [number, number][] = []
-
-    if (fromLat && fromLng) {
-      L.marker([fromLat, fromLng], { icon: makeIcon('#2563eb') })
-        .addTo(map)
-        .bindPopup(`<div style="padding:10px;min-width:160px"><div style="font-size:10px;color:#2563eb;font-weight:800;text-transform:uppercase;letter-spacing:.1em">From Pole</div><div style="font-size:15px;font-weight:900;color:#111">${fromCode}</div><div style="font-size:11px;color:#555;margin-top:4px">${fromLat.toFixed(6)}, ${fromLng.toFixed(6)}</div></div>`, { maxWidth: 240 })
-      bounds.push([fromLat, fromLng])
-    }
-
-    if (toLat && toLng) {
-      L.marker([toLat, toLng], { icon: makeIcon('#7c3aed') })
-        .addTo(map)
-        .bindPopup(`<div style="padding:10px;min-width:160px"><div style="font-size:10px;color:#7c3aed;font-weight:800;text-transform:uppercase;letter-spacing:.1em">To Pole</div><div style="font-size:15px;font-weight:900;color:#111">${toCode}</div><div style="font-size:11px;color:#555;margin-top:4px">${toLat.toFixed(6)}, ${toLng.toFixed(6)}</div></div>`, { maxWidth: 240 })
-      bounds.push([toLat, toLng])
-    }
-
-    // Captured GPS marker (where the lineman actually took the photo)
-    if (capturedLat && capturedLng) {
-      const captIcon = L.divIcon({
-        className: '',
-        html: `<div style="position:relative;width:22px;height:22px">
-          <div style="position:absolute;inset:0;border-radius:50%;border:2px solid #ef4444;animation:lm-ripple 2s ease-out infinite;opacity:.6"></div>
-          <div style="width:22px;height:22px;border-radius:50%;background:#ef4444;border:3px solid #fff;box-shadow:0 2px 8px rgba(239,68,68,.5);display:flex;align-items:center;justify-content:center">
-            <div style="width:6px;height:6px;border-radius:50%;background:#fff"></div>
-          </div>
+    const makeIcon = (color: string, label: string) => L.divIcon({
+      className: '',
+      html: `
+        <div style="display:flex;flex-direction:column;align-items:center;gap:4px">
+          <div style="width:28px;height:28px;border-radius:50%;background:${color};border:4px solid #fff;box-shadow:0 4px 16px ${color}bb,0 0 0 4px ${color}33"></div>
+          <div style="background:rgba(0,0,0,0.75);color:#fff;font-size:10px;font-weight:900;padding:2px 7px;border-radius:6px;white-space:nowrap;backdrop-filter:blur(4px);letter-spacing:0.04em">${label}</div>
         </div>`,
-        iconSize: [22, 22], iconAnchor: [11, 11],
-      })
-      L.marker([capturedLat, capturedLng], { icon: captIcon })
+      iconSize: [80, 52], iconAnchor: [40, 28],
+    })
+
+    if (hasFromGps) {
+      L.marker([fromLat, fromLng], { icon: makeIcon('#3b82f6', fromCode) })
         .addTo(map)
-        .bindPopup(`<div style="padding:8px;min-width:160px">
-          <div style="font-size:10px;color:#ef4444;font-weight:800;text-transform:uppercase;letter-spacing:.1em">📍 Capture Location</div>
-          <div style="font-size:11px;color:#555;margin-top:4px">${capturedLat.toFixed(6)}, ${capturedLng.toFixed(6)}</div>
-        </div>`, { maxWidth: 220 })
+        .bindPopup(`<b>From: ${fromCode}</b><br><span style="font-size:11px;color:#6b7280">${fromLat.toFixed(6)}, ${fromLng.toFixed(6)}</span>`)
+    }
+    if (hasToGps) {
+      L.marker([toLat, toLng], { icon: makeIcon('#8b5cf6', toCode) })
+        .addTo(map)
+        .bindPopup(`<b>To: ${toCode}</b><br><span style="font-size:11px;color:#6b7280">${toLat.toFixed(6)}, ${toLng.toFixed(6)}</span>`)
     }
 
-    if (fromLat && fromLng && toLat && toLng) {
-      const spanLenVal = spanLengthM(log.span)
-      const line = L.polyline([[fromLat, fromLng], [toLat, toLng]], {
-        color: '#2563eb', weight: 5, opacity: 0.88, dashArray: '10 8',
+    if (hasFromGps && hasToGps) {
+      L.polyline([[fromLat, fromLng], [toLat, toLng]], {
+        color: '#6366f1', weight: 4, dashArray: '8 5', opacity: 0.9,
       }).addTo(map)
-
-      if (spanLenVal !== null) {
-        line.bindTooltip(
-          `<div style="background:#1e3a5f;color:#93c5fd;font-weight:800;font-size:12px;padding:5px 10px;border-radius:8px;border:1px solid #2563eb40">
-            ${spanLenVal.toLocaleString()} m
-          </div>`,
-          { permanent: true, direction: 'center', className: 'span-length-tooltip', offset: [0, 0] }
-        )
-      }
-
-      lineRef.current = line
+      map.fitBounds([[fromLat, fromLng], [toLat, toLng]], { padding: [60, 60], maxZoom: 18 })
     }
 
-    setTimeout(() => {
-      map.invalidateSize()
-      if (capturedLat && capturedLng) {
-        // Always stay at street level on the exact capture location
-        map.setView([capturedLat, capturedLng], 19)
-      } else if (bounds.length > 1) {
-        map.fitBounds(bounds, { padding: [40, 40], maxZoom: 18 })
-      } else if (bounds.length === 1) {
-        map.setView(bounds[0], 19)
-      }
-    }, 120)
+    setTimeout(() => map.invalidateSize(), 120)
+    return () => { map.remove(); mapInst.current = null }
+  }, [hasAnyGps, fromLat, fromLng, toLat, toLng, fromCode, toCode])
 
-    return () => { map.remove(); mapInstance.current = null }
-  }, [log])
-
-  function toggleLine() {
-    const map  = mapInstance.current
-    const line = lineRef.current
-    if (!map || !line) return
-    if (map.hasLayer(line)) { map.removeLayer(line); setLineOn(false) }
-    else { line.addTo(map); setLineOn(true) }
+  // 6 photo slots
+  const photo = (type: string) => {
+    const p = log.photos?.find(ph => ph.photo_type === type)
+    return p ? imgUrl(p.image_path) : null
   }
 
-  if (loading && !log) {
-    return (
-      <div className="flex items-center justify-center py-28">
-        <div className="h-10 w-10 animate-spin rounded-full border-2 border-emerald-500 border-t-transparent" />
-      </div>
-    )
+  const statusColor: Record<string, string> = {
+    backend_approved: 'bg-green-500/15 text-green-600 dark:text-green-300',
+    subcon_approved:  'bg-blue-500/15 text-blue-600 dark:text-blue-300',
+    submitted:        'bg-violet-500/15 text-violet-600 dark:text-violet-300',
+    rejected:         'bg-red-500/15 text-red-600 dark:text-red-300',
   }
 
-  if (error || !log) {
-    return (
-      <div className="flex items-center justify-center py-28">
-        <p className="text-sm font-medium text-red-500">{error ?? 'Log not found'}</p>
-      </div>
-    )
-  }
-
-  const fromPole   = log.span?.fromPole || (log.span as any)?.from_pole
-  const toPole     = log.span?.toPole   || (log.span as any)?.to_pole
-  const fromCode   = fromPole?.pole?.pole_code ?? (fromPole as any)?.pole?.pole_code ?? '?'
-  const toCode     = toPole?.pole?.pole_code   ?? (toPole as any)?.pole?.pole_code   ?? '?'
-  const spanCode   = log.span?.span_code ?? (log.span as any)?.span_code ?? `Log #${log.id}`
-  const cableCol   = Number(log.actual_cable ?? 0)
-  const cableExp   = Number(log.expected_cable ?? 0)
-  const cablePct   = cableExp > 0 ? Math.min(100, Math.round((cableCol / cableExp) * 100)) : cableCol > 0 ? 100 : 0
-  const allRecovered = cablePct >= 100
-
-  const linemanName = log.lineman ? `${log.lineman.first_name} ${log.lineman.last_name}` : '—'
-  const teamName    = log.team?.name ?? '—'
-  const statusUpper = (log.status ?? 'pending').replace(/_/g, ' ').toUpperCase().replace('CLEARED', 'COMPLETED')
-
-  const capturedLat = Number(log.captured_lat ?? 0)
-  const capturedLng = Number(log.captured_lng ?? 0)
-  const fromLat  = Number(fromPole?.pole?.lat ?? 0) || capturedLat
-  const fromLng  = Number(fromPole?.pole?.lng ?? 0) || capturedLng
-  const toLat    = Number(toPole?.pole?.lat ?? 0)
-  const toLng    = Number(toPole?.pole?.lng ?? 0)
-  const hasGps   = (fromLat && fromLng) || (toLat && toLng)
-  const spanLen  = spanLengthM(log.span)
-
-  const imgFor = (type: string) => log.photos?.find(p => p.photo_type === type)?.image_path ?? null
-  const imgUrl = (path: string | null | undefined) => {
-    if (!path) return ''
-    return `${API_BASE}/api/v1/files/${path}`
-  }
-
-  // Components from span (exclude cable — shown separately)
-  const spanComponents = (log.span?.components ?? []).filter(c => c.component_type !== 'cable')
+  const pct = log.expected_cable > 0
+    ? Math.round((log.actual_cable / log.expected_cable) * 100)
+    : null
 
   return (
-    <div className="flex flex-col gap-5 pb-10">
-      <style>{`.span-length-tooltip{background:transparent!important;border:none!important;box-shadow:none!important;padding:0!important}.span-length-tooltip::before{display:none!important}`}</style>
+    <div className="flex flex-col gap-6 pb-10">
+      <style>{MAP_STYLES}</style>
 
-      {/* ── Sync update flash banner ── */}
-      {justUpdated && (
-        <div className="flex items-center gap-3 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800 shadow-sm dark:border-emerald-800/40 dark:bg-emerald-900/20 dark:text-emerald-300">
-          <span className="relative flex h-2.5 w-2.5 shrink-0">
-            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
-            <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-emerald-500" />
-          </span>
-          <span>
-            <b>Synced from mobile</b> — teardown data was updated from the device sync. Page has refreshed automatically.
-          </span>
-        </div>
-      )}
-
-      {/* ── Offline-mode notice ── */}
-      {log.offline_mode && !log.received_at_server && (
-        <div className="flex items-center gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800 dark:border-amber-800/40 dark:bg-amber-900/20 dark:text-amber-300">
-          <i className="bx bx-wifi-off text-lg text-amber-500" />
-          <span>
-            <b>Offline capture</b> — this teardown was recorded offline and is <b>pending server sync</b>.
-            The page will update automatically once the mobile device uploads it.
-          </span>
-          <span className="ml-auto shrink-0 text-[10px] font-bold text-amber-500">Checking every 8s…</span>
-        </div>
-      )}
-
-      {/* Back + live poll indicator row */}
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <button
-          onClick={() => navigate('/reports/teardown-logs')}
-          className="inline-flex items-center gap-2 rounded-2xl border border-zinc-200 bg-white px-4 py-2.5 text-sm font-semibold text-zinc-700 shadow-sm transition hover:-translate-y-px hover:shadow-md dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200"
-        >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M19 12H5M12 5l-7 7 7 7" />
-          </svg>
-          Back to Live Teardown Logs
-        </button>
-
-        <div className="flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-[10px] font-bold text-emerald-700 dark:border-emerald-800/40 dark:bg-emerald-900/20 dark:text-emerald-400">
-          <span className="relative flex h-1.5 w-1.5">
-            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
-            <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-emerald-500" />
-          </span>
-          Live · {lastFetch ? new Date(lastFetch).toLocaleTimeString('en-PH', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true }) : 'Syncing…'}
-        </div>
+        <BackBtn onClick={onBack} />
       </div>
 
-      {/* ── Hero banner ────────────────────────────────────────────────── */}
-      <section className="relative overflow-hidden rounded-[28px] bg-[#0d1117] shadow-2xl border border-white/5">
-        <div className="pointer-events-none absolute -left-16 -top-16 h-64 w-64 rounded-full bg-emerald-500/20 blur-3xl" />
-        <div className="pointer-events-none absolute -right-10 top-0 h-52 w-52 rounded-full bg-blue-500/15 blur-3xl" />
-        <div className="pointer-events-none absolute bottom-0 left-1/3 h-40 w-72 rounded-full bg-violet-500/10 blur-3xl" />
-        <div className="h-[3px] w-full bg-gradient-to-r from-emerald-500 via-blue-500 to-violet-500" />
-
-        <div className="relative grid gap-0 xl:grid-cols-[1fr_auto]">
-          <div className="flex flex-col justify-between gap-6 p-6 xl:p-8">
+      {/* Hero header */}
+      <section className="relative overflow-hidden rounded-[28px] border border-white/10 bg-[#080d16] shadow-2xl">
+        <div className="h-[4px] bg-gradient-to-r from-violet-400 via-blue-500 to-indigo-500" />
+        <div className="relative grid gap-0 xl:grid-cols-[1fr_420px]">
+          <div className="flex min-h-[230px] flex-col justify-between gap-8 p-6 md:p-8">
             <div className="flex flex-wrap items-center gap-2">
-              <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/15 px-3 py-1 text-[11px] font-bold text-emerald-400 ring-1 ring-emerald-500/25">
-                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" />
-                Field recovery
+              <span className="inline-flex items-center gap-2 rounded-full bg-violet-500/15 px-3 py-1.5 text-[11px] font-black uppercase tracking-widest text-violet-300 ring-1 ring-violet-400/25">
+                <span className="h-1.5 w-1.5 rounded-full bg-violet-300 shadow-[0_0_14px_rgba(196,181,253,.9)]" />
+                Full Teardown
               </span>
-              {log.span?.node_id && (
-                <span className="rounded-full bg-blue-500/15 px-3 py-1 text-[11px] font-bold text-blue-400 ring-1 ring-blue-500/25">
-                  Node #{log.span.node_id}
-                </span>
-              )}
-              <span className="rounded-full bg-white/8 px-3 py-1 text-[11px] font-bold text-zinc-400 ring-1 ring-white/10">
-                {statusUpper}
+              <span className={`rounded-full px-3 py-1.5 text-[11px] font-black uppercase tracking-widest ring-1 ring-white/10 ${statusColor[log.status] ?? 'bg-white/8 text-zinc-300'}`}>
+                {log.status.replace(/_/g, ' ')}
               </span>
               {log.offline_mode && (
-                <span className="rounded-full bg-orange-500/15 px-3 py-1 text-[11px] font-bold text-orange-400 ring-1 ring-orange-500/25">
-                  Offline
+                <span className="rounded-full bg-amber-500/15 px-3 py-1.5 text-[11px] font-black uppercase tracking-widest text-amber-300 ring-1 ring-amber-400/25">
+                  Offline Mode
                 </span>
               )}
             </div>
 
-              <div>
-                <div className="flex items-center gap-3">
-                  <span className="text-4xl font-black tracking-tight text-white xl:text-5xl">{fromCode}</span>
-                  <span className="flex items-center justify-center rounded-2xl bg-white/8 px-3 py-1.5">
-                    <svg width="22" height="22" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5} className="text-zinc-400">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M5 12h14M13 6l6 6-6 6" />
-                    </svg>
-                  </span>
-                  <span className="text-4xl font-black tracking-tight text-white xl:text-5xl">{toCode}</span>
-                </div>
-
-                <div className="mt-3 flex flex-wrap items-center gap-2">
-                  <span className="rounded-xl bg-white/6 px-2.5 py-1 text-xs font-semibold text-zinc-400">{spanCode}</span>
-                  {spanLen !== null && (
-                    <span className="rounded-xl bg-white/6 px-2.5 py-1 text-xs font-semibold text-zinc-400">
-                      {spanLen.toLocaleString()} m cable
-                    </span>
-                  )}
-                  {log.captured_lat && log.captured_lng && (
-                    <span className="rounded-xl bg-emerald-500/20 px-2.5 py-1 text-xs font-bold text-emerald-400 ring-1 ring-emerald-500/30">
-                      <i className="bx bx-map-pin mr-1" />
-                      {Number(log.captured_lat).toFixed(6)}, {Number(log.captured_lng).toFixed(6)}
-                    </span>
-                  )}
-                </div>
-              </div>
-          </div>
-
-          <div className="grid grid-cols-2 gap-px border-t border-white/6 xl:border-l xl:border-t-0 xl:grid-cols-1 xl:w-64">
-            {[
-              { label: 'COLLECTED',    value: `${fmt(cableCol)} m`,  sub: `Expected ${fmt(cableExp)} m`,            color: 'text-emerald-400' },
-              { label: 'RECOVERY',     value: `${cablePct}%`,        sub: allRecovered ? 'Complete recovery' : 'Partial recovery', color: 'text-blue-400' },
-              { label: 'SUBMITTED BY', value: linemanName,           sub: teamName,                                 color: 'text-violet-400' },
-              { label: 'WORK SPAN',    value: workSpan(log.start_time, log.end_time), sub: log.start_time ? fmtDate(log.start_time) : 'Not recorded', color: 'text-amber-400' },
-            ].map(({ label, value, sub, color }) => (
-              <div key={label} className="flex flex-col justify-center gap-1 bg-white/[0.03] px-5 py-4 xl:border-b xl:border-white/6 last:border-0">
-                <span className={`text-[10px] font-black uppercase tracking-widest ${color}`}>{label}</span>
-                <span className="text-base font-black text-white leading-tight">{value}</span>
-                <span className="text-[11px] font-medium text-zinc-500 truncate">{sub}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      {/* ── Cable recovery + map ───────────────────────────────────────── */}
-      <section className="overflow-hidden rounded-[28px] border border-zinc-200 bg-white shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
-        <div className="border-b border-zinc-100 bg-gradient-to-r from-white to-emerald-50/40 px-5 py-4 dark:border-zinc-800 dark:from-zinc-900 dark:to-zinc-900">
-          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <div>
-              <h2 className="text-base font-black text-zinc-900 dark:text-zinc-100">Cable recovery overview</h2>
-              <p className="mt-1 text-xs font-medium text-zinc-500 dark:text-zinc-400">
-                {log.received_at_server ? `Uploaded: ${fmtDate(log.received_at_server)}` : 'Upload time unavailable'}
-              </p>
-            </div>
-            <span className={`inline-flex w-fit items-center rounded-full px-3 py-1.5 text-xs font-bold ${statusTone(allRecovered)}`}>
-              {allRecovered ? 'All cable recovered' : 'Partial recovery'}
-            </span>
-          </div>
-        </div>
-
-        <div className="p-5">
-          <div className="grid gap-4 xl:grid-cols-[0.85fr_1.4fr]">
-            <div className="flex flex-col gap-3">
-              <MetricRow label="Collected"   value={`${fmt(cableCol)} m`}        accent="emerald" />
-              <MetricRow label="Expected"    value={`${fmt(cableExp)} m`}        accent="blue" />
-              <MetricRow label="Unrecovered" value={`${fmt(cableExp - cableCol > 0 ? cableExp - cableCol : 0)} m`} accent="orange" />
-              {log.notes && <MetricRow label="Notes" value={log.notes} accent="zinc" />}
-
-              <div className="rounded-3xl border border-zinc-200 bg-zinc-50/80 p-4 dark:border-zinc-700 dark:bg-zinc-800/60">
-                <div className="mb-2 flex items-center justify-between text-xs font-semibold text-zinc-500 dark:text-zinc-400">
-                  <span>Recovery performance</span>
-                  <span>{cablePct}%</span>
-                </div>
-                <div className="h-2.5 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-700">
-                  <div
-                    className={`h-full rounded-full ${cablePct >= 100 ? 'bg-emerald-500' : cablePct >= 80 ? 'bg-blue-500' : 'bg-orange-500'}`}
-                    style={{ width: `${cablePct}%` }}
-                  />
-                </div>
+              <p className="mb-3 text-xs font-black uppercase tracking-[0.28em] text-zinc-500">Span teardown</p>
+              <h1 className="text-4xl font-black tracking-tight text-white md:text-5xl">{spanCode}</h1>
+              <div className="mt-4 flex flex-wrap items-center gap-2">
+                <span className="flex items-center gap-1.5 rounded-2xl bg-blue-500/15 px-3 py-1.5 text-xs font-black text-blue-300 ring-1 ring-blue-400/20">
+                  <span className="font-mono">{fromCode}</span>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+                  <span className="font-mono">{toCode}</span>
+                </span>
+                <span className="rounded-2xl bg-white/8 px-3 py-1.5 text-xs font-bold text-zinc-300 ring-1 ring-white/10">{nodeName}</span>
+                <span className="rounded-2xl bg-emerald-500/15 px-3 py-1.5 text-xs font-black text-emerald-300 ring-1 ring-emerald-400/20">
+                  Submitted {fmtDate(log.created_at)}
+                </span>
               </div>
             </div>
+          </div>
 
-            <div className="flex flex-col gap-3">
-              {hasGps ? (
-                <div className="overflow-hidden rounded-[24px] border border-zinc-200 bg-zinc-50 shadow-inner dark:border-zinc-700 dark:bg-zinc-800/40">
-                  <div className="flex items-center justify-between border-b border-zinc-200 px-4 py-3 dark:border-zinc-700">
-                    <div className="flex items-center gap-2">
-                      <span className="inline-flex h-2.5 w-2.5 rounded-full bg-emerald-500" />
-                      <span className="text-sm font-bold text-zinc-700 dark:text-zinc-200">Live span map</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      {spanLen !== null && (
-                        <span className="rounded-xl bg-white px-2.5 py-1 text-[11px] font-semibold text-zinc-600 shadow-sm dark:bg-zinc-900 dark:text-zinc-300">
-                          {spanLen.toLocaleString()} m cable
-                        </span>
-                      )}
-                      <button
-                        onClick={toggleLine}
-                        className={`rounded-xl px-3 py-1.5 text-[11px] font-bold transition ${lineOn ? 'bg-emerald-600 text-white' : 'bg-white text-zinc-600 shadow-sm dark:bg-zinc-900 dark:text-zinc-300'}`}
-                      >
-                        Line {lineOn ? 'ON' : 'OFF'}
-                      </button>
-                    </div>
-                  </div>
-                  {/* Location + time bar */}
-                  {(capturedAddress || log.start_time) && (
-                    <div className="flex flex-wrap items-center justify-between gap-2 border-t border-zinc-100 bg-zinc-50 px-4 py-2.5 dark:border-zinc-800 dark:bg-zinc-900/60">
-                      {capturedAddress && (
-                        <div className="flex items-center gap-2 text-xs font-semibold text-zinc-600 dark:text-zinc-300">
-                          <svg width="13" height="13" viewBox="0 0 24 24" fill="#e53e3e"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg>
-                          <span className="font-bold text-zinc-800 dark:text-zinc-100">{capturedAddress}</span>
-                          {log.captured_lat && log.captured_lng && (
-                            <span className="text-zinc-400 font-mono text-[10px]">
-                              {Number(log.captured_lat).toFixed(6)}°N, {Number(log.captured_lng).toFixed(6)}°E
-                            </span>
-                          )}
-                        </div>
-                      )}
-                      {log.start_time && (
-                        <div className="flex items-center gap-1.5 text-[11px] font-bold text-zinc-500 dark:text-zinc-400">
-                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
-                          {new Date(log.start_time).toLocaleString('en-PH', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true })}
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  <div className="relative">
-                    <div ref={mapRef} className="h-[420px] w-full xl:h-[500px]" />
-
-                    {/* Google Maps Street View button */}
-                    {(capturedLat || fromLat) ? (
-                      <a
-                        href={`https://www.google.com/maps?q=${capturedLat || fromLat},${capturedLng || fromLng}&layer=c&cbll=${capturedLat || fromLat},${capturedLng || fromLng}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="absolute bottom-4 right-4 z-[400] flex flex-col items-center justify-center gap-1.5 rounded-2xl bg-white px-5 py-4 shadow-xl transition hover:scale-105 hover:shadow-2xl active:scale-95 dark:bg-zinc-900"
-                        style={{ minWidth: 80, minHeight: 90 }}
-                      >
-                        <svg width="28" height="28" viewBox="0 0 24 24" fill="#e53e3e"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg>
-                        <span className="text-[11px] font-black uppercase tracking-widest text-zinc-700 dark:text-zinc-200">Street</span>
-                      </a>
-                    ) : null}
-
-                    {/* Span route summary — top center */}
-                    <div className="pointer-events-none absolute left-1/2 top-3 -translate-x-1/2">
-                      <div className="inline-flex items-center gap-1.5 rounded-2xl bg-black/70 px-3 py-1.5 backdrop-blur shadow-lg">
-                        <span className="rounded-lg bg-blue-500/30 px-2 py-0.5 font-mono text-[11px] font-bold text-blue-300">{fromCode}</span>
-                        <span className="text-zinc-500">→</span>
-                        {spanLen !== null && (
-                          <span className="rounded-lg bg-emerald-500/25 px-2 py-0.5 text-[11px] font-bold text-emerald-300">{spanLen.toLocaleString()} m</span>
-                        )}
-                        <span className="text-zinc-500">→</span>
-                        <span className="rounded-lg bg-violet-500/30 px-2 py-0.5 font-mono text-[11px] font-bold text-violet-300">{toCode}</span>
-                      </div>
-                    </div>
-
-                    {/* From/To labels — top left */}
-                    <div className="pointer-events-none absolute left-3 top-12 flex flex-col gap-1.5">
-                      <MapChip tone="blue">From: {fromCode}</MapChip>
-                      <MapChip tone="violet">To: {toCode}</MapChip>
-                    </div>
-
-                    {/* GPS coordinates — bottom */}
-                    <div className="absolute bottom-3 left-3 right-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                      <div className="rounded-xl bg-black/65 px-3 py-2 text-xs font-medium text-white backdrop-blur">
-                        {fromLat && fromLng ? `From ${fromLat.toFixed(6)}, ${fromLng.toFixed(6)}` : 'From GPS unavailable'}
-                      </div>
-                      <div className="rounded-xl bg-black/65 px-3 py-2 text-xs font-medium text-white backdrop-blur">
-                        {toLat && toLng ? `To ${toLat.toFixed(6)}, ${toLng.toFixed(6)}` : 'To GPS unavailable'}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              ) : (
-                <div className="flex min-h-[340px] flex-col items-center justify-center rounded-[24px] border border-dashed border-zinc-300 bg-gradient-to-b from-zinc-50 to-white text-center dark:border-zinc-700 dark:from-zinc-800 dark:to-zinc-900">
-                  <div className="mb-3 rounded-2xl bg-zinc-100 p-4 dark:bg-zinc-800">
-                    <svg width="28" height="28" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24" className="text-zinc-400">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 21s7-4.35 7-11a7 7 0 10-14 0c0 6.65 7 11 7 11z" />
-                      <circle cx="12" cy="10" r="2.5" />
-                    </svg>
-                  </div>
-                  <p className="text-sm font-bold text-zinc-700 dark:text-zinc-200">No GPS coordinates recorded</p>
-                  <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">Map unavailable for this span</p>
-                </div>
-              )}
-            </div>
+          <div className="grid grid-cols-2 border-t border-white/10 xl:border-l xl:border-t-0">
+            {[
+              { label: 'Lineman',        value: lineman,   sub: 'Field personnel',    color: 'text-violet-300' },
+              { label: 'Team',           value: teamName,  sub: 'Assigned team',      color: 'text-blue-300'   },
+              { label: 'Cable collected',value: `${log.actual_cable}m`, sub: `of ${log.expected_cable}m expected`, color: 'text-emerald-300' },
+              { label: 'Submitted',      value: fmtDate(log.created_at), sub: fmtDateTime(log.created_at), color: 'text-amber-300'   },
+            ].map(item => (
+              <div key={item.label} className="flex min-h-[115px] flex-col justify-center gap-1 border-b border-r border-white/10 bg-white/[0.035] px-5 last:border-r-0 xl:last:border-b-0">
+                <span className={`text-[10px] font-black uppercase tracking-widest ${item.color}`}>{item.label}</span>
+                <span className="truncate text-base font-black text-white">{item.value}</span>
+                <span className="truncate text-[11px] font-semibold text-zinc-500">{item.sub}</span>
+              </div>
+            ))}
           </div>
         </div>
       </section>
 
-      {/* ── Span components + Operational metadata ─────────────────────── */}
-      <div className="grid grid-cols-1 gap-5 xl:grid-cols-2">
-        <section className="overflow-hidden rounded-[28px] border border-zinc-200 bg-white shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
-          <div className="border-b border-zinc-100 bg-gradient-to-r from-white to-blue-50/30 px-5 py-4 dark:border-zinc-800 dark:from-zinc-900 dark:to-zinc-900">
-            <h2 className="text-base font-black text-zinc-900 dark:text-zinc-100">Recovered components</h2>
-            <p className="mt-0.5 text-xs font-medium text-zinc-500 dark:text-zinc-400">Hardware collected vs. expected per span</p>
-          </div>
-
-          <div className="grid gap-3 p-5">
-            {(() => {
-              const hardware = [
-                { type: 'node',      label: 'Node',        val: Number(log.nodes_collected ?? 0) },
-                { type: 'amplifier', label: 'Amplifier',   val: Number(log.amplifiers_collected ?? 0) },
-                { type: 'extender',  label: 'Extender',    val: Number(log.extenders_collected ?? 0) },
-                { type: 'tsc',       label: 'TSC',         val: Number(log.tsc_collected ?? 0) },
-                { type: 'powersupply', label: 'Power Supply', val: Number(log.powersupply_collected ?? 0) },
-                { type: 'powersupply_case', label: 'PS Housing', val: Number(log.ps_housing_collected ?? 0) },
-              ].filter(h => h.val > 0 || spanComponents.some(c => c.component_type === h.type))
-
-              if (hardware.length === 0 && spanComponents.length === 0) {
-                return <p className="text-sm text-zinc-400 dark:text-zinc-500 text-center py-6">No component data recorded.</p>
-              }
-
-              return hardware.map(h => {
-                const spanComp = spanComponents.find(c => c.component_type === h.type)
-                const exp      = Number(spanComp?.expected_count ?? 0)
-                const col      = h.val
-                const ok       = exp > 0 ? col >= exp : true
-                const short    = Math.max(0, exp - col)
-                const unit     = spanComp?.unit ?? 'pcs'
-
-                return (
-                  <div
-                    key={h.type}
-                    className="grid items-center gap-3 rounded-[22px] border border-zinc-200 bg-gradient-to-r from-white to-zinc-50 px-4 py-4 shadow-sm dark:border-zinc-700 dark:from-zinc-900 dark:to-zinc-800 sm:grid-cols-[52px_minmax(0,1fr)_90px_120px]"
-                  >
-                    <div className={`flex h-11 w-11 items-center justify-center rounded-2xl text-sm font-black ${ok ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300' : 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-300'}`}>
-                      {h.label.charAt(0)}
-                    </div>
-                    <div className="min-w-0">
-                      <div className="truncate text-sm font-black text-zinc-900 dark:text-zinc-100">{h.label}</div>
-                      <div className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
-                        {exp > 0 ? `Expected ${exp} ${unit}` : 'Not in span design'}
-                      </div>
-                    </div>
-                    <div className="text-right text-lg font-black text-zinc-900 dark:text-zinc-100">
-                      {col} <span className="text-zinc-400">{exp > 0 ? `/ ${exp}` : ''}</span>
-                    </div>
-                    <div className="flex justify-end">
-                      <span className={`whitespace-nowrap rounded-full px-3 py-1.5 text-xs font-bold ${statusTone(ok)}`}>
-                        {exp > 0 ? (ok ? 'Complete' : `Short by ${short}`) : 'Recovered'}
-                      </span>
-                    </div>
-                  </div>
-                )
-              })
-            })()}
-          </div>
-        </section>
-
-        <section className="overflow-hidden rounded-[28px] border border-zinc-200 bg-white shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
-          <div className="border-b border-zinc-100 bg-gradient-to-r from-white to-violet-50/30 px-5 py-4 dark:border-zinc-800 dark:from-zinc-900 dark:to-zinc-900">
-            <h2 className="text-base font-black text-zinc-900 dark:text-zinc-100">Operational metadata</h2>
-            <p className="mt-0.5 text-xs font-medium text-zinc-500 dark:text-zinc-400">Assignment and timing details</p>
-          </div>
-
-          <div className="divide-y divide-zinc-100 dark:divide-zinc-800">
-            {[
-              { label: 'Span',         value: spanCode },
-              { label: 'Team',         value: teamName },
-              { label: 'Submitted by', value: linemanName },
-              { label: 'Status',       value: statusUpper },
-              { label: 'Date Started', value: fmtDateTime(log.start_time) },
-              { label: 'Date Finished', value: fmtDateTime(log.end_time) },
-              { label: 'Duration',     value: computeDuration(log.start_time, log.end_time, log.duration_minutes) },
-              { label: 'Received',     value: fmtDate(log.received_at_server) },
-              { label: 'Offline capture', value: log.offline_mode ? 'Yes' : 'No' },
-              ...(log.rejection_reason ? [{ label: 'Rejection reason', value: log.rejection_reason }] : []),
-            ].map(({ label, value }) => (
-              <div key={label} className="flex items-center justify-between gap-4 px-5 py-2.5">
-                <span className="text-xs font-semibold text-zinc-400 dark:text-zinc-500 shrink-0">{label}</span>
-                <span className="text-xs font-bold text-zinc-800 dark:text-zinc-200 text-right truncate">{value}</span>
-              </div>
-            ))}
-          </div>
-        </section>
-      </div>
-
-      {/* ── Photo documentation ────────────────────────────────────────── */}
-      <div className="grid grid-cols-1 gap-5 xl:grid-cols-2">
-        {/* From pole */}
-        <PolePhoPanel
-          title="From pole"
-          poleCode={fromCode}
-          tone="blue"
-          photos={[
-            { label: 'Before',   src: imgFor('from_before')   },
-            { label: 'After',    src: imgFor('from_after')    },
-            { label: 'Pole Tag', src: imgFor('from_pole_tag') },
-          ]}
-          imgUrl={imgUrl}
-          onZoom={setLightbox}
-        />
-
-        {/* To pole */}
-        <PolePhoPanel
-          title="To pole"
-          poleCode={toCode}
-          tone="violet"
-          photos={[
-            { label: 'Before',   src: imgFor('to_before')   },
-            { label: 'After',    src: imgFor('to_after')    },
-            { label: 'Pole Tag', src: imgFor('to_pole_tag') },
-          ]}
-          imgUrl={imgUrl}
-          onZoom={setLightbox}
-        />
-      </div>
-
-      {/* Bunching — span-wide */}
-      {(() => {
-        const src = imgFor('bunching')
-        return (
-          <section className="overflow-hidden rounded-[28px] border border-zinc-200 bg-white shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
-            <div className="border-b border-zinc-100 px-5 py-4 dark:border-zinc-800">
-              <h2 className="text-base font-black text-zinc-900 dark:text-zinc-100">Bunching</h2>
-              <p className="mt-0.5 text-xs font-medium text-zinc-500 dark:text-zinc-400">Span-wide — {fromCode} → {toCode}</p>
+      {/* Stats row */}
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        {[
+          { label: 'Node',      value: nodeName,         sub: 'Assigned node',       tone: 'blue'    },
+          { label: 'Team',      value: teamName,         sub: 'Responsible team',    tone: 'violet'  },
+          { label: 'Collection', value: `${log.actual_cable}m`, sub: pct !== null ? `${pct}% of ${log.expected_cable}m expected` : 'No expected set', tone: 'emerald' },
+          { label: 'Duration',  value: log.duration_minutes ? `${log.duration_minutes} min` : '—', sub: log.start_time ? fmtDate(log.start_time) : 'No time recorded', tone: 'amber' },
+        ].map(card => (
+          <div key={card.label} className={`rounded-[26px] border border-zinc-200 bg-gradient-to-br from-${card.tone}-500/10 to-white p-5 shadow-sm transition hover:-translate-y-0.5 hover:shadow-lg dark:border-zinc-700 dark:to-zinc-900`}>
+            <div className={`mb-4 inline-flex rounded-2xl bg-${card.tone}-500/10 px-3 py-1.5 text-[10px] font-black uppercase tracking-widest text-${card.tone}-700 dark:text-${card.tone}-300`}>
+              {card.label}
             </div>
-            <div className="p-4">
-              <div
-                className={`group relative overflow-hidden rounded-2xl border border-zinc-200 dark:border-zinc-700 bg-zinc-950 max-w-sm ${src ? 'cursor-zoom-in hover:ring-2 hover:ring-amber-400/40' : ''}`}
-                onClick={() => src && setLightbox(imgUrl(src))}
-              >
-                {src ? (
-                  <>
-                    <SafeImage src={imgUrl(src)} alt="Bunching" className="w-full h-52 object-contain transition duration-300 group-hover:brightness-90" />
-                    <div className="absolute bottom-0 left-0 right-0 px-2.5 py-2 bg-gradient-to-t from-black/75 to-transparent">
-                      <span className="text-[10px] font-black uppercase tracking-widest text-white">Bunching</span>
-                    </div>
-                  </>
-                ) : (
-                  <div className="flex h-52 flex-col items-center justify-center gap-2 bg-zinc-50 dark:bg-zinc-800/50">
-                    <svg className="text-zinc-300 dark:text-zinc-600 w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 15.75l5.159-5.159a2.25 2.25 0 013.182 0l5.159 5.159m-1.5-1.5l1.409-1.409a2.25 2.25 0 013.182 0l2.909 2.909M3 20.25h18M9.75 9.75a2.25 2.25 0 100-4.5 2.25 2.25 0 000 4.5z" />
-                    </svg>
-                    <span className="text-[10px] font-bold text-zinc-400 dark:text-zinc-500 uppercase tracking-wide">No bunching photo</span>
-                  </div>
-                )}
-              </div>
-            </div>
-          </section>
-        )
-      })()}
-
-      {lightbox && (
-        <div
-          className="fixed inset-0 z-[2000] flex items-center justify-center bg-black/90 p-4"
-          onClick={() => setLightbox(null)}
-        >
-          <button
-            className="absolute right-5 top-5 flex h-11 w-11 items-center justify-center rounded-2xl bg-white/10 text-xl text-white transition hover:bg-white/20"
-            onClick={() => setLightbox(null)}
-          >×</button>
-          <SafeImage
-            src={lightbox}
-            alt="Preview"
-            className="max-h-[92vh] max-w-[94vw] rounded-3xl shadow-2xl"
-            onClick={e => e.stopPropagation()}
-          />
-        </div>
-      )}
-    </div>
-  )
-}
-
-// ── Sub-components ─────────────────────────────────────────────────────────────
-
-function MetricRow({ label, value, accent }: { label: string; value: string; accent: 'emerald' | 'blue' | 'orange' | 'zinc' }) {
-  const accents = { emerald: 'bg-emerald-500', blue: 'bg-blue-500', orange: 'bg-orange-500', zinc: 'bg-zinc-400' }
-  return (
-    <div className="flex items-center justify-between gap-3 rounded-3xl border border-zinc-200 bg-white px-4 py-3.5 shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
-      <div className="flex items-center gap-3">
-        <span className={`h-9 w-1.5 rounded-full ${accents[accent]}`} />
-        <span className="text-sm font-semibold text-zinc-500 dark:text-zinc-400">{label}</span>
-      </div>
-      <span className="max-w-[55%] text-right text-sm font-black text-zinc-900 dark:text-zinc-100">{value}</span>
-    </div>
-  )
-}
-
-function MapChip({ children, tone }: { children: ReactNode; tone: 'blue' | 'violet' }) {
-  const styles = tone === 'blue' ? 'bg-blue-600/90 text-white' : 'bg-violet-600/90 text-white'
-  return <span className={`rounded-full px-3 py-1 text-[11px] font-bold backdrop-blur ${styles}`}>{children}</span>
-}
-
-function PolePhoPanel({
-  title, poleCode, tone, photos, imgUrl, onZoom,
-}: {
-  title: string
-  poleCode: string
-  tone: 'blue' | 'violet'
-  photos: { label: string; src: string | null }[]
-  imgUrl: (path: string) => string
-  onZoom: (src: string) => void
-}) {
-  const accent = tone === 'blue'
-    ? { badge: 'bg-blue-500/15 text-blue-600 dark:text-blue-400', ring: 'hover:ring-blue-400/40', bar: 'from-white to-blue-50/40 dark:to-zinc-900' }
-    : { badge: 'bg-violet-500/15 text-violet-600 dark:text-violet-400', ring: 'hover:ring-violet-400/40', bar: 'from-white to-violet-50/40 dark:to-zinc-900' }
-
-  return (
-    <section className="overflow-hidden rounded-[28px] border border-zinc-200 bg-white shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
-      <div className={`flex items-center justify-between px-5 py-4 border-b border-zinc-100 dark:border-zinc-800 bg-gradient-to-r ${accent.bar}`}>
-        <div>
-          <h2 className="text-base font-black text-zinc-900 dark:text-zinc-100">{title}</h2>
-          <p className="text-xs font-semibold text-zinc-400 dark:text-zinc-500 mt-0.5">Before · After · Pole Tag</p>
-        </div>
-        <span className={`rounded-2xl px-3.5 py-1.5 text-xs font-black tracking-wide ${accent.badge}`}>{poleCode}</span>
-      </div>
-
-      <div className="grid grid-cols-3 gap-3 p-4">
-        {photos.map(({ label, src }) => (
-          <div
-            key={label}
-            className={`group relative overflow-hidden rounded-2xl border border-zinc-200 dark:border-zinc-700 bg-zinc-950 transition hover:-translate-y-0.5 hover:shadow-lg ${src ? `cursor-zoom-in hover:ring-2 ${accent.ring}` : ''}`}
-            onClick={() => src && onZoom(imgUrl(src))}
-          >
-            {src ? (
-              <>
-                <SafeImage src={imgUrl(src)} alt={label} className="w-full h-44 object-contain transition duration-300 group-hover:brightness-90" />
-                <div className="absolute bottom-0 left-0 right-0 px-2.5 py-2 bg-gradient-to-t from-black/75 to-transparent">
-                  <span className="text-[10px] font-black uppercase tracking-widest text-white">{label}</span>
-                </div>
-              </>
-            ) : (
-              <div className="flex h-44 flex-col items-center justify-center gap-1.5 bg-zinc-50 dark:bg-zinc-800/50">
-                <svg className="text-zinc-300 dark:text-zinc-600 w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 15.75l5.159-5.159a2.25 2.25 0 013.182 0l5.159 5.159m-1.5-1.5l1.409-1.409a2.25 2.25 0 013.182 0l2.909 2.909M3 20.25h18M9.75 9.75a2.25 2.25 0 100-4.5 2.25 2.25 0 000 4.5z" />
-                </svg>
-                <span className="text-[10px] font-bold text-zinc-400 dark:text-zinc-500 uppercase tracking-wide text-center px-2">{label}</span>
-              </div>
-            )}
+            <div className="truncate text-lg font-black text-zinc-950 dark:text-zinc-50">{card.value}</div>
+            <div className="mt-1 text-xs font-semibold text-zinc-400">{card.sub}</div>
           </div>
         ))}
       </div>
-    </section>
+
+      {/* Span GPS Map */}
+      {hasAnyGps && (
+        <section className="overflow-hidden rounded-[32px] border border-zinc-200 bg-white shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
+          <div className="flex items-center justify-between border-b border-zinc-100 bg-gradient-to-r from-zinc-50 to-white px-6 py-4 dark:border-zinc-800 dark:from-zinc-900 dark:to-zinc-900">
+            <div>
+              <h2 className="text-base font-black text-zinc-900 dark:text-zinc-50">Span GPS Coverage</h2>
+              <p className="mt-0.5 text-[11px] font-semibold text-zinc-400">From · To pole locations</p>
+            </div>
+            <div className="flex items-center gap-3 text-[11px] font-bold">
+              {hasFromGps && (
+                <span className="flex items-center gap-1.5 text-blue-600 dark:text-blue-400">
+                  <span className="h-2.5 w-2.5 rounded-full bg-blue-500" />
+                  {fromCode}
+                </span>
+              )}
+              {hasToGps && (
+                <span className="flex items-center gap-1.5 text-violet-600 dark:text-violet-400">
+                  <span className="h-2.5 w-2.5 rounded-full bg-violet-500" />
+                  {toCode}
+                </span>
+              )}
+            </div>
+          </div>
+          <div className="relative h-[500px] overflow-hidden bg-zinc-950">
+            <div ref={mapRef} className="h-full w-full" />
+            {/* Cable collected overlay */}
+            <div className="pointer-events-none absolute left-4 top-4 z-[1000] rounded-2xl bg-black/65 px-4 py-3 backdrop-blur-md shadow-xl">
+              <p className="text-[9px] font-black uppercase tracking-widest text-emerald-300 mb-0.5">Cable Collected</p>
+              <p className="text-2xl font-black text-white leading-none">{log.actual_cable}<span className="ml-1 text-sm font-bold text-zinc-400">m</span></p>
+              {log.expected_cable > 0 && (
+                <>
+                  <p className="text-[10px] font-semibold text-zinc-400 mt-1">of {log.expected_cable}m expected</p>
+                  <div className="mt-2 h-1.5 w-28 rounded-full bg-white/10 overflow-hidden">
+                    <div
+                      className="h-full rounded-full bg-emerald-400"
+                      style={{ width: `${Math.min(100, Math.round((log.actual_cable / log.expected_cable) * 100))}%` }}
+                    />
+                  </div>
+                  <p className="text-[9px] font-black text-emerald-300 mt-1">{Math.round((log.actual_cable / log.expected_cable) * 100)}%</p>
+                </>
+              )}
+            </div>
+            {/* Span label */}
+            {hasFromGps && hasToGps && (
+              <div className="pointer-events-none absolute bottom-4 right-4 z-[1000] rounded-xl bg-black/65 px-3 py-2 backdrop-blur-md shadow-xl">
+                <p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">Span</p>
+                <p className="font-mono text-xs font-black text-white">{spanCode}</p>
+              </div>
+            )}
+          </div>
+        </section>
+      )}
+
+      {/* All 6 photos */}
+      <section className="overflow-hidden rounded-[32px] border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+        {/* Section header */}
+        <div className="flex items-center justify-between border-b border-zinc-100 bg-gradient-to-r from-zinc-50 to-white px-6 py-4 dark:border-zinc-800 dark:from-zinc-900 dark:to-zinc-900">
+          <div>
+            <h2 className="text-base font-black text-zinc-900 dark:text-zinc-50">Field Documentation</h2>
+            <p className="mt-0.5 text-[11px] font-semibold text-zinc-400">Before · After · Pole Tag — per pole</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-1.5 font-mono text-xs font-black text-blue-700 dark:border-blue-800/50 dark:bg-blue-900/20 dark:text-blue-300">{fromCode}</span>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="text-zinc-300 dark:text-zinc-600"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+            <span className="rounded-xl border border-violet-200 bg-violet-50 px-3 py-1.5 font-mono text-xs font-black text-violet-700 dark:border-violet-800/50 dark:bg-violet-900/20 dark:text-violet-300">{toCode}</span>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 divide-x divide-zinc-100 dark:divide-zinc-800">
+          {/* From Pole */}
+          <div className="p-5">
+            <div className="mb-3 flex items-center gap-2.5">
+              <div className="h-7 w-1 rounded-full bg-blue-500" />
+              <div>
+                <p className="text-[10px] font-black uppercase tracking-widest text-blue-600 dark:text-blue-400">From Pole</p>
+                <p className="font-mono text-xs font-bold text-zinc-500 dark:text-zinc-400">{fromCode}</p>
+              </div>
+            </div>
+            <div className="grid grid-cols-3 gap-2.5">
+              <PhotoSlot label="Before" src={photo('from_before')} onZoom={setLightbox} />
+              <PhotoSlot label="After"  src={photo('from_after')}  onZoom={setLightbox} />
+              <PhotoSlot label="Tag"    src={photo('from_pole_tag')} onZoom={setLightbox} />
+            </div>
+          </div>
+
+          {/* To Pole */}
+          <div className="p-5">
+            <div className="mb-3 flex items-center gap-2.5">
+              <div className="h-7 w-1 rounded-full bg-violet-500" />
+              <div>
+                <p className="text-[10px] font-black uppercase tracking-widest text-violet-600 dark:text-violet-400">To Pole</p>
+                <p className="font-mono text-xs font-bold text-zinc-500 dark:text-zinc-400">{toCode}</p>
+              </div>
+            </div>
+            <div className="grid grid-cols-3 gap-2.5">
+              <PhotoSlot label="Before" src={photo('to_before')} onZoom={setLightbox} />
+              <PhotoSlot label="After"  src={photo('to_after')}  onZoom={setLightbox} />
+              <PhotoSlot label="Tag"    src={photo('to_pole_tag')} onZoom={setLightbox} />
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Notes */}
+      {log.notes?.trim() && (
+        <section className="overflow-hidden rounded-[32px] border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
+          <p className="mb-2 text-[10px] font-black uppercase tracking-widest text-zinc-400">Field Notes</p>
+          <p className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">{log.notes}</p>
+        </section>
+      )}
+
+      {lightbox && <Lightbox src={lightbox} onClose={() => setLightbox(null)} />}
+    </div>
   )
 }
 
+// ── Pole report detail ────────────────────────────────────────────────────────
+
+function PoleReportView({ report, onBack }: { report: PoleReportDetail; onBack: () => void }) {
+  const [lightbox, setLightbox] = useState<string | null>(null)
+  const mapRef  = useRef<HTMLDivElement>(null)
+  const mapInst = useRef<L.Map | null>(null)
+
+  const poleCode  = report.pole?.pole_code ?? `Pole #${report.pole_id}`
+  const nodeName  = report.node?.name ?? '—'
+  const submitter = report.submitter ? `${report.submitter.first_name} ${report.submitter.last_name}`.trim() : '—'
+  const teamName  = report.submitter?.team?.name ?? '—'
+
+  const lat    = Number(report.latitude ?? report.pole?.lat ?? 0)
+  const lng    = Number(report.longitude ?? report.pole?.lng ?? 0)
+  const hasGps = Number.isFinite(lat) && Number.isFinite(lng) && !(lat === 0 && lng === 0)
+
+  const before = report.photos?.find(p => p.image_type === 'before')?.file_path ?? null
+  const after  = report.photos?.find(p => p.image_type === 'after')?.file_path  ?? null
+  const tag    = report.photos?.find(p => p.image_type === 'pole_tag')?.file_path ?? null
+
+  useEffect(() => {
+    if (!hasGps || !mapRef.current || mapInst.current) return
+    const map = L.map(mapRef.current, { zoomControl: true, attributionControl: false }).setView([lat, lng], 18)
+    mapInst.current = map
+    L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom: 22, maxNativeZoom: 18 }).addTo(map)
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/light_only_labels/{z}/{x}/{y}{r}.png', { maxZoom: 22, maxNativeZoom: 20, opacity: 0.85, subdomains: 'abcd' }).addTo(map)
+    const icon = L.divIcon({
+      className: '',
+      html: `<div style="width:18px;height:18px;border-radius:50%;background:#10b981;border:3px solid #fff;box-shadow:0 2px 10px rgba(16,185,129,.6)"></div>`,
+      iconSize: [18, 18], iconAnchor: [9, 9],
+    })
+    L.marker([lat, lng], { icon }).addTo(map).bindPopup(`<b>${poleCode}</b><br>${lat.toFixed(6)}, ${lng.toFixed(6)}`).openPopup()
+    setTimeout(() => map.invalidateSize(), 120)
+    return () => { map.remove(); mapInst.current = null }
+  }, [hasGps, lat, lng, poleCode])
+
+  return (
+    <div className="flex flex-col gap-6 pb-10">
+      <style>{MAP_STYLES}</style>
+
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <BackBtn onClick={onBack} />
+      </div>
+
+      {/* Hero header */}
+      <section className="relative overflow-hidden rounded-[28px] border border-white/10 bg-[#080d16] shadow-2xl">
+        <div className="h-[4px] bg-gradient-to-r from-emerald-400 via-blue-500 to-violet-500" />
+        <div className="relative grid gap-0 xl:grid-cols-[1fr_420px]">
+          <div className="flex min-h-[230px] flex-col justify-between gap-8 p-6 md:p-8">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="inline-flex items-center gap-2 rounded-full bg-emerald-500/15 px-3 py-1.5 text-[11px] font-black uppercase tracking-widest text-emerald-300 ring-1 ring-emerald-400/25">
+                <span className="h-1.5 w-1.5 rounded-full bg-emerald-300 shadow-[0_0_14px_rgba(110,231,183,.9)]" />
+                Pole Report
+              </span>
+              <span className="rounded-full bg-white/8 px-3 py-1.5 text-[11px] font-black uppercase tracking-widest text-zinc-300 ring-1 ring-white/10">Cleared</span>
+            </div>
+            <div>
+              <p className="mb-3 text-xs font-black uppercase tracking-[0.28em] text-zinc-500">Field documentation</p>
+              <h1 className="text-4xl font-black tracking-tight text-white md:text-5xl">{poleCode}</h1>
+              <div className="mt-4 flex flex-wrap items-center gap-2">
+                <span className="rounded-2xl bg-white/8 px-3 py-1.5 text-xs font-bold text-zinc-300 ring-1 ring-white/10">{nodeName}</span>
+                <span className="rounded-2xl bg-white/8 px-3 py-1.5 text-xs font-bold text-zinc-300 ring-1 ring-white/10">{teamName}</span>
+                <span className="rounded-2xl bg-emerald-500/15 px-3 py-1.5 text-xs font-black text-emerald-300 ring-1 ring-emerald-400/20">
+                  Submitted {fmtDate(report.created_at)}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 border-t border-white/10 xl:border-l xl:border-t-0">
+            {[
+              { label: 'Submitted by', value: submitter, sub: teamName,                         color: 'text-violet-300' },
+              { label: 'Team',         value: teamName,  sub: 'Responsible team',               color: 'text-blue-300'  },
+              { label: 'Node',         value: nodeName,  sub: 'Assigned area',                  color: 'text-emerald-300' },
+              { label: 'Submitted',    value: fmtDate(report.created_at), sub: fmtDateTime(report.created_at), color: 'text-amber-300' },
+            ].map(item => (
+              <div key={item.label} className="flex min-h-[115px] flex-col justify-center gap-1 border-b border-r border-white/10 bg-white/[0.035] px-5 last:border-r-0 xl:last:border-b-0">
+                <span className={`text-[10px] font-black uppercase tracking-widest ${item.color}`}>{item.label}</span>
+                <span className="truncate text-base font-black text-white">{item.value}</span>
+                <span className="truncate text-[11px] font-semibold text-zinc-500">{item.sub}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* GPS Map */}
+      {hasGps && (
+        <section className="overflow-hidden rounded-[32px] border border-zinc-200 bg-white shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
+          <div className="p-5">
+            <div className="mb-4 flex items-center justify-between rounded-[26px] border border-zinc-100 bg-gradient-to-r from-white to-emerald-50/50 px-5 py-4 dark:border-zinc-800 dark:from-zinc-900 dark:to-zinc-800">
+              <div>
+                <h2 className="text-lg font-black text-zinc-950 dark:text-zinc-50">Pole GPS Location</h2>
+                <p className="mt-0.5 text-xs font-semibold text-zinc-500 dark:text-zinc-400 font-mono">{lat.toFixed(6)}, {lng.toFixed(6)}</p>
+              </div>
+              <a
+                href={`https://www.google.com/maps?q=${lat},${lng}`}
+                target="_blank" rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 rounded-2xl border border-zinc-200 bg-zinc-100 px-3 py-2 text-[11px] font-black text-zinc-600 transition hover:bg-white dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700"
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="#e53e3e"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg>
+                Street View
+              </a>
+            </div>
+            <div className="relative h-[380px] overflow-hidden rounded-[24px] border border-zinc-200 bg-zinc-950 dark:border-zinc-700">
+              <div ref={mapRef} className="h-full w-full" />
+            </div>
+          </div>
+        </section>
+      )}
+
+      {/* 3 photos */}
+      <section className="overflow-hidden rounded-[32px] border border-zinc-200 bg-white shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
+        <div className="p-5">
+          <div className="mb-5 flex items-center justify-between rounded-[26px] border border-zinc-100 bg-gradient-to-r from-white to-blue-50/40 px-5 py-5 dark:border-zinc-800 dark:from-zinc-900 dark:to-zinc-800">
+            <div>
+              <h2 className="text-lg font-black text-zinc-950 dark:text-zinc-50">Pole Documentation</h2>
+              <p className="mt-1 text-xs font-semibold text-zinc-400 dark:text-zinc-500">Before · After · Pole Tag</p>
+            </div>
+            <span className="rounded-2xl bg-blue-500/15 px-3.5 py-1.5 text-xs font-black tracking-wide text-blue-600 dark:text-blue-400">{poleCode}</span>
+          </div>
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+            <PhotoSlot label="Before"   src={before ? imgUrl(before) : null} onZoom={setLightbox} />
+            <PhotoSlot label="After"    src={after  ? imgUrl(after)  : null} onZoom={setLightbox} />
+            <PhotoSlot label="Pole Tag" src={tag    ? imgUrl(tag)    : null} onZoom={setLightbox} />
+          </div>
+        </div>
+      </section>
+
+      {/* Notes / Landmark */}
+      {(report.landmark?.trim() || report.notes?.trim()) && (
+        <section className="overflow-hidden rounded-[32px] border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-700 dark:bg-zinc-900 flex flex-col gap-3">
+          {report.landmark?.trim() && (
+            <div>
+              <p className="mb-1 text-[10px] font-black uppercase tracking-widest text-zinc-400">Landmark</p>
+              <p className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">{report.landmark}</p>
+            </div>
+          )}
+          {report.notes?.trim() && (
+            <div>
+              <p className="mb-1 text-[10px] font-black uppercase tracking-widest text-zinc-400">Field Notes</p>
+              <p className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">{report.notes}</p>
+            </div>
+          )}
+        </section>
+      )}
+
+      {lightbox && <Lightbox src={lightbox} onClose={() => setLightbox(null)} />}
+    </div>
+  )
+}

@@ -1,10 +1,29 @@
 import { useEffect, useRef, useState } from 'react'
 import { getToken, getSubcontractorId, isSubconSide, SKYCABLE_API } from '../lib/auth'
 import { cacheGet, cacheSet } from '../lib/cache'
+import { fetchTile } from '../lib/tile-cache'
+import L from 'leaflet'
+import 'leaflet/dist/leaflet.css'
 
-declare const L: any
+// ── Cached Leaflet tile layer ──────────────────────────────────────────────────
+// Routes every tile through tile-cache so the Philippines map tiles are stored
+// in the browser Cache API after first load — no re-download on revisit.
+class CachedTileLayer extends L.TileLayer {
+  createTile(coords: L.Coords, done: L.DoneCallback): HTMLElement {
+    const img = document.createElement('img')
+    img.alt = ''
+    img.setAttribute('role', 'presentation')
+    const url = this.getTileUrl(coords)
+    fetchTile(url)
+      .then(blobUrl => { img.src = blobUrl; done(undefined, img) })
+      .catch(() => { img.src = url; done(undefined, img) })
+    return img
+  }
+}
 
-const API_BASE = 'https://disguisedly-enarthrodial-kristi.ngrok-free.dev'
+function cachedTileLayer(url: string, options?: L.TileLayerOptions): CachedTileLayer {
+  return new CachedTileLayer(url, options)
+}
 
 interface MapPin {
   id: number
@@ -19,6 +38,14 @@ interface MapPin {
   lat: number
   lng: number
   pole_count: number
+}
+
+interface FocusPin {
+  lat: number
+  lng: number
+  title: string
+  subtitle?: string
+  detail?: string
 }
 
 const STATUS_COLOR: Record<string, string> = {
@@ -54,6 +81,25 @@ function makePinIcon(status: string) {
   })
 }
 
+function makeFocusIcon() {
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" width="34" height="42" viewBox="0 0 34 42">
+      <path d="M17 0C7.61 0 0 7.61 0 17c0 11.69 17 25 17 25s17-13.31 17-25C34 7.61 26.39 0 17 0z"
+        fill="#10b981" stroke="#ffffff" stroke-width="2"/>
+      <circle cx="17" cy="17" r="7" fill="#ffffff"/>
+      <circle cx="17" cy="17" r="3" fill="#10b981"/>
+    </svg>`
+
+  return L.divIcon({
+    html: svg,
+    className: '',
+    iconSize: [34, 42],
+    iconAnchor: [17, 42],
+    popupAnchor: [0, -42],
+  })
+}
+
+// eslint-disable-next-line react-refresh/only-export-components
 export const TILE_LAYERS = {
   satellite: { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', attribution: '© Esri, Maxar, Earthstar Geographics', label: 'Satellite' },
   street:    { url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',                                           attribution: '© OpenStreetMap contributors',            label: 'Street'    },
@@ -65,22 +111,27 @@ interface Props {
   mapView?: MapView
   onMapViewChange?: (v: MapView) => void
   syncTrigger?: number
+  focusPin?: FocusPin | null
 }
 
-export default function FieldCoverageMap({ mapView: mapViewProp, onMapViewChange, syncTrigger = 0 }: Props = {}) {
+export default function FieldCoverageMap({ mapView: mapViewProp = 'satellite', syncTrigger = 0, focusPin = null }: Props = {}) {
   const mapRef = useRef<HTMLDivElement>(null)
-  const mapInstance = useRef<any>(null)
-  const tileLayerRef = useRef<any>(null)
+  const mapInstance = useRef<L.Map | null>(null)
+  const tileLayerRef = useRef<L.TileLayer | null>(null)
+  const markerLayerRef = useRef<L.LayerGroup | null>(null)
+  const focusLayerRef = useRef<L.LayerGroup | null>(null)
   const [pins, setPins] = useState<MapPin[]>(() => cacheGet<MapPin[]>('dashboard_map_pins') ?? [])
   const [loading, setLoading] = useState(() => !cacheGet<MapPin[]>('dashboard_map_pins'))
   const [error, setError] = useState<string | null>(null)
-  const [mapViewInternal, setMapViewInternal] = useState<MapView>('satellite')
+  const mapView = mapViewProp
 
-  const mapView = mapViewProp ?? mapViewInternal
-  const setMapView = onMapViewChange ?? setMapViewInternal
-
-  // Fetch pins from backend
+  // Fetch pins — skip if cache is fresh and this is not a forced sync (syncTrigger > 0)
   useEffect(() => {
+    if (syncTrigger === 0 && cacheGet<MapPin[]>('dashboard_map_pins')) {
+      setLoading(false)
+      return
+    }
+
     const token = getToken()
     const subconId = getSubcontractorId()
     const isSubcon = isSubconSide()
@@ -102,13 +153,6 @@ export default function FieldCoverageMap({ mapView: mapViewProp, onMapViewChange
           setPins(data)
           cacheSet('dashboard_map_pins', data)
           setError(null)
-          // Automatically fit map bounds to pins if any are present
-          if (data.length > 0 && mapInstance.current && typeof L !== 'undefined') {
-            try {
-              const bounds = L.latLngBounds(data.map(p => [p.lat, p.lng]))
-              mapInstance.current.fitBounds(bounds, { padding: [40, 40], maxZoom: 14 })
-            } catch (_) {}
-          }
         }
         else setError('Unexpected response from server')
       })
@@ -119,7 +163,6 @@ export default function FieldCoverageMap({ mapView: mapViewProp, onMapViewChange
   // Init map
   useEffect(() => {
     if (!mapRef.current || mapInstance.current) return
-    if (typeof L === 'undefined') return
 
     const map = L.map(mapRef.current, {
       center: [12.8797, 121.774],
@@ -129,10 +172,12 @@ export default function FieldCoverageMap({ mapView: mapViewProp, onMapViewChange
       zoomControl: true,
     })
 
-    const tl = L.tileLayer(TILE_LAYERS.satellite.url, {
+    const tl = cachedTileLayer(TILE_LAYERS.satellite.url, {
       attribution: TILE_LAYERS.satellite.attribution,
     }).addTo(map)
     tileLayerRef.current = tl
+    markerLayerRef.current = L.layerGroup().addTo(map)
+    focusLayerRef.current = L.layerGroup().addTo(map)
 
     mapInstance.current = map
     return () => {
@@ -144,23 +189,21 @@ export default function FieldCoverageMap({ mapView: mapViewProp, onMapViewChange
   // Swap tile layer when mapView changes
   useEffect(() => {
     const map = mapInstance.current
-    if (!map || typeof L === 'undefined') return
+    if (!map) return
     if (tileLayerRef.current) {
       map.removeLayer(tileLayerRef.current)
     }
     const { url, attribution } = TILE_LAYERS[mapView]
-    tileLayerRef.current = L.tileLayer(url, { attribution }).addTo(map)
+    tileLayerRef.current = cachedTileLayer(url, { attribution }).addTo(map)
   }, [mapView])
 
   // Add / refresh markers whenever pins change
   useEffect(() => {
     const map = mapInstance.current
-    if (!map || typeof L === 'undefined') return
+    const markerLayer = markerLayerRef.current
+    if (!map || !markerLayer) return
 
-    // Remove old markers
-    map.eachLayer((layer: any) => {
-      if (layer instanceof L.Marker) map.removeLayer(layer)
-    })
+    markerLayer.clearLayers()
 
     pins.forEach(pin => {
       if (!pin.lat || !pin.lng) return
@@ -189,7 +232,7 @@ export default function FieldCoverageMap({ mapView: mapViewProp, onMapViewChange
         </div>`
 
       const marker = L.marker([pin.lat, pin.lng], { icon: makePinIcon(statusUp) })
-        .addTo(map)
+        .addTo(markerLayer)
         .bindPopup(popup, { maxWidth: 240, autoPan: false })
 
       marker.on('click', () => {
@@ -199,7 +242,54 @@ export default function FieldCoverageMap({ mapView: mapViewProp, onMapViewChange
     })
   }, [pins])
 
+  useEffect(() => {
+    const map = mapInstance.current
+    if (!map || focusPin) return
+
+    const mappablePins = pins.filter(pin => pin.lat && pin.lng)
+    if (!mappablePins.length) return
+
+    try {
+      const bounds = L.latLngBounds(mappablePins.map(pin => [pin.lat, pin.lng]))
+      map.fitBounds(bounds, { padding: [40, 40], maxZoom: 14 })
+    } catch {
+      // Ignore invalid bounds from incomplete GPS data.
+    }
+  }, [pins, focusPin])
+
+  useEffect(() => {
+    const map = mapInstance.current
+    const focusLayer = focusLayerRef.current
+    if (!map || !focusLayer) return
+
+    focusLayer.clearLayers()
+    if (!focusPin) return
+
+    const popup = `
+      <div style="min-width:180px;font-family:inherit">
+        <div style="font-size:10px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#10b981">Pole GPS</div>
+        <div style="margin-top:3px;font-size:14px;font-weight:900;color:#0f172a">${focusPin.title}</div>
+        ${focusPin.subtitle ? `<div style="margin-top:2px;font-size:11px;font-weight:600;color:#64748b">${focusPin.subtitle}</div>` : ''}
+        ${focusPin.detail ? `<div style="margin-top:8px;font-family:monospace;font-size:11px;color:#475569">${focusPin.detail}</div>` : ''}
+      </div>`
+
+    const marker = L.marker([focusPin.lat, focusPin.lng], {
+      icon: makeFocusIcon(),
+      zIndexOffset: 1000,
+    })
+      .addTo(focusLayer)
+      .bindPopup(popup, { maxWidth: 260, autoPan: false })
+
+    map.flyTo([focusPin.lat, focusPin.lng], 18, { animate: true, duration: 1 })
+    map.once('moveend', () => marker.openPopup())
+  }, [focusPin])
+
   function resetView() {
+    if (focusPin) {
+      mapInstance.current?.flyTo([focusPin.lat, focusPin.lng], 18, { animate: true, duration: 1 })
+      return
+    }
+
     mapInstance.current?.flyTo([12.8797, 121.774], 6, { animate: true, duration: 1.5 })
   }
 
@@ -228,7 +318,7 @@ export default function FieldCoverageMap({ mapView: mapViewProp, onMapViewChange
         <button
           onClick={resetView}
           title="Zoom out to Philippines"
-          className="absolute top-3 right-3 flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white/90 dark:bg-zinc-800/90 backdrop-blur-sm border border-gray-100 dark:border-zinc-700 shadow text-[11px] font-medium text-gray-700 dark:text-zinc-200 hover:bg-violet-50 dark:hover:bg-violet-900/30 hover:text-violet-600 dark:hover:text-violet-400 transition-colors"
+          className="absolute top-3 right-3 flex items-center gap-1.5 rounded-lg border border-emerald-500/70 bg-emerald-600/95 px-2.5 py-1.5 text-[11px] font-black text-white shadow backdrop-blur-sm transition-colors hover:bg-emerald-700 dark:border-emerald-400/60 dark:bg-emerald-600/95 dark:hover:bg-emerald-500"
           style={{ zIndex: 1000 }}
         >
           <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">

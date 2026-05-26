@@ -126,8 +126,9 @@ function StatCard({ label, value, icon, accent, helper }: { label: string; value
 export default function PoleReports() {
   const navigate = useNavigate()
 
-  const [areas, setAreas] = useState<Area[]>(() => cacheGet<Area[]>('pr_areas') ?? [])
-  const [areasLoading, setAreasLoading] = useState(() => !cacheGet<Area[]>('pr_areas'))
+  const cachedAreas = cacheGet<Area[]>('pr_areas')
+  const [areas, setAreas] = useState<Area[]>(() => cachedAreas?.length ? cachedAreas : [])
+  const [areasLoading, setAreasLoading] = useState(() => !cachedAreas?.length)
 
   const [selectedArea, setSelectedArea] = useState<Area | null>(null)
   const [nodes, setNodes] = useState<SkycableNode[]>([])
@@ -135,13 +136,16 @@ export default function PoleReports() {
   const [search, setSearch] = useState('')
 
   useEffect(() => {
-    if (cacheGet<Area[]>('pr_areas')) return
+    const cached = cacheGet<Area[]>('pr_areas')
+    // Only skip fetch if cache is non-empty — empty array means a previous fetch failed/returned nothing
+    if (cached?.length) { setAreasLoading(false); return }
 
+    setAreasLoading(true)
     fetch(`${SKYCABLE_API}/areas`, { headers: headers() })
       .then(r => r.json())
       .then(d => {
         const list: Area[] = Array.isArray(d) ? d : d?.data ?? []
-        cacheSet('pr_areas', list)
+        if (list.length) cacheSet('pr_areas', list)   // only cache non-empty results
         setAreas(list)
       })
       .catch(() => {})
