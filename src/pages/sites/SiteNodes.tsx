@@ -603,19 +603,41 @@ export default function SiteNodes() {
   }
 
   async function handleDelete() {
-    if (!selected) return
+    if (!selected || !siteId) return
+    const deletedId = selected.id
     setSaving(true); setFormErr('')
     try {
       // Try permanent/force delete first; fall back to standard DELETE
-      let res = await fetch(`${SKYCABLE_API}/nodes/${selected.id}/force-delete`, { method: 'DELETE', headers: h() })
+      let res = await fetch(`${SKYCABLE_API}/nodes/${deletedId}/force-delete`, { method: 'DELETE', headers: h() })
       if (res.status === 404) {
-        res = await fetch(`${SKYCABLE_API}/nodes/${selected.id}?force=true`, { method: 'DELETE', headers: h() })
+        res = await fetch(`${SKYCABLE_API}/nodes/${deletedId}?force=true`, { method: 'DELETE', headers: h() })
       }
       if (!res.ok && res.status !== 204) {
         const body = await res.json().catch(() => ({}))
         throw new Error(body?.message ?? `Delete failed (HTTP ${res.status})`)
       }
-      closeAll(); loadData()
+
+      setNodes(prev => {
+        const next = prev.filter(node => node.id !== deletedId)
+        siteNodesCache.set(siteId, next)
+        cacheSet(nodesKey(siteId), next, TTL.DEFAULT)
+        return next
+      })
+
+      setArea(prev => {
+        if (!prev) return prev
+        const next = {
+          ...prev,
+          nodes_count: typeof prev.nodes_count === 'number'
+            ? Math.max(0, prev.nodes_count - 1)
+            : prev.nodes_count,
+        }
+        siteAreaCache.set(siteId, next)
+        cacheSet(areaKey(siteId), next, TTL.DEFAULT)
+        return next
+      })
+
+      closeAll()
     } catch (err) {
       setFormErr(err instanceof Error ? err.message : 'Failed to delete')
     } finally { setSaving(false) }
@@ -973,8 +995,24 @@ export default function SiteNodes() {
             </p>
             {formErr && <p className="mt-3 rounded-lg bg-rose-50 p-2.5 text-xs font-bold text-rose-600 dark:bg-rose-950/30 dark:text-rose-400">{formErr}</p>}
             <div className="mt-6 flex gap-3">
-              <button onClick={closeAll} className="flex-1 rounded-xl border border-slate-200/80 bg-white py-3 text-sm font-bold text-slate-700 shadow-2xs transition-all hover:bg-slate-50 hover:border-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700">Keep Registry</button>
-              <button onClick={handleDelete} disabled={saving} className="flex-1 rounded-xl bg-gradient-to-r from-rose-600 to-red-600 py-3 text-sm font-bold text-white shadow-lg shadow-rose-600/20 transition-all hover:from-rose-500 hover:to-red-500 hover:shadow-rose-600/30 disabled:opacity-60 active:scale-[0.98]">{saving ? 'Revoking…' : 'Confirm Deletion'}</button>
+              <button type="button" onClick={closeAll} disabled={saving} className="flex-1 rounded-xl border border-slate-200/80 bg-white py-3 text-sm font-bold text-slate-700 shadow-2xs transition-all hover:bg-slate-50 hover:border-slate-300 disabled:opacity-60 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700">Keep Registry</button>
+              <button
+                type="button"
+                onClick={handleDelete}
+                disabled={saving}
+                className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl py-3 text-sm font-bold text-white shadow-lg shadow-rose-600/20 transition-all hover:shadow-rose-600/30 disabled:opacity-60 active:scale-[0.98]"
+                style={{ background: 'linear-gradient(90deg, #e11d48 0%, #dc2626 100%)' }}
+              >
+                {saving ? (
+                  <>
+                    <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                      <circle cx="12" cy="12" r="9" className="opacity-30" stroke="currentColor" strokeWidth="3" />
+                      <path d="M21 12a9 9 0 00-9-9" className="opacity-100" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+                    </svg>
+                    <span>Revoking…</span>
+                  </>
+                ) : 'Confirm Deletion'}
+              </button>
             </div>
           </div>
         </Modal>

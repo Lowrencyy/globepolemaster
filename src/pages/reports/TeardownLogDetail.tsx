@@ -6,6 +6,26 @@ import 'leaflet/dist/leaflet.css'
 
 // ── Shared types ──────────────────────────────────────────────────────────────
 
+interface SpanPhoto {
+  id?: number
+  photo_type?: string | null
+  image_type?: string | null
+  type?: string | null
+  attachment_type?: string | null
+  field_name?: string | null
+  name?: string | null
+  image_path?: string | null
+  file_path?: string | null
+  path?: string | null
+  url?: string | null
+  image_url?: string | null
+  file_url?: string | null
+  full_url?: string | null
+  original_url?: string | null
+  pole_id?: number | string | null
+  pole?: { id?: number | string | null } | null
+}
+
 interface TeardownLog {
   id: number
   span_id: number
@@ -34,10 +54,12 @@ interface TeardownLog {
     node: { id: number; name: string } | null
     fromPole: { id: number; pole: { id: number; pole_code: string; lat?: number | null; lng?: number | null } | null } | null
     toPole:   { id: number; pole: { id: number; pole_code: string; lat?: number | null; lng?: number | null } | null } | null
+    from_pole?: { id: number; pole_id?: number | null; pole?: { id: number; pole_code: string; lat?: number | null; lng?: number | null } | null } | null
+    to_pole?: { id: number; pole_id?: number | null; pole?: { id: number; pole_code: string; lat?: number | null; lng?: number | null } | null } | null
   } | null
   team: { id: number; name: string } | null
   lineman: { id: number; first_name: string; last_name: string } | null
-  photos: Array<{ id: number; photo_type: string; image_path: string }>
+  photos: SpanPhoto[]
 }
 
 interface PoleReportDetail {
@@ -74,8 +96,190 @@ const authH = () => ({
   'ngrok-skip-browser-warning': '1',
 })
 
-function imgUrl(path: string) {
-  return path.startsWith('http') ? path : `${API_BASE}/api/v1/files/${path}`
+const SPAN_PHOTO_ALIASES: Record<string, string[]> = {
+  from_before: ['from_before', 'from_before_photo'],
+  from_after: ['from_after', 'from_after_photo'],
+  from_pole_tag: ['from_pole_tag', 'from_pole_tag_photo'],
+  to_before: ['to_before', 'to_before_photo'],
+  to_after: ['to_after', 'to_after_photo'],
+  to_pole_tag: ['to_pole_tag', 'to_pole_tag_photo'],
+  bunching: ['bunching', 'bunching_photo'],
+}
+
+const GENERIC_SPAN_PHOTO_ALIASES: Record<string, string[]> = {
+  before: ['before', 'before_photo'],
+  after: ['after', 'after_photo'],
+  pole_tag: ['pole_tag', 'pole_tag_photo', 'tag', 'tag_photo'],
+  bunching: ['bunching', 'bunching_photo'],
+}
+
+function imgUrl(path: string | null | undefined): string | null {
+  const clean = path?.trim().replace(/\\/g, '/')
+  if (!clean) return null
+  if (/^https?:\/\//i.test(clean)) return clean
+  if (clean.startsWith('//')) return `https:${clean}`
+  if (clean.startsWith(API_BASE)) return clean
+  if (clean.startsWith('/api/v1/files/')) return `${API_BASE}${encodeURI(clean)}`
+  if (clean.startsWith('api/v1/files/')) return `${API_BASE}/${encodeURI(clean)}`
+
+  const storageRelative = clean
+    .replace(/^\/+/, '')
+    .replace(/^public\/storage\//i, '')
+    .replace(/^storage\//i, '')
+
+  return `${API_BASE}/api/v1/files/${encodeURI(storageRelative)}`
+}
+
+function storagePhotoUrl(siteName: string | null | undefined, poleCode: string, fileBase: string, kind: 'before' | 'after' | 'poletag') {
+  const cleanSite = siteName?.trim()
+  const cleanPole = storageFolderName(poleCode)
+  const cleanFileBase = fileBase.trim()
+  if (!cleanSite || !cleanPole || !cleanFileBase || cleanPole === '—') return null
+  return imgUrl(`DEMO SITES/${cleanSite}/${cleanPole}/${cleanFileBase}_${kind}.jpg`)
+}
+
+function storageFolderName(poleCode: string) {
+  const clean = poleCode.trim()
+  if (clean.toLowerCase() === 'tapat bahayy') return 'tapat bahay'
+  return clean
+}
+
+function storagePhotoCandidates(siteName: string | null | undefined, poleCode: string, poleId: number | string | null | undefined, kind: 'before' | 'after' | 'poletag') {
+  const fileBases = [
+    storageFolderName(poleCode),
+    poleId !== null && poleId !== undefined ? String(poleId) : null,
+    storageFolderName(poleCode).toLowerCase() === 'tapat bahay' ? '3' : null,
+  ].filter((item): item is string => Boolean(item))
+
+  const candidates = fileBases
+    .map(fileBase => storagePhotoUrl(siteName, poleCode, fileBase, kind))
+    .filter((item): item is string => Boolean(item))
+
+  return Array.from(new Set(candidates))
+}
+
+function imageCandidates(primary: string | null, fallback: string[]) {
+  return Array.from(new Set([
+    ...(primary ? [primary] : []),
+    ...fallback,
+  ]))
+}
+
+function photoKind(type: string) {
+  if (type.includes('before')) return 'before'
+  if (type.includes('after')) return 'after'
+  if (type.includes('tag')) return 'pole_tag'
+  return type
+}
+
+function normalizeId(id: number | string | null | undefined) {
+  if (id === null || id === undefined || id === '') return null
+  const n = Number(id)
+  return Number.isFinite(n) ? n : null
+}
+
+function photoType(photo: SpanPhoto) {
+  return String(
+    photo.photo_type ??
+    photo.image_type ??
+    photo.type ??
+    photo.attachment_type ??
+    photo.field_name ??
+    photo.name ??
+    '',
+  ).trim().toLowerCase()
+}
+
+function photoPath(photo: SpanPhoto | null | undefined) {
+  return photo?.image_path ??
+    photo?.file_path ??
+    photo?.path ??
+    photo?.url ??
+    photo?.image_url ??
+    photo?.file_url ??
+    photo?.full_url ??
+    photo?.original_url ??
+    null
+}
+
+function photoPoleId(photo: SpanPhoto) {
+  return normalizeId(photo.pole_id ?? photo.pole?.id)
+}
+
+function findSpanPhoto(photos: SpanPhoto[] | null | undefined, type: string, poleId?: number | string | null) {
+  if (!photos?.length) return null
+
+  const exactAllowed = new Set((SPAN_PHOTO_ALIASES[type] ?? [type]).map((item) => item.toLowerCase()))
+  const exact = photos.find((photo) => exactAllowed.has(photoType(photo)))
+  if (exact) return exact
+
+  const wantedPoleId = normalizeId(poleId)
+  const genericAllowed = new Set((GENERIC_SPAN_PHOTO_ALIASES[photoKind(type)] ?? [photoKind(type)]).map((item) => item.toLowerCase()))
+  const genericMatches = photos.filter((photo) => genericAllowed.has(photoType(photo)))
+
+  if (wantedPoleId !== null) {
+    const poleMatch = genericMatches.find((photo) => photoPoleId(photo) === wantedPoleId)
+    if (poleMatch) return poleMatch
+  }
+
+  const sideIndex = type.startsWith('to_') ? 1 : 0
+  return genericMatches[sideIndex] ?? genericMatches[0] ?? null
+}
+
+function isSpanPhoto(value: unknown): value is SpanPhoto {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const item = value as Record<string, unknown>
+  const hasPath = ['image_path', 'file_path', 'path', 'url', 'image_url', 'file_url', 'full_url', 'original_url']
+    .some((key) => typeof item[key] === 'string' && String(item[key]).trim() !== '')
+  const hasType = ['photo_type', 'image_type', 'type', 'attachment_type', 'field_name', 'name']
+    .some((key) => typeof item[key] === 'string' && String(item[key]).trim() !== '')
+  return hasPath && hasType
+}
+
+function collectSpanPhotos(source: unknown): SpanPhoto[] {
+  const collected: SpanPhoto[] = []
+  const seen = new Set<unknown>()
+  const photoKeys = new Set(['photos', 'attachments', 'evidence', 'images', 'teardown_log_images', 'teardown_images'])
+
+  function directPhotoType(key: string) {
+    const lower = key.toLowerCase()
+    if (!lower.includes('photo') && !lower.includes('image')) return null
+    const normalized = lower
+      .replace(/_(path|url|file|image)$/g, '')
+      .replace(/^(photo|image)_/g, '')
+    if (normalized.includes('before')) return normalized.includes('to_') ? 'to_before_photo' : normalized.includes('from_') ? 'from_before_photo' : 'before'
+    if (normalized.includes('after')) return normalized.includes('to_') ? 'to_after_photo' : normalized.includes('from_') ? 'from_after_photo' : 'after'
+    if (normalized.includes('tag')) return normalized.includes('to_') ? 'to_pole_tag_photo' : normalized.includes('from_') ? 'from_pole_tag_photo' : 'pole_tag'
+    return null
+  }
+
+  function visit(value: unknown, forceArray = false) {
+    if (!value || seen.has(value)) return
+    if (typeof value === 'object') seen.add(value)
+
+    if (Array.isArray(value)) {
+      value.forEach((item) => visit(item, forceArray))
+      return
+    }
+
+    if (isSpanPhoto(value)) {
+      collected.push(value)
+      return
+    }
+
+    if (typeof value !== 'object') return
+    const obj = value as Record<string, unknown>
+    for (const [key, child] of Object.entries(obj)) {
+      const inferredType = directPhotoType(key)
+      if (inferredType && typeof child === 'string' && child.trim() !== '') {
+        collected.push({ photo_type: inferredType, file_path: child })
+      }
+      if (photoKeys.has(key) || forceArray) visit(child, true)
+    }
+  }
+
+  visit(source)
+  return collected
 }
 
 function fmtDate(s: string | null) {
@@ -104,8 +308,20 @@ function fetchCachedBlob(src: string): Promise<string | null> {
   const inflight = _imgFlight.get(src)
   if (inflight) return inflight
   const p = fetch(src, { headers: { 'ngrok-skip-browser-warning': '1', Authorization: `Bearer ${getToken()}` } })
-    .then(r => r.blob())
-    .then(blob => { const u = URL.createObjectURL(blob); _imgCache.set(src, u); return u })
+    .then(r => {
+      if (!r.ok) throw new Error(`Image request failed: ${r.status}`)
+      const contentType = r.headers.get('content-type')?.toLowerCase() ?? ''
+      if (contentType.includes('text/html') || contentType.includes('application/json')) {
+        throw new Error(`Image request returned ${contentType}`)
+      }
+      return r.blob()
+    })
+    .then(blob => {
+      if (blob.size === 0) throw new Error('Image request returned an empty file')
+      const u = URL.createObjectURL(blob)
+      _imgCache.set(src, u)
+      return u
+    })
     .catch(() => null)
     .finally(() => _imgFlight.delete(src))
   _imgFlight.set(src, p)
@@ -113,20 +329,39 @@ function fetchCachedBlob(src: string): Promise<string | null> {
 }
 
 function SafeImage({
-  src, alt, className, style, onClick,
+  src, alt, className, style, onClick, onResolved,
 }: {
-  src: string; alt?: string; className?: string; style?: CSSProperties; onClick?: (e: MouseEvent) => void
+  src: string | string[]
+  alt?: string
+  className?: string
+  style?: CSSProperties
+  onClick?: (e: MouseEvent) => void
+  onResolved?: (src: string) => void
 }) {
-  const [blobUrl, setBlobUrl] = useState<string | null>(() => _imgCache.get(src) ?? null)
-  const [loading, setLoading] = useState(!_imgCache.has(src))
+  const sources = Array.isArray(src) ? src : [src]
+  const [sourceIndex, setSourceIndex] = useState(0)
+  const activeSrc = sources[sourceIndex] ?? sources[0]
+  const [blobUrl, setBlobUrl] = useState<string | null>(() => _imgCache.get(activeSrc) ?? null)
+  const [loading, setLoading] = useState(!_imgCache.has(activeSrc))
 
   useEffect(() => {
     let alive = true
-    if (_imgCache.has(src)) { setBlobUrl(_imgCache.get(src)!); setLoading(false); return }
-    setLoading(true)
-    fetchCachedBlob(src).then(u => { if (!alive) return; setBlobUrl(u); setLoading(false) })
+    fetchCachedBlob(activeSrc).then(u => {
+      if (!alive) return
+      if (u) {
+        setBlobUrl(u)
+        setLoading(false)
+        onResolved?.(activeSrc)
+        return
+      }
+      if (sourceIndex < sources.length - 1) {
+        setSourceIndex(i => i + 1)
+      } else {
+        setLoading(false)
+      }
+    })
     return () => { alive = false }
-  }, [src])
+  }, [activeSrc, onResolved, sourceIndex, sources.length])
 
   if (loading) {
     return (
@@ -135,7 +370,20 @@ function SafeImage({
       </div>
     )
   }
-  return <img src={blobUrl || ''} alt={alt} className={className} style={style} onClick={onClick} />
+  return (
+    <img
+      src={blobUrl || activeSrc}
+      alt={alt}
+      className={className}
+      style={style}
+      onClick={onClick}
+      onError={() => {
+        if (sourceIndex < sources.length - 1) {
+          setSourceIndex(i => i + 1)
+        }
+      }}
+    />
+  )
 }
 
 // ── Leaflet map styles ────────────────────────────────────────────────────────
@@ -151,23 +399,27 @@ const MAP_STYLES = `
 
 function PhotoSlot({
   label, src, onZoom,
-}: { label: string; src: string | null; onZoom: (src: string) => void }) {
+}: { label: string; src: string | string[] | null; onZoom: (src: string) => void }) {
+  const sources = Array.isArray(src) ? src : src ? [src] : []
+  const [resolvedSrc, setResolvedSrc] = useState<string | null>(sources[0] ?? null)
+  const zoomSrc = resolvedSrc && sources.includes(resolvedSrc) ? resolvedSrc : sources[0] ?? null
+
   return (
     <div
       className={`group relative flex flex-col overflow-hidden rounded-2xl border bg-zinc-950 shadow-sm transition-all duration-200 ${
-        src
+        sources.length > 0
           ? 'cursor-zoom-in border-zinc-200 hover:-translate-y-0.5 hover:shadow-xl hover:ring-2 hover:ring-blue-400/30 dark:border-zinc-700'
           : 'border-zinc-100 dark:border-zinc-800'
       }`}
-      onClick={() => src && onZoom(src)}
+      onClick={() => zoomSrc && onZoom(zoomSrc)}
     >
       {/* colour accent bar */}
-      <div className={`h-0.5 w-full shrink-0 ${src ? 'bg-gradient-to-r from-blue-500 via-violet-500 to-indigo-500' : 'bg-zinc-100 dark:bg-zinc-800'}`} />
+      <div className={`h-0.5 w-full shrink-0 ${sources.length > 0 ? 'bg-gradient-to-r from-blue-500 via-violet-500 to-indigo-500' : 'bg-zinc-100 dark:bg-zinc-800'}`} />
 
       <div className="relative flex-1" style={{ height: 180 }}>
-        {src ? (
+        {sources.length > 0 ? (
           <>
-            <SafeImage src={src} alt={label} className="h-full w-full object-cover transition duration-300 group-hover:scale-[1.02] group-hover:brightness-90" />
+            <SafeImage src={sources} alt={label} className="h-full w-full object-cover transition duration-300 group-hover:scale-[1.02] group-hover:brightness-90" onResolved={setResolvedSrc} />
             <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/10 to-transparent" />
             <span className="absolute bottom-2.5 left-3 text-[9px] font-black uppercase tracking-[0.2em] text-white drop-shadow">{label}</span>
             {/* zoom hint */}
@@ -253,7 +505,12 @@ export default function TeardownLogDetail() {
         .then(r => r.json())
         .then(data => {
           const item = data?.data ?? data
-          if (item?.id) setLog(item); else setLogError('Teardown log not found')
+          if (item?.id) {
+            setLog({
+              ...item,
+              photos: collectSpanPhotos(item),
+            })
+          } else setLogError('Teardown log not found')
         })
         .catch(() => setLogError('Failed to load teardown log'))
         .finally(() => setLogLoading(false))
@@ -306,10 +563,12 @@ function TeardownView({ log, onBack }: { log: TeardownLog; onBack: () => void })
   const lineman   = log.lineman ? `${log.lineman.first_name} ${log.lineman.last_name}` : '—'
   const teamName  = log.team?.name ?? '—'
 
-  const fromPole = span?.fromPole || (span as any)?.from_pole
-  const toPole   = span?.toPole   || (span as any)?.to_pole
+  const fromPole = span?.fromPole || span?.from_pole
+  const toPole   = span?.toPole   || span?.to_pole
   const fromCode = fromPole?.pole?.pole_code ?? '—'
   const toCode   = toPole?.pole?.pole_code   ?? '—'
+  const fromPoleId = fromPole?.pole?.id ?? fromPole?.pole_id ?? fromPole?.id ?? null
+  const toPoleId = toPole?.pole?.id ?? toPole?.pole_id ?? toPole?.id ?? null
 
   const fromLat = Number(fromPole?.pole?.lat ?? 0)
   const fromLng = Number(fromPole?.pole?.lng ?? 0)
@@ -375,9 +634,13 @@ function TeardownView({ log, onBack }: { log: TeardownLog; onBack: () => void })
   }, [hasAnyGps, fromLat, fromLng, toLat, toLng, fromCode, toCode])
 
   // 6 photo slots
-  const photo = (type: string) => {
-    const p = log.photos?.find(ph => ph.photo_type === type)
-    return p ? imgUrl(p.image_path) : null
+  const photo = (type: string, poleId?: number | string | null) => {
+    const p = findSpanPhoto(log.photos, type, poleId)
+    return imgUrl(photoPath(p))
+  }
+
+  const fallbackPhoto = (poleCode: string, poleId: number | string | null | undefined, kind: 'before' | 'after' | 'poletag') => {
+    return storagePhotoCandidates(nodeName, poleCode, poleId, kind)
   }
 
   const statusColor: Record<string, string> = {
@@ -575,9 +838,9 @@ function TeardownView({ log, onBack }: { log: TeardownLog; onBack: () => void })
               </div>
             </div>
             <div className="grid grid-cols-3 gap-2.5">
-              <PhotoSlot label="Before" src={photo('from_before')} onZoom={setLightbox} />
-              <PhotoSlot label="After"  src={photo('from_after')}  onZoom={setLightbox} />
-              <PhotoSlot label="Tag"    src={photo('from_pole_tag')} onZoom={setLightbox} />
+              <PhotoSlot label="Before" src={imageCandidates(photo('from_before', fromPoleId), fallbackPhoto(fromCode, fromPoleId, 'before'))} onZoom={setLightbox} />
+              <PhotoSlot label="After"  src={imageCandidates(photo('from_after', fromPoleId), fallbackPhoto(fromCode, fromPoleId, 'after'))} onZoom={setLightbox} />
+              <PhotoSlot label="Tag"    src={imageCandidates(photo('from_pole_tag', fromPoleId), fallbackPhoto(fromCode, fromPoleId, 'poletag'))} onZoom={setLightbox} />
             </div>
           </div>
 
@@ -591,9 +854,9 @@ function TeardownView({ log, onBack }: { log: TeardownLog; onBack: () => void })
               </div>
             </div>
             <div className="grid grid-cols-3 gap-2.5">
-              <PhotoSlot label="Before" src={photo('to_before')} onZoom={setLightbox} />
-              <PhotoSlot label="After"  src={photo('to_after')}  onZoom={setLightbox} />
-              <PhotoSlot label="Tag"    src={photo('to_pole_tag')} onZoom={setLightbox} />
+              <PhotoSlot label="Before" src={imageCandidates(photo('to_before', toPoleId), fallbackPhoto(toCode, toPoleId, 'before'))} onZoom={setLightbox} />
+              <PhotoSlot label="After"  src={imageCandidates(photo('to_after', toPoleId), fallbackPhoto(toCode, toPoleId, 'after'))} onZoom={setLightbox} />
+              <PhotoSlot label="Tag"    src={imageCandidates(photo('to_pole_tag', toPoleId), fallbackPhoto(toCode, toPoleId, 'poletag'))} onZoom={setLightbox} />
             </div>
           </div>
         </div>

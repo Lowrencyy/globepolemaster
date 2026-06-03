@@ -30,7 +30,7 @@ interface TeardownLog {
   } | null
   team: { id: number; name: string } | null
   lineman: { id: number; first_name: string; last_name: string } | null
-  photos: Array<{ id: number; photo_type: string; image_path: string }>
+  photos: Array<{ id: number; photo_type: string; image_path?: string | null; file_path?: string | null }>
 }
 
 interface PoleReport {
@@ -69,8 +69,33 @@ function feedDate(item: FeedItem): number {
   return new Date(raw).getTime()
 }
 
-function imgUrl(path: string) {
-  return path.startsWith('http') ? path : `${API_BASE}/api/v1/files/${path}`
+const SPAN_PHOTO_ALIASES: Record<string, string[]> = {
+  from_before: ['from_before', 'from_before_photo'],
+  from_after: ['from_after', 'from_after_photo'],
+  from_pole_tag: ['from_pole_tag', 'from_pole_tag_photo'],
+  to_before: ['to_before', 'to_before_photo'],
+  to_after: ['to_after', 'to_after_photo'],
+  to_pole_tag: ['to_pole_tag', 'to_pole_tag_photo'],
+  bunching: ['bunching', 'bunching_photo'],
+}
+
+function imgUrl(path: string | null | undefined) {
+  const clean = path?.trim()
+  if (!clean) return null
+  if (/^https?:\/\//i.test(clean)) return clean
+  if (clean.startsWith('//')) return `https:${clean}`
+  if (clean.startsWith(API_BASE)) return clean
+  if (clean.startsWith('/api/v1/files/')) return `${API_BASE}${clean}`
+  if (clean.startsWith('api/v1/files/')) return `${API_BASE}/${clean}`
+  return `${API_BASE}/api/v1/files/${clean.replace(/^\/+/, '')}`
+}
+
+function findSpanPhoto(
+  photos: Array<{ photo_type: string; image_path?: string | null; file_path?: string | null }> | null | undefined,
+  type: string,
+) {
+  const allowed = new Set((SPAN_PHOTO_ALIASES[type] ?? [type]).map((item) => item.toLowerCase()))
+  return photos?.find((photo) => allowed.has(String(photo.photo_type ?? '').trim().toLowerCase())) ?? null
 }
 
 // Module-level blob cache — survives SPA nav, avoids re-downloading on revisit
@@ -82,8 +107,8 @@ const _polePhotoCache = new Map<number, Array<{ id: number; image_type: string; 
 const _polePhotoFlight = new Map<number, Promise<Array<{ id: number; image_type: string; file_path: string }>>>()
 
 // Per-span-teardown photo cache — keyed by log id, stores correct photos from individual endpoint
-const _spanPhotoCache = new Map<number, Array<{ id: number; photo_type: string; image_path: string }>>()
-const _spanPhotoFlight = new Map<number, Promise<Array<{ id: number; photo_type: string; image_path: string }>>>()
+const _spanPhotoCache = new Map<number, Array<{ id: number; photo_type: string; image_path?: string | null; file_path?: string | null }>>()
+const _spanPhotoFlight = new Map<number, Promise<Array<{ id: number; photo_type: string; image_path?: string | null; file_path?: string | null }>>>()
 
 function fetchCachedBlob(src: string): Promise<string | null> {
   const hit = _imgCache.get(src)
@@ -96,7 +121,10 @@ function fetchCachedBlob(src: string): Promise<string | null> {
       Authorization: `Bearer ${getToken()}`,
     },
   })
-    .then(r => r.blob())
+    .then(r => {
+      if (!r.ok) throw new Error(`Image request failed: ${r.status}`)
+      return r.blob()
+    })
     .then(blob => { const u = URL.createObjectURL(blob); _imgCache.set(src, u); return u })
     .catch(() => null)
     .finally(() => _imgFlight.delete(src))
@@ -135,7 +163,7 @@ function SafeImage({ src, alt, className, style, onClick }: {
 
   return (
     <img
-      src={blobUrl || ''}
+      src={blobUrl || src}
       alt={alt}
       className={className}
       style={style}
@@ -206,7 +234,7 @@ function MiniPhoto({ src, label }: { src: string | null; label: string }) {
 
 // ── Span teardown card ────────────────────────────────────────────────────────
 
-function fetchSpanPhotos(id: number): Promise<Array<{ id: number; photo_type: string; image_path: string }>> {
+function fetchSpanPhotos(id: number): Promise<Array<{ id: number; photo_type: string; image_path?: string | null; file_path?: string | null }>> {
   if (_spanPhotoCache.has(id)) return Promise.resolve(_spanPhotoCache.get(id)!)
   const inflight = _spanPhotoFlight.get(id)
   if (inflight) return inflight
@@ -214,13 +242,13 @@ function fetchSpanPhotos(id: number): Promise<Array<{ id: number; photo_type: st
     .then(r => r.json())
     .then(data => {
       const item = data?.data ?? data
-      const photos: Array<{ id: number; photo_type: string; image_path: string }> = item?.photos ?? []
+      const photos: Array<{ id: number; photo_type: string; image_path?: string | null; file_path?: string | null }> = item?.photos ?? []
       _spanPhotoCache.set(id, photos)
       return photos
     })
     .catch(() => {
       _spanPhotoCache.set(id, [])
-      return [] as Array<{ id: number; photo_type: string; image_path: string }>
+      return [] as Array<{ id: number; photo_type: string; image_path?: string | null; file_path?: string | null }>
     })
     .finally(() => _spanPhotoFlight.delete(id))
   _spanPhotoFlight.set(id, p)
@@ -240,7 +268,7 @@ function SpanCard({ log, seq }: { log: TeardownLog; seq: number }) {
   const toCode   = toPole?.pole?.pole_code   ?? '—'
 
   // Fetch correct photos from individual endpoint (list endpoint omits photos)
-  const [photos, setPhotos] = useState<Array<{ id: number; photo_type: string; image_path: string }>>(
+  const [photos, setPhotos] = useState<Array<{ id: number; photo_type: string; image_path?: string | null; file_path?: string | null }>>(
     () => _spanPhotoCache.get(log.id) ?? []
   )
 
@@ -250,8 +278,8 @@ function SpanCard({ log, seq }: { log: TeardownLog; seq: number }) {
   }, [log.id])
 
   const p = (type: string) => {
-    const found = photos.find(ph => ph.photo_type === type)
-    return found ? imgUrl(found.image_path) : null
+    const found = findSpanPhoto(photos, type)
+    return imgUrl(found?.image_path ?? found?.file_path)
   }
 
   return (
@@ -302,7 +330,7 @@ function SpanCard({ log, seq }: { log: TeardownLog; seq: number }) {
 // ── Pole report card ──────────────────────────────────────────────────────────
 
 function polePhotoUrl(filePath: string) {
-  return `${API_BASE}/api/v1/files/${filePath}`
+  return imgUrl(filePath)
 }
 
 function fetchPolePhotos(id: number): Promise<Array<{ id: number; image_type: string; file_path: string }>> {
