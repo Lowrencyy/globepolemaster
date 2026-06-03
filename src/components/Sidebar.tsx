@@ -237,6 +237,14 @@ export default function Sidebar() {
             {warehouse && (
               <>
                 <li className={labelCls}>Warehouse</li>
+                {(admin || executive) && (
+                  <li className={pathname.startsWith('/warehouses') && !pathname.startsWith('/warehouses/deliveries') ? 'mm-active' : ''}>
+                    <Link to="/warehouses" className={pathname.startsWith('/warehouses') && !pathname.startsWith('/warehouses/deliveries') ? activeLinkCls : linkCls}>
+                      <i data-feather="archive" />
+                      <span>Warehouses</span>
+                    </Link>
+                  </li>
+                )}
                 <li className={pathname === '/warehouse/inventory' && !search.includes('tab=deliveries') ? 'mm-active' : ''}>
                   <Link to="/warehouse/inventory" className={pathname === '/warehouse/inventory' && !search.includes('tab=deliveries') ? activeLinkCls : linkCls}>
                     <i data-feather="package" />
@@ -247,6 +255,12 @@ export default function Sidebar() {
                   <Link to="/warehouse/inventory?tab=deliveries" className={pathname === '/warehouse/inventory' && search.includes('tab=deliveries') ? activeLinkCls : linkCls}>
                     <i data-feather="truck" />
                     <span>Delivery Tracker</span>
+                  </Link>
+                </li>
+                <li className={pathname === '/warehouses/deliveries' ? 'mm-active' : ''}>
+                  <Link to="/warehouses/deliveries" className={pathname === '/warehouses/deliveries' ? activeLinkCls : linkCls}>
+                    <i data-feather="navigation" />
+                    <span>Transfer Deliveries</span>
                   </Link>
                 </li>
               </>
@@ -311,6 +325,15 @@ export default function Sidebar() {
                   </a>
                 </li>
               </>
+            )}
+
+            {(admin || executive) && (
+              <li className={pathname === '/recycle-bin' ? 'mm-active' : ''}>
+                <Link to="/recycle-bin" className={pathname === '/recycle-bin' ? activeLinkCls : linkCls}>
+                  <i data-feather="trash-2" />
+                  <span>Recycle Bin</span>
+                </Link>
+              </li>
             )}
 
           </ul>

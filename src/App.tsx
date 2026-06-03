@@ -44,6 +44,9 @@ import ClientDashboard from './pages/client/ClientDashboard'
 import SubconDashboard from './pages/subcon/SubconDashboard'
 import WarehouseInventory from './pages/warehouse/WarehouseInventory'
 import DailyTeardownDelivery from './pages/delivery/DailyTeardownDelivery'
+import Warehouses from './pages/subcontractors/Warehouses'
+import Deliveries from './pages/warehouse/Deliveries'
+import RecycleBin from './pages/recycle-bin/RecycleBin'
 
 function WarehouseInventoryPage() {
   return (
@@ -285,8 +288,21 @@ export default function App() {
             <UsersPage />
           </RoleRoute>
         } />
+        <Route path="/recycle-bin" element={
+          <RoleRoute allow={['admin', 'executive']}>
+            <Layout><RecycleBin /></Layout>
+          </RoleRoute>
+        } />
+
+        {/* ── Deliveries — admin/executive see all, subcon see own ── */}
+        <Route path="/warehouses/deliveries" element={
+          <RoleRoute allow={['admin','executive','subcontractor','project_manager','warehouse_incharge']}>
+            <Layout><Deliveries /></Layout>
+          </RoleRoute>
+        } />
 
         {/* ── Admin + Executive (subcon management) ── */}
+        <Route path="/warehouses" element={<RoleRoute allow={['admin','executive']}><Layout><Warehouses /></Layout></RoleRoute>} />
         <Route path="/subcontractors" element={<RoleRoute allow={['admin','executive']}><SubcontractorsPage /></RoleRoute>} />
         <Route path="/subcontractors/:id" element={<RoleRoute allow={['admin','executive']}><SubcontractorDetailPage /></RoleRoute>} />
         <Route path="/subcontractors/:id/teams" element={<RoleRoute allow={['admin','executive']}><SubcontractorTeamsPage /></RoleRoute>} />

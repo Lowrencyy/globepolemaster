@@ -131,6 +131,35 @@ function h() {
   }
 }
 
+// Override status based on last ping age — don't trust stale backend status
+function effectiveStatus(l: ApiLineman): 'active' | 'idle' | 'offline' {
+  if (!l.pingedAt) return 'offline'
+  const mins = Math.floor((Date.now() - new Date(l.pingedAt).getTime()) / 60000)
+  if (isNaN(mins) || mins > 30) return 'offline'
+  if (mins > 15) return 'idle'
+  return l.status
+}
+
+// Normalize raw Laravel snake_case response → ApiLineman
+function normalizeLineman(r: any): ApiLineman {
+  return {
+    id:         String(r.id ?? r.user_id ?? ''),
+    name:       r.name ?? r.user?.name ?? 'Unknown',
+    status:     r.status ?? 'offline',
+    lat:        Number(r.lat ?? r.latitude ?? 0),
+    lng:        Number(r.lng ?? r.longitude ?? 0),
+    // try every possible field name the backend might use
+    pingedAt:   r.pinged_at ?? r.pingedAt ?? r.last_ping ?? r.last_seen
+                ?? r.last_active ?? r.updated_at ?? '',
+    teamId:     r.team_id ?? r.teamId ?? null,
+    teamName:   r.team_name ?? r.teamName ?? r.team?.name ?? null,
+    subconId:   r.subcon_id ?? r.subconId ?? r.subcontractor_id ?? null,
+    subconName: r.subcon_name ?? r.subconName ?? r.subcontractor?.name ?? null,
+    city:       r.city ?? null,
+    barangay:   r.barangay ?? null,
+  }
+}
+
 function iCls() {
   return 'h-10 w-full rounded-2xl border border-slate-200 bg-white px-3.5 text-sm outline-none transition placeholder:text-slate-300 focus:border-emerald-400 focus:ring-4 focus:ring-emerald-400/15 dark:border-zinc-700 dark:bg-zinc-900 dark:text-white'
 }
@@ -282,7 +311,7 @@ export default function NodePolesSpans() {
   const mapRef = useRef<HTMLDivElement>(null)
   const mapObj = useRef<any>(null)
   const tileRef = useRef<L.TileLayer | null>(null)
-  const [baseTile, setBaseTile] = useState<BaseTile>('satellite')
+  const [baseTile, setBaseTile] = useState<BaseTile>('osm')
   const [metricsModal, setMetricsModal] = useState(false)
   const [savingMetrics, setSavingMetrics] = useState(false)
   const [metricsData, setMetricsData] = useState({
@@ -312,6 +341,16 @@ export default function NodePolesSpans() {
   const [savingPole, setSavingPole] = useState(false)
   const [poleErr, setPoleErr] = useState<string | null>(null)
 
+  // Map interaction modes
+  const [mapMode, setMapMode] = useState<'view' | 'add' | 'reassign'>('view')
+  const mapModeRef = useRef<'view' | 'add' | 'reassign'>('view')
+  const [reassignMsg, setReassignMsg] = useState<{ code: string; ok: boolean } | null>(null)
+
+  function setMode(m: 'view' | 'add' | 'reassign') {
+    setMapMode(m)
+    mapModeRef.current = m
+  }
+
   const [editPoleModal, setEditPoleModal] = useState(false)
   const [editingPole, setEditingPole] = useState<Pole | null>(null)
   const [editPoleCode, setEditPoleCode] = useState('')
@@ -323,6 +362,12 @@ export default function NodePolesSpans() {
   const editMapRef = useRef<HTMLDivElement>(null)
   const editMapObj = useRef<L.Map | null>(null)
   const editMapMarker = useRef<L.Marker | null>(null)
+
+  const addMapRef = useRef<HTMLDivElement>(null)
+  const addMapObj = useRef<L.Map | null>(null)
+  const addMapMarker = useRef<L.Marker | null>(null)
+  const addMapTileRef = useRef<L.TileLayer | null>(null)
+  const [addMapTile, setAddMapTile] = useState<BaseTile>('osm')
 
   const parsePoles = (d: any): Pole[] =>
     (Array.isArray(d) ? d : (d?.data ?? [])).map((p: any) => ({
@@ -348,19 +393,22 @@ export default function NodePolesSpans() {
       setLoading(false)
       setLastSynced(hit.ts || Date.now())
       
-      // SWR: fetch fresh in background silently
-      fetch(`${SKYCABLE_API}/nodes/${nodeId}`, { headers: h() })
-        .then(async r => {
-          const nd = await r.json()
-          const n = nd?.data ?? nd
-          const pr = await fetch(`${SKYCABLE_API}/nodes/${nodeId}/poles`, { headers: h() })
-          const pd = await pr.json()
-          const p = parsePoles(pd)
-          setNode(n)
-          setPoles(p)
-          cacheSet(ck, { node: n, poles: p })
-          setLastSynced(Date.now())
-        }).catch(() => {})
+      // SWR: fetch fresh data in background silently — includes teardowns so inventory is always current
+      Promise.all([
+        fetch(`${SKYCABLE_API}/nodes/${nodeId}`, { headers: h() }),
+        fetch(`${SKYCABLE_API}/nodes/${nodeId}/poles`, { headers: h() }),
+        fetch(`${SKYCABLE_API}/teardowns?node_id=${nodeId}&per_page=500`, { headers: h() }),
+      ]).then(async ([nr, pr, tr]) => {
+        const [nd, pd, td] = await Promise.all([nr.json(), pr.json(), tr.json()])
+        const n = nd?.data ?? nd
+        const p = parsePoles(pd)
+        const t: TeardownRecord[] = Array.isArray(td) ? td : (td?.data ?? [])
+        setNode(n)
+        setPoles(p)
+        setTeardowns(t)
+        cacheSet(ck, { node: n, poles: p })
+        setLastSynced(Date.now())
+      }).catch(() => {})
       return
     }
 
@@ -501,9 +549,48 @@ export default function NodePolesSpans() {
         iconAnchor: [14, 14],
       })
 
-      L.marker([Number(p.lat), Number(p.lng)], { icon })
-        .addTo(map)
-        .bindPopup(`
+      // In reassign mode: green drag icon; otherwise normal status icon
+      const markerIcon = mapMode === 'reassign'
+        ? L.divIcon({
+            className: '',
+            html: `<div style="width:32px;height:32px;border-radius:50%;background:#10b981;border:3px solid #fff;box-shadow:0 0 0 3px #10b98155,0 4px 14px rgba(0,0,0,.45);cursor:grab;display:flex;align-items:center;justify-content:center;">
+                     <svg width="14" height="14" viewBox="0 0 24 24" fill="white"><path d="M11 5h2v14h-2zm-5 5l-2 2 2 2V10zm12 0v4l2-2-2-2z"/></svg>
+                   </div>`,
+            iconSize: [32, 32], iconAnchor: [16, 16],
+          })
+        : icon
+
+      const marker = L.marker([Number(p.lat), Number(p.lng)], { icon: markerIcon, draggable: mapMode === 'reassign' }).addTo(map)
+
+      if (mapMode === 'reassign') {
+        marker.bindTooltip(`<b style="font-family:monospace">${p.pole_code}</b><br/><span style="font-size:10px;opacity:.7">Drag to move</span>`, { permanent: false, direction: 'top', offset: [0, -18] })
+        marker.on('dragend', async () => {
+          const { lat: newLat, lng: newLng } = marker.getLatLng()
+          try {
+            // Try /gps endpoint first (NodeSpans pattern), fall back to PUT
+            let ok = false
+            const r1 = await fetch(`${SKYCABLE_API}/poles/${p.pole_db_id}/gps`, {
+              method: 'POST', headers: h(),
+              body: JSON.stringify({ lat: newLat, lng: newLng }),
+            })
+            if (r1.ok || r1.status === 204) { ok = true }
+            if (!ok) {
+              const r2 = await fetch(`${SKYCABLE_API}/poles/${p.pole_db_id}`, {
+                method: 'PUT', headers: h(),
+                body: JSON.stringify({ lat: newLat, lng: newLng, latitude: newLat, longitude: newLng }),
+              })
+              if (r2.ok || r2.status === 204) ok = true
+            }
+            if (!ok) throw new Error('Save failed')
+            setTimeout(() => setReassignMsg({ code: p.pole_code, ok: true }), 0)
+          } catch {
+            setTimeout(() => setReassignMsg({ code: p.pole_code, ok: false }), 0)
+            marker.setLatLng([Number(p.lat), Number(p.lng)])
+          }
+          setTimeout(() => setReassignMsg(null), 3000)
+        })
+      } else {
+        marker.bindPopup(`
           <div style="font-family:system-ui;min-width:170px;padding:4px 0">
             <div style="font-size:9px;font-weight:900;text-transform:uppercase;letter-spacing:.12em;color:#94a3b8;margin-bottom:4px">Pole</div>
             <div style="font-size:15px;font-weight:900;color:#0f172a;font-family:monospace">${p.pole_code}</div>
@@ -513,15 +600,27 @@ export default function NodePolesSpans() {
                 ${cfg.label}
               </span>
             </div>
-            <a
-              href="/sites/${siteId}/nodes/${nodeId}/teardown?pole_id=${p.id}&pole_code=${encodeURIComponent(p.pole_code)}"
-              style="display:block;margin-top:10px;background:#10b981;color:#fff;text-align:center;padding:9px 12px;border-radius:10px;font-weight:900;font-size:12px;text-decoration:none;letter-spacing:.04em;box-shadow:0 4px 12px rgba(16,185,129,.35)"
-            >
+            <a href="/sites/${siteId}/nodes/${nodeId}/teardown?pole_id=${p.id}&pole_code=${encodeURIComponent(p.pole_code)}"
+              style="display:block;margin-top:10px;background:#10b981;color:#fff;text-align:center;padding:9px 12px;border-radius:10px;font-weight:900;font-size:12px;text-decoration:none;letter-spacing:.04em;box-shadow:0 4px 12px rgba(16,185,129,.35)">
               ▶ Start Teardown
             </a>
           </div>
         `, { maxWidth: 220 })
+      }
     })
+
+    // Map click — only acts in 'add' mode (reassign uses drag)
+    if (admin) {
+      map.on('click', (e: L.LeafletMouseEvent) => {
+        if (mapModeRef.current !== 'add') return
+        const { lat, lng } = e.latlng
+        setPoleCode('')
+        setPoleLat(lat.toFixed(7))
+        setPoleLng(lng.toFixed(7))
+        setPoleErr(null)
+        setPoleModal(true)
+      })
+    }
 
     setTimeout(() => {
       map.invalidateSize()
@@ -538,7 +637,7 @@ export default function NodePolesSpans() {
         mapObj.current = null
       }
     }
-  }, [poles])
+  }, [poles, mapMode])
 
   // Swap tile layer URL
   useEffect(() => {
@@ -546,6 +645,7 @@ export default function NodePolesSpans() {
       tileRef.current.setUrl(TILES[baseTile].url)
     }
   }, [baseTile])
+
 
   // Update crew markers on the Vicinity Map when linemen or node changes
   useEffect(() => {
@@ -627,14 +727,116 @@ export default function NodePolesSpans() {
     return () => clearTimeout(timer)
   }, [editPoleModal])
 
+  // Add Pole map picker
+  useEffect(() => {
+    if (!poleModal) {
+      if (addMapObj.current) { addMapObj.current.remove(); addMapObj.current = null }
+      addMapMarker.current = null; addMapTileRef.current = null
+      return
+    }
+    const timer = setTimeout(() => {
+      if (!addMapRef.current || addMapObj.current) return
+
+      const gpsPoles = poles.filter(p => p.lat && p.lng)
+      const clickedLat = parseFloat(poleLat)
+      const clickedLng = parseFloat(poleLng)
+      const hasClicked = !isNaN(clickedLat) && !isNaN(clickedLng)
+
+      // Center: use clicked point if available, else centroid of existing poles, else Manila
+      let initLat = 14.5995, initLng = 120.9842, initZoom = 12
+      if (hasClicked) {
+        initLat = clickedLat; initLng = clickedLng; initZoom = 18
+      } else if (gpsPoles.length > 0) {
+        initLat = gpsPoles.reduce((s, p) => s + Number(p.lat), 0) / gpsPoles.length
+        initLng = gpsPoles.reduce((s, p) => s + Number(p.lng), 0) / gpsPoles.length
+        initZoom = 17
+      }
+
+      const map = L.map(addMapRef.current, { zoomControl: true, attributionControl: false })
+      const tile = L.tileLayer(TILES[addMapTile].url, { maxZoom: 22 }).addTo(map)
+      addMapTileRef.current = tile
+      map.setView([initLat, initLng], initZoom)
+
+      // Draw existing poles as reference markers (dimmed)
+      gpsPoles.forEach(p => {
+        const cfg = POLE_CFG[p.skycable_status] ?? POLE_CFG.pending
+        const icon = L.divIcon({
+          className: '',
+          html: `<div style="
+            width:18px;height:18px;border-radius:50%;
+            background:${cfg.hex};border:2.5px solid rgba(255,255,255,0.85);
+            box-shadow:0 2px 8px rgba(0,0,0,0.35);
+            display:flex;align-items:center;justify-content:center;
+          "><div style="width:5px;height:5px;border-radius:50%;background:white;opacity:0.9"></div></div>`,
+          iconSize: [18, 18], iconAnchor: [9, 9],
+        })
+        L.marker([Number(p.lat), Number(p.lng)], { icon })
+          .addTo(map)
+          .bindPopup(`<div style="font-family:system-ui;min-width:130px;padding:2px 0">
+            <div style="font-size:9px;font-weight:900;text-transform:uppercase;color:#94a3b8;margin-bottom:3px">Existing Pole</div>
+            <div style="font-size:13px;font-weight:900;color:#0f172a;font-family:monospace">${p.pole_code}</div>
+            <span style="display:inline-flex;align-items:center;gap:3px;background:${cfg.hex}18;color:${cfg.hex};border:1px solid ${cfg.hex}40;border-radius:999px;padding:1px 6px;font-size:9px;font-weight:800;margin-top:3px">
+              <span style="width:5px;height:5px;border-radius:50%;background:${cfg.hex};display:inline-block"></span>
+              ${cfg.label}
+            </span>
+          </div>`, { maxWidth: 180 })
+      })
+
+      // Fit to all poles if no clicked point
+      if (!hasClicked && gpsPoles.length > 1) {
+        const bounds = gpsPoles.map(p => [Number(p.lat), Number(p.lng)] as [number, number])
+        map.fitBounds(bounds, { padding: [40, 40], maxZoom: 18 })
+      }
+
+      // New pole marker icon
+      const mkIcon = () => L.divIcon({
+        className: '',
+        html: `<div style="
+          width:24px;height:24px;border-radius:50%;
+          background:#006241;border:3px solid #fff;
+          box-shadow:0 0 0 2px #006241,0 4px 16px rgba(0,98,65,0.6);
+          display:flex;align-items:center;justify-content:center;
+        "><div style="width:7px;height:7px;border-radius:50%;background:white"></div></div>`,
+        iconSize: [24, 24], iconAnchor: [12, 12],
+      })
+
+      if (hasClicked) {
+        addMapMarker.current = L.marker([clickedLat, clickedLng], { icon: mkIcon() })
+          .addTo(map)
+          .bindPopup('<div style="font-size:11px;font-weight:900;color:#006241">New pole here</div>')
+      }
+
+      map.on('click', (e: L.LeafletMouseEvent) => {
+        const { lat: la, lng: ln } = e.latlng
+        setPoleLat(la.toFixed(7))
+        setPoleLng(ln.toFixed(7))
+        if (addMapMarker.current) addMapMarker.current.setLatLng(e.latlng)
+        else addMapMarker.current = L.marker(e.latlng, { icon: mkIcon() }).addTo(map)
+      })
+
+      addMapObj.current = map
+      setTimeout(() => map.invalidateSize(), 200)
+    }, 250)
+    return () => clearTimeout(timer)
+  }, [poleModal])
+
+  // Swap tile in Add Pole map
+  useEffect(() => {
+    if (addMapTileRef.current) addMapTileRef.current.setUrl(TILES[addMapTile].url)
+  }, [addMapTile])
+
   // Poll live lineman locations every 30s
   useEffect(() => {
     async function fetchLinemen() {
       try {
         const res = await fetch(`${SKYCABLE_API}/lineman/locations`, { headers: h() })
         if (!res.ok) return
-        const data: ApiLineman[] = await res.json()
-        setLinemen(Array.isArray(data) ? data : [])
+        const raw = await res.json()
+        const data = (Array.isArray(raw) ? raw : []).map((r: any) => {
+          const normalized = normalizeLineman(r)
+          return { ...normalized, status: effectiveStatus(normalized) }
+        })
+        setLinemen(data)
         setLastLinemenFetch(Date.now())
       } catch {}
     }
@@ -727,6 +929,7 @@ export default function NodePolesSpans() {
     return q ? poles.filter(p => p.pole_code.toLowerCase().includes(q)) : poles
   }, [poles, search])
 
+
   const saveMetrics = async () => {
     setSavingMetrics(true)
     try {
@@ -754,31 +957,53 @@ export default function NodePolesSpans() {
     setSavingPole(true)
     setPoleErr(null)
 
+    const body: Record<string, unknown> = {
+      node_id: Number(nodeId),
+      pole_code: poleCode.trim(),
+    }
+    if (poleLat && !isNaN(Number(poleLat))) body.lat = Number(poleLat)
+    if (poleLng && !isNaN(Number(poleLng))) body.lng = Number(poleLng)
+
+    const endpoints = [
+      `${SKYCABLE_API}/poles`,
+      `${SKYCABLE_API}/nodes/${nodeId}/poles`,
+    ]
+
     try {
-      const body: Record<string, unknown> = {
-        node_id: Number(nodeId),
-        pole_code: poleCode.trim(),
+      let lastErr = 'Failed to add pole'
+      for (const url of endpoints) {
+        const res = await fetch(url, { method: 'POST', headers: h(), body: JSON.stringify(body) })
+        const text = await res.text()
+        let data: any = {}
+        try { data = JSON.parse(text) } catch { /* non-JSON */ }
+
+        if (res.ok) {
+          setPoleModal(false)
+          setPoleCode('')
+          setPoleLat('')
+          setPoleLng('')
+          bust()
+          return
+        }
+
+        // Extract readable error from Laravel validation / message
+        if (data?.errors) {
+          const msgs = Object.values(data.errors as Record<string, string[]>).flat()
+          lastErr = msgs.join(' · ')
+        } else if (data?.message) {
+          lastErr = data.message
+        } else if (text) {
+          lastErr = `HTTP ${res.status}: ${text.slice(0, 120)}`
+        } else {
+          lastErr = `HTTP ${res.status}`
+        }
+
+        // If 404 or 405 try next endpoint, else stop
+        if (res.status !== 404 && res.status !== 405) break
       }
-
-      if (poleLat) body.lat = Number(poleLat)
-      if (poleLng) body.lng = Number(poleLng)
-
-      const res = await fetch(`${SKYCABLE_API}/poles`, {
-        method: 'POST',
-        headers: h(),
-        body: JSON.stringify(body),
-      })
-
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.message ?? 'Failed')
-
-      setPoleModal(false)
-      setPoleCode('')
-      setPoleLat('')
-      setPoleLng('')
-      bust()
+      setPoleErr(lastErr)
     } catch (e: any) {
-      setPoleErr(e.message)
+      setPoleErr(e?.message ?? 'Network error — check connection')
     } finally {
       setSavingPole(false)
     }
@@ -991,7 +1216,7 @@ export default function NodePolesSpans() {
 
             <button
               onClick={() => navigate(`/${slugify(node?.area?.name ?? String(siteId))}-${siteId}/${slugify(node?.full_label ?? node?.name ?? String(nodeId))}-${nodeId}/spans`)}
-              className="inline-flex items-center gap-2 rounded-2xl bg-green-900 px-4 py-2.5 text-sm font-black text-white shadow-sm transition hover:bg-indigo-700"
+              className="inline-flex items-center gap-2 rounded-2xl !bg-zinc-800 px-4 py-2.5 text-sm font-black !text-white shadow-sm transition hover:!bg-zinc-900"
             >
               <i className="bx bx-git-branch" /> Spans
             </button>
@@ -1005,7 +1230,7 @@ export default function NodePolesSpans() {
                   setPoleErr(null)
                   setPoleModal(true)
                 }}
-                className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-4 py-2.5 text-sm font-black text-white shadow-sm transition hover:bg-emerald-700"
+                className="inline-flex items-center gap-2 rounded-2xl !bg-[#006241] px-4 py-2.5 text-sm font-black !text-white shadow-md transition hover:!bg-[#004d33]"
               >
                 <i className="bx bx-plus" /> Add Pole
               </button>
@@ -1090,8 +1315,8 @@ export default function NodePolesSpans() {
                     const COLOR: Record<string, string> = { active: '#16a34a', idle: '#d97706', offline: '#6b7280' }
                     const LABEL: Record<string, string> = { active: 'Active', idle: 'Idle', offline: 'Offline' }
                     const c = COLOR[l.status] ?? '#6b7280'
-                    const mins = Math.floor((Date.now() - new Date(l.pingedAt).getTime()) / 60000)
-                    const ago = mins < 1 ? 'just now' : mins < 60 ? `${mins}m ago` : `${Math.floor(mins / 60)}h ago`
+                    const mins = l.pingedAt ? Math.floor((Date.now() - new Date(l.pingedAt).getTime()) / 60000) : NaN
+                    const ago = isNaN(mins) ? 'unknown' : mins < 1 ? 'just now' : mins < 60 ? `${mins}m ago` : mins < 1440 ? `${Math.floor(mins / 60)}h ago` : `${Math.floor(mins / 1440)}d ago`
                     return (
                       <div key={l.id} className="flex items-center gap-3 border-b border-white/5 px-4 py-3 last:border-0">
                         <div
@@ -1124,32 +1349,86 @@ export default function NodePolesSpans() {
                 <p className="text-xs font-bold text-indigo-200/70">Poles and status overlay</p>
               </div>
 
-              <div className="flex flex-col items-end gap-3">
-                <div className="flex overflow-hidden rounded-lg border border-white/20 text-[10px] font-bold">
-                  {(Object.keys(TILES) as BaseTile[]).map(k => (
-                    <button
-                      key={k}
-                      onClick={() => setBaseTile(k)}
-                      className={`px-3 py-1.5 transition ${baseTile === k ? 'bg-indigo-600 text-white' : 'bg-[#030e1a] text-slate-400 hover:bg-white/10 hover:text-white'}`}
-                    >
-                      {TILES[k].label}
-                    </button>
-                  ))}
+              <div className="flex flex-col items-end gap-2">
+                {/* Controls row */}
+                <div className="flex items-center gap-2">
+                  {/* Tile switcher */}
+                  <div className="flex overflow-hidden rounded-xl border border-white/15 text-[10px] font-black">
+                    {(Object.keys(TILES) as BaseTile[]).map(k => (
+                      <button key={k} onClick={() => setBaseTile(k)}
+                        className={`px-3.5 py-2 transition ${
+                          baseTile === k
+                            ? 'bg-white text-slate-900'
+                            : 'bg-white/10 text-white/60 hover:bg-white/20 hover:text-white'
+                        }`}>
+                        {TILES[k].label}
+                      </button>
+                    ))}
+                  </div>
+
+                  {admin && mapMode !== 'reassign' && (
+                    <>
+                      <button onClick={() => setMode(mapMode === 'add' ? 'view' : 'add')}
+                        className={`flex items-center gap-1.5 rounded-xl px-3.5 py-2 text-[10px] font-black transition ${
+                          mapMode === 'add'
+                            ? 'bg-emerald-500 text-white shadow-[0_4px_14px_-4px_rgba(16,185,129,0.7)]'
+                            : 'bg-white/10 text-white/70 hover:bg-white/20 hover:text-white'
+                        }`}>
+                        <i className="bx bx-plus text-sm" /> Add Pole
+                      </button>
+                      <button onClick={() => setMode('reassign')}
+                        className="flex items-center gap-1.5 rounded-xl bg-white/10 px-3.5 py-2 text-[10px] font-black text-white/70 transition hover:bg-white/20 hover:text-white">
+                        <i className="bx bx-move text-sm" /> Reassign GPS
+                      </button>
+                    </>
+                  )}
+
+                  {/* Reassign mode: inline Done/Cancel in header */}
+                  {admin && mapMode === 'reassign' && (
+                    <div className="flex items-center gap-2 rounded-xl border border-amber-500/40 bg-amber-500/15 px-3 py-1.5">
+                      <i className="bx bx-move text-amber-400 text-sm" />
+                      <span className="text-[10px] font-black text-amber-300 whitespace-nowrap">
+                        {reassignMsg
+                          ? reassignMsg.ok
+                            ? `✓ ${reassignMsg.code} saved`
+                            : `✕ ${reassignMsg.code} failed`
+                          : 'Drag poles to move'}
+                      </span>
+                      <div className="flex items-center gap-1 pl-2 border-l border-amber-500/30">
+                        <button onClick={() => setMode('view')}
+                          className="rounded-lg px-2 py-1 text-[10px] font-black text-white/50 hover:text-white transition">
+                          Cancel
+                        </button>
+                        <button onClick={async () => {
+                            // Clear cache and fetch fresh poles BEFORE switching mode
+                            // so the map recreates once with updated positions
+                            cacheDel(`nodepoles_${nodeId}`)
+                            const [nr, pr] = await Promise.all([
+                              fetch(`${SKYCABLE_API}/nodes/${nodeId}`, { headers: h() }),
+                              fetch(`${SKYCABLE_API}/nodes/${nodeId}/poles`, { headers: h() }),
+                            ])
+                            const [nd, pd] = await Promise.all([nr.json(), pr.json()])
+                            const newNode = nd?.data ?? nd
+                            const newPoles = parsePoles(pd)
+                            setNode(newNode)
+                            setPoles(newPoles)
+                            cacheSet(`nodepoles_${nodeId}`, { node: newNode, poles: newPoles })
+                            setLastSynced(Date.now())
+                            setMode('view')  // exit reassign AFTER poles are updated
+                          }}
+                          className="flex items-center gap-1 rounded-lg bg-amber-500 px-3 py-1 text-[10px] font-black text-white transition hover:bg-amber-400">
+                          <i className="bx bx-check text-sm" /> Done
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
+                {/* Legend */}
                 <div className="flex items-center gap-3 text-[10px] font-black text-white/80">
-                  <span className="flex items-center gap-1.5">
-                    <span className="h-2 w-2 rounded-full bg-emerald-500" />
-                    Cleared
-                  </span>
-                  <span className="flex items-center gap-1.5">
-                    <span className="h-2 w-2 rounded-full bg-indigo-500" />
-                    Active
-                  </span>
-                  <span className="flex items-center gap-1.5">
-                    <span className="h-2 w-2 rounded-full bg-amber-400" />
-                    Pending
-                  </span>
+                  <span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-emerald-500" />Cleared</span>
+                  <span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-indigo-500" />Active</span>
+                  <span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-amber-400" />Pending</span>
                 </div>
               </div>
             </div>
@@ -1162,6 +1441,25 @@ export default function NodePolesSpans() {
                     <p className="mt-2 text-sm font-black">No GPS coordinates yet</p>
                     <p className="mt-1 text-xs text-white/55">Add latitude and longitude to poles to show the map.</p>
                   </div>
+                </div>
+              )}
+
+              {admin && mapMode === 'add' && (
+                <div className="pointer-events-none absolute bottom-3 left-1/2 -translate-x-1/2 z-[400] flex items-center gap-1.5 rounded-full border border-emerald-400/40 bg-emerald-900/70 px-3 py-1.5 backdrop-blur-sm">
+                  <i className="bx bx-crosshair text-emerald-400 text-sm" />
+                  <span className="text-[10px] font-black text-emerald-300">Click anywhere to add a pole</span>
+                </div>
+              )}
+              {reassignMsg && (
+                <div className={`pointer-events-none absolute top-3 left-1/2 -translate-x-1/2 z-[400] flex items-center gap-1.5 rounded-full border px-3 py-1.5 backdrop-blur-sm ${
+                  reassignMsg.ok
+                    ? 'border-emerald-400/40 bg-emerald-900/70'
+                    : 'border-rose-400/40 bg-rose-900/70'
+                }`}>
+                  <i className={`bx ${reassignMsg.ok ? 'bx-check text-emerald-400' : 'bx-x text-rose-400'} text-sm`} />
+                  <span className={`text-[10px] font-black ${reassignMsg.ok ? 'text-emerald-300' : 'text-rose-300'}`}>
+                    {reassignMsg.ok ? `${reassignMsg.code} GPS updated` : `${reassignMsg.code} failed to save`}
+                  </span>
                 </div>
               )}
 
@@ -1251,7 +1549,7 @@ export default function NodePolesSpans() {
             <div className="mt-1.5">
               <span className="text-xl font-black text-slate-800 dark:text-white">{k.value}</span>
             </div>
-            <p className="mt-0.5 text-[9px] font-semibold text-slate-400">{k.helper}</p>
+            <p className="mt-1 text-[11px] font-bold text-[#006241] dark:text-emerald-400">{k.helper}</p>
             <div className="mt-2 flex h-7 w-7 items-center justify-center rounded-lg bg-slate-50 text-slate-400 dark:bg-zinc-800">
               <i className={`${k.icon} text-sm`} />
             </div>
@@ -1606,9 +1904,10 @@ export default function NodePolesSpans() {
         {poleModal && (
           <Modal
             title="Add New Pole"
-            sub={`Under node ${nodeLabel}`}
-            color="from-emerald-600 to-teal-600"
+            sub={`Node: ${nodeLabel}`}
+            color="from-[#006241] to-teal-700"
             icon="bx bx-map-pin"
+            size="max-w-2xl"
             onClose={() => setPoleModal(false)}
             footer={
               <>
@@ -1616,7 +1915,7 @@ export default function NodePolesSpans() {
                 <button
                   onClick={savePole}
                   disabled={savingPole}
-                  className="h-10 flex-1 rounded-2xl bg-emerald-600 px-6 text-sm font-black text-white shadow-lg shadow-emerald-600/20 transition hover:bg-emerald-700 disabled:opacity-50"
+                  className="h-10 flex-1 rounded-2xl !bg-[#006241] px-6 text-sm font-black !text-white shadow-lg shadow-[#006241]/20 transition hover:!bg-[#004d33] disabled:opacity-50"
                 >
                   {savingPole ? 'Adding…' : 'Add Pole'}
                 </button>
@@ -1629,9 +1928,11 @@ export default function NodePolesSpans() {
               </div>
             )}
 
+            {/* Pole code */}
             <div>
-              <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-wider text-slate-400">Pole Code *:</label>
+              <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-wider text-slate-400">Pole Code *</label>
               <input
+                autoFocus
                 value={poleCode}
                 onChange={e => setPoleCode(e.target.value)}
                 placeholder="e.g. POLE-001"
@@ -1639,26 +1940,74 @@ export default function NodePolesSpans() {
               />
             </div>
 
+            {/* Map with tile switcher */}
+            <div>
+              <div className="mb-1.5 flex items-center justify-between">
+                <label className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                  <i className="bx bx-map-pin text-emerald-500" />
+                  {poleLat && poleLng
+                    ? `📍 ${Number(poleLat).toFixed(5)}, ${Number(poleLng).toFixed(5)}`
+                    : 'Click map to pin location (optional)'}
+                </label>
+                {/* Tile switcher */}
+                <div className="flex overflow-hidden rounded-lg border border-slate-200 text-[10px] font-bold dark:border-zinc-700">
+                  {(Object.keys(TILES) as BaseTile[]).map(k => (
+                    <button
+                      key={k}
+                      type="button"
+                      onClick={() => setAddMapTile(k)}
+                      className={`px-2.5 py-1 transition ${addMapTile === k ? 'bg-[#006241] text-white' : 'bg-slate-50 text-slate-500 hover:bg-slate-100 dark:bg-zinc-800 dark:text-zinc-400'}`}
+                    >
+                      {TILES[k].label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div
+                ref={addMapRef}
+                className="h-64 w-full rounded-2xl border border-slate-200 dark:border-zinc-700"
+                style={{ zIndex: 0, minHeight: 256, cursor: 'crosshair' }}
+              />
+            </div>
+
+            {/* Manual lat/lng inputs */}
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-wider text-slate-400">Latitude:</label>
+                <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-wider text-slate-400">Latitude</label>
                 <input
                   type="number"
                   step="any"
                   value={poleLat}
-                  onChange={e => setPoleLat(e.target.value)}
+                  onChange={e => {
+                    setPoleLat(e.target.value)
+                    const la = parseFloat(e.target.value)
+                    const ln = parseFloat(poleLng)
+                    if (addMapObj.current && !isNaN(la) && !isNaN(ln)) {
+                      const ll = L.latLng(la, ln)
+                      if (addMapMarker.current) addMapMarker.current.setLatLng(ll)
+                      addMapObj.current.setView(ll, addMapObj.current.getZoom())
+                    }
+                  }}
                   placeholder="14.xxxx"
                   className={`${iCls()} focus:border-emerald-500`}
                 />
               </div>
-
               <div>
-                <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-wider text-slate-400">Longitude:</label>
+                <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-wider text-slate-400">Longitude</label>
                 <input
                   type="number"
                   step="any"
                   value={poleLng}
-                  onChange={e => setPoleLng(e.target.value)}
+                  onChange={e => {
+                    setPoleLng(e.target.value)
+                    const la = parseFloat(poleLat)
+                    const ln = parseFloat(e.target.value)
+                    if (addMapObj.current && !isNaN(la) && !isNaN(ln)) {
+                      const ll = L.latLng(la, ln)
+                      if (addMapMarker.current) addMapMarker.current.setLatLng(ll)
+                      addMapObj.current.setView(ll, addMapObj.current.getZoom())
+                    }
+                  }}
                   placeholder="121.xxxx"
                   className={`${iCls()} focus:border-emerald-500`}
                 />
@@ -1681,7 +2030,7 @@ export default function NodePolesSpans() {
                 <button
                   onClick={saveEditPole}
                   disabled={savingEditPole}
-                  className="h-10 flex-1 rounded-2xl bg-emerald-600 px-6 text-sm font-black text-white shadow-lg shadow-emerald-600/20 transition hover:bg-emerald-700 disabled:opacity-50"
+                  className="h-10 flex-1 rounded-2xl !bg-[#006241] px-6 text-sm font-black !text-white shadow-lg shadow-[#006241]/20 transition hover:!bg-[#004d33] disabled:opacity-50"
                 >
                   {savingEditPole ? 'Saving…' : 'Save Changes'}
                 </button>

@@ -10,7 +10,8 @@ type SubconUser = {
   id: number
   first_name: string
   last_name: string
-  full_name: string
+  name: string
+  full_name?: string
   email: string
   role: string
   status: UserStatus
@@ -20,6 +21,7 @@ type SubconUser = {
   team_id?: number | null
   subcontractor?: { id: number; name: string } | null
   team?: { id: number; name: string } | null
+  can_approve_delivery?: boolean
 }
 
 type Subcontractor = { id: number; name: string; company: string }
@@ -34,14 +36,22 @@ type CreateForm = {
   subcontractor_id: number | ''
   team_id: number | ''
   status: UserStatus
+  can_approve_delivery: boolean
 }
 
 const emptyForm = (): CreateForm => ({
   first_name: '', last_name: '', email: '', role: 'lineman',
   cellphone: '', subcontractor_id: '', team_id: '', status: 'active',
+  can_approve_delivery: false,
 })
 
-const ROLES = ['lineman', 'team_lead', 'helper', 'supervisor', 'field_staff']
+const ROLES = ['lineman', 'project_manager', 'warehouse_incharge']
+
+const roleLabel: Record<string, string> = {
+  lineman:            'Lineman',
+  project_manager:    'Project Manager',
+  warehouse_incharge: 'Warehouse In-charge',
+}
 
 const statusCfg: Record<UserStatus, { label: string; badge: string; dot: string }> = {
   active:   { label: 'Active',   badge: 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200', dot: 'bg-emerald-500' },
@@ -50,11 +60,9 @@ const statusCfg: Record<UserStatus, { label: string; badge: string; dot: string 
 }
 
 const roleBadge: Record<string, string> = {
-  team_lead:  'bg-violet-50 text-violet-700 ring-1 ring-violet-200',
-  lineman:    'bg-sky-50 text-sky-700 ring-1 ring-sky-200',
-  helper:     'bg-amber-50 text-amber-700 ring-1 ring-amber-200',
-  supervisor: 'bg-indigo-50 text-indigo-700 ring-1 ring-indigo-200',
-  field_staff:'bg-teal-50 text-teal-700 ring-1 ring-teal-200',
+  lineman:            'bg-sky-50 text-sky-700 ring-1 ring-sky-200',
+  project_manager:    'bg-violet-50 text-violet-700 ring-1 ring-violet-200',
+  warehouse_incharge: 'bg-amber-50 text-amber-700 ring-1 ring-amber-200',
 }
 
 const AVATAR_COLORS = [
@@ -166,7 +174,7 @@ export default function SubconUsers() {
 
   const filtered = users.filter(u => {
     const q = search.toLowerCase()
-    return !q || u.full_name?.toLowerCase().includes(q) || u.email?.toLowerCase().includes(q) || u.role?.toLowerCase().includes(q)
+    return !q || (u.name ?? u.full_name ?? '').toLowerCase().includes(q) || u.email?.toLowerCase().includes(q) || u.role?.toLowerCase().includes(q)
   })
 
   const counts = {
@@ -189,8 +197,9 @@ export default function SubconUsers() {
         last_name:        addForm.last_name,
         email:            addForm.email,
         status:           addForm.status,
-        subcontractor_id: addForm.subcontractor_id || undefined,
-        team_id:          addForm.team_id || undefined,
+        subcontractor_id:     addForm.subcontractor_id || undefined,
+        team_id:              addForm.team_id || undefined,
+        can_approve_delivery: addForm.can_approve_delivery,
       }
       if (addForm.cellphone) payload.cellphone = addForm.cellphone
 
@@ -202,7 +211,7 @@ export default function SubconUsers() {
       }
       setIsAddOpen(false)
       setAddForm(emptyForm())
-      setTempPass({ name: data.user.full_name, password: data.temp_password })
+      setTempPass({ name: data.user.name ?? data.user.full_name, password: data.temp_password })
       load()
     } catch (err) { setAddError(err instanceof Error ? err.message : 'Something went wrong') }
     finally { setSaving(false) }
@@ -221,7 +230,7 @@ export default function SubconUsers() {
     const res  = await fetch(`${ADMIN_API}/users/${u.id}/reset-password`, { method: 'POST', headers: authHeaders() })
     const data = await res.json()
     setResettingId(null)
-    if (res.ok) setTempPass({ name: u.full_name, password: data.temp_password })
+    if (res.ok) setTempPass({ name: u.name ?? u.full_name, password: data.temp_password })
   }
 
   const subconName = (id: number | null | undefined) => subcons.find(s => s.id === id)?.name ?? `Subcon #${id}`
@@ -327,7 +336,7 @@ export default function SubconUsers() {
                         <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br ${avC} text-[11px] font-black text-white`}>
                           {avatarInitials(u)}
                         </div>
-                        <p className="font-semibold text-slate-800 dark:text-slate-100 leading-tight">{u.full_name}</p>
+                        <p className="font-semibold text-slate-800 dark:text-slate-100 leading-tight">{u.name ?? u.full_name}</p>
                       </div>
                     </td>
                     <td className="px-4 py-3 text-xs text-slate-500 dark:text-slate-400">{u.email}</td>
@@ -343,7 +352,7 @@ export default function SubconUsers() {
                     </td>
                     <td className="px-4 py-3">
                       <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] font-semibold ${rb}`}>
-                        {u.role.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}
+                        {roleLabel[u.role] ?? u.role.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}
                       </span>
                     </td>
                     <td className="px-4 py-3">
@@ -438,7 +447,7 @@ export default function SubconUsers() {
                   <div className="relative">
                     <select value={addForm.role} onChange={e => setAddForm(p => ({ ...p, role: e.target.value }))}
                       className={`${iCls} appearance-none pr-8 cursor-pointer`}>
-                      {ROLES.map(r => <option key={r} value={r}>{r.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}</option>)}
+                      {ROLES.map(r => <option key={r} value={r}>{roleLabel[r] ?? r}</option>)}
                     </select>
                     <i className="bx bx-chevron-down pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" />
                   </div>
@@ -449,17 +458,27 @@ export default function SubconUsers() {
                   <input value={addForm.cellphone} onChange={e => setAddForm(p => ({ ...p, cellphone: e.target.value }))}
                     placeholder="09XXXXXXXXX" className={iCls} />
                 </F>
-                <F label="Status">
+                <F label="Warehouse Access">
                   <div className="relative">
-                    <select value={addForm.status} onChange={e => setAddForm(p => ({ ...p, status: e.target.value as UserStatus }))}
+                    <select value={addForm.can_approve_delivery ? 'yes' : 'no'} onChange={e => setAddForm(p => ({ ...p, can_approve_delivery: e.target.value === 'yes' }))}
                       className={`${iCls} appearance-none pr-8 cursor-pointer`}>
-                      <option value="active">Active</option>
-                      <option value="inactive">Inactive</option>
+                      <option value="no">No — view only</option>
+                      <option value="yes">Yes — can approve deliveries</option>
                     </select>
                     <i className="bx bx-chevron-down pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" />
                   </div>
                 </F>
               </div>
+              <F label="Status">
+                <div className="relative">
+                  <select value={addForm.status} onChange={e => setAddForm(p => ({ ...p, status: e.target.value as UserStatus }))}
+                    className={`${iCls} appearance-none pr-8 cursor-pointer`}>
+                    <option value="active">Active</option>
+                    <option value="inactive">Inactive</option>
+                  </select>
+                  <i className="bx bx-chevron-down pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                </div>
+              </F>
 
               {addError && <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-600">{addError}</div>}
 

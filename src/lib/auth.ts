@@ -1,4 +1,4 @@
-export const API_BASE = 'https://8f4b-209-35-165-200.ngrok-free.app'
+export const API_BASE = 'https://quack-useable-thesaurus.ngrok-free.dev'
 export const SKYCABLE_API = `${API_BASE}/api/v1/skycable`
 export const GLOBE_API = `${API_BASE}/api/v1/globe`
 

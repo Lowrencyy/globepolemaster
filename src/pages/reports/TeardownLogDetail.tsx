@@ -16,6 +16,12 @@ interface TeardownLog {
   duration_minutes: number | null
   expected_cable: number
   actual_cable: number
+  nodes_collected: number | null
+  amplifiers_collected: number | null
+  extenders_collected: number | null
+  tsc_collected: number | null
+  powersupply_collected: number | null
+  ps_housing_collected: number | null
   status: string
   offline_mode: boolean
   notes: string | null
@@ -394,53 +400,56 @@ function TeardownView({ log, onBack }: { log: TeardownLog; onBack: () => void })
       </div>
 
       {/* Hero header */}
-      <section className="relative overflow-hidden rounded-[28px] border border-white/10 bg-[#080d16] shadow-2xl">
-        <div className="h-[4px] bg-gradient-to-r from-violet-400 via-blue-500 to-indigo-500" />
+      {/* Hero header */}
+      <section className="relative overflow-hidden rounded-[28px] border border-zinc-200 bg-white shadow-xl dark:border-zinc-800 dark:bg-zinc-950">
+        <div className="h-[4px] bg-gradient-to-r from-[#006241] via-emerald-600 to-[#00704A]" />
         <div className="relative grid gap-0 xl:grid-cols-[1fr_420px]">
           <div className="flex min-h-[230px] flex-col justify-between gap-8 p-6 md:p-8">
             <div className="flex flex-wrap items-center gap-2">
-              <span className="inline-flex items-center gap-2 rounded-full bg-violet-500/15 px-3 py-1.5 text-[11px] font-black uppercase tracking-widest text-violet-300 ring-1 ring-violet-400/25">
-                <span className="h-1.5 w-1.5 rounded-full bg-violet-300 shadow-[0_0_14px_rgba(196,181,253,.9)]" />
+              <span className="inline-flex items-center gap-2 rounded-full bg-emerald-50 text-[#006241] dark:bg-emerald-950/30 dark:text-emerald-300 ring-1 ring-emerald-600/20 px-3 py-1.5 text-[11px] font-black uppercase tracking-widest">
+                <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 shadow-[0_0_14px_rgba(16,185,129,.9)]" />
                 Full Teardown
               </span>
-              <span className={`rounded-full px-3 py-1.5 text-[11px] font-black uppercase tracking-widest ring-1 ring-white/10 ${statusColor[log.status] ?? 'bg-white/8 text-zinc-300'}`}>
+              <span className={`rounded-full px-3 py-1.5 text-[11px] font-black uppercase tracking-widest ring-1 ring-zinc-200 dark:ring-zinc-800 ${statusColor[log.status] ?? 'bg-zinc-50 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300'}`}>
                 {log.status.replace(/_/g, ' ')}
               </span>
               {log.offline_mode && (
-                <span className="rounded-full bg-amber-500/15 px-3 py-1.5 text-[11px] font-black uppercase tracking-widest text-amber-300 ring-1 ring-amber-400/25">
+                <span className="rounded-full bg-amber-50 text-amber-700 dark:bg-amber-950/20 dark:text-amber-300 ring-1 ring-amber-500/20 px-3 py-1.5 text-[11px] font-black uppercase tracking-widest">
                   Offline Mode
                 </span>
               )}
             </div>
 
-            <div>
-              <p className="mb-3 text-xs font-black uppercase tracking-[0.28em] text-zinc-500">Span teardown</p>
-              <h1 className="text-4xl font-black tracking-tight text-white md:text-5xl">{spanCode}</h1>
-              <div className="mt-4 flex flex-wrap items-center gap-2">
-                <span className="flex items-center gap-1.5 rounded-2xl bg-blue-500/15 px-3 py-1.5 text-xs font-black text-blue-300 ring-1 ring-blue-400/20">
-                  <span className="font-mono">{fromCode}</span>
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
-                  <span className="font-mono">{toCode}</span>
-                </span>
-                <span className="rounded-2xl bg-white/8 px-3 py-1.5 text-xs font-bold text-zinc-300 ring-1 ring-white/10">{nodeName}</span>
-                <span className="rounded-2xl bg-emerald-500/15 px-3 py-1.5 text-xs font-black text-emerald-300 ring-1 ring-emerald-400/20">
+            <div className="flex flex-col items-start w-full">
+              <p className="mb-2 text-xs font-black uppercase tracking-[0.28em] text-zinc-400 dark:text-zinc-500">Span teardown</p>
+              <h1 className="text-4xl font-black tracking-tight text-[#006241] dark:text-emerald-400 md:text-5xl">{spanCode}</h1>
+              
+              <div className="mt-4 mb-2 flex items-center justify-between w-full max-w-md rounded-2xl bg-[#006241] px-6 py-3 text-xl font-black text-white shadow-[0_4px_14px_rgba(0,98,65,0.25)]">
+                <span className="font-mono">{fromCode}</span>
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round" className="text-white"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+                <span className="font-mono">{toCode}</span>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="rounded-2xl bg-zinc-50 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300 ring-1 ring-zinc-200 dark:ring-zinc-700 px-3 py-1.5 text-xs font-bold">{nodeName}</span>
+                <span className="rounded-2xl bg-emerald-50 text-[#006241] dark:bg-emerald-950/20 dark:text-emerald-300 ring-1 ring-emerald-600/20 px-3 py-1.5 text-xs font-black">
                   Submitted {fmtDate(log.created_at)}
                 </span>
               </div>
             </div>
           </div>
 
-          <div className="grid grid-cols-2 border-t border-white/10 xl:border-l xl:border-t-0">
+          <div className="grid grid-cols-2 border-t border-zinc-200/80 dark:border-zinc-800 xl:border-l xl:border-t-0">
             {[
-              { label: 'Lineman',        value: lineman,   sub: 'Field personnel',    color: 'text-violet-300' },
-              { label: 'Team',           value: teamName,  sub: 'Assigned team',      color: 'text-blue-300'   },
-              { label: 'Cable collected',value: `${log.actual_cable}m`, sub: `of ${log.expected_cable}m expected`, color: 'text-emerald-300' },
-              { label: 'Submitted',      value: fmtDate(log.created_at), sub: fmtDateTime(log.created_at), color: 'text-amber-300'   },
+              { label: 'Lineman',        value: lineman,   sub: 'Field personnel',    color: 'text-[#006241] dark:text-emerald-300' },
+              { label: 'Team',           value: teamName,  sub: 'Assigned team',      color: 'text-emerald-700 dark:text-emerald-400'   },
+              { label: 'Cable collected',value: `${log.actual_cable}m`, sub: `of ${log.expected_cable}m expected`, color: 'text-[#006241] dark:text-emerald-300' },
+              { label: 'Submitted',      value: fmtDate(log.created_at), sub: fmtDateTime(log.created_at), color: 'text-emerald-700 dark:text-emerald-400'   },
             ].map(item => (
-              <div key={item.label} className="flex min-h-[115px] flex-col justify-center gap-1 border-b border-r border-white/10 bg-white/[0.035] px-5 last:border-r-0 xl:last:border-b-0">
+              <div key={item.label} className="flex min-h-[115px] flex-col justify-center gap-1 border-b border-r border-zinc-200/80 dark:border-zinc-800/80 bg-zinc-50/50 dark:bg-zinc-900/30 px-5 last:border-r-0 xl:last:border-b-0">
                 <span className={`text-[10px] font-black uppercase tracking-widest ${item.color}`}>{item.label}</span>
-                <span className="truncate text-base font-black text-white">{item.value}</span>
-                <span className="truncate text-[11px] font-semibold text-zinc-500">{item.sub}</span>
+                <span className="truncate text-base font-black text-zinc-900 dark:text-zinc-100">{item.value}</span>
+                <span className="truncate text-[11px] font-semibold text-zinc-400 dark:text-zinc-500">{item.sub}</span>
               </div>
             ))}
           </div>
@@ -450,9 +459,9 @@ function TeardownView({ log, onBack }: { log: TeardownLog; onBack: () => void })
       {/* Stats row */}
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         {[
-          { label: 'Node',      value: nodeName,         sub: 'Assigned node',       tone: 'blue'    },
+          { label: 'NODEID',    value: nodeName,         sub: 'Assigned node',       tone: 'blue'    },
           { label: 'Team',      value: teamName,         sub: 'Responsible team',    tone: 'violet'  },
-          { label: 'Collection', value: `${log.actual_cable}m`, sub: pct !== null ? `${pct}% of ${log.expected_cable}m expected` : 'No expected set', tone: 'emerald' },
+          { label: 'ACTUAL CABLE', value: `${log.actual_cable}m`, sub: pct !== null ? `${pct}% of ${log.expected_cable}m expected` : 'No expected set', tone: 'emerald' },
           { label: 'Duration',  value: log.duration_minutes ? `${log.duration_minutes} min` : '—', sub: log.start_time ? fmtDate(log.start_time) : 'No time recorded', tone: 'amber' },
         ].map(card => (
           <div key={card.label} className={`rounded-[26px] border border-zinc-200 bg-gradient-to-br from-${card.tone}-500/10 to-white p-5 shadow-sm transition hover:-translate-y-0.5 hover:shadow-lg dark:border-zinc-700 dark:to-zinc-900`}>
@@ -464,6 +473,28 @@ function TeardownView({ log, onBack }: { log: TeardownLog; onBack: () => void })
           </div>
         ))}
       </div>
+
+      <section className="overflow-hidden rounded-[32px] border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+        <p className="mb-4 text-[10px] font-black uppercase tracking-widest text-zinc-400">Collected Hardware</p>
+        <div className="grid gap-4 grid-cols-6">
+          {[
+            { label: 'Node',          value: log.nodes_collected ?? 0,        tone: 'blue' },
+            { label: 'Amplifier',     value: log.amplifiers_collected ?? 0,   tone: 'violet' },
+            { label: 'Extender',      value: log.extenders_collected ?? 0,    tone: 'emerald' },
+            { label: 'TSC',           value: log.tsc_collected ?? 0,          tone: 'amber' },
+            { label: 'Power Supply',  value: log.powersupply_collected ?? 0, tone: 'rose' },
+            { label: 'PSU Case',      value: log.ps_housing_collected ?? 0,  tone: 'indigo' },
+          ].map(eq => (
+            <div key={eq.label} className={`rounded-[26px] border border-zinc-200 bg-gradient-to-br from-${eq.tone}-500/10 to-white p-5 shadow-sm transition hover:-translate-y-0.5 hover:shadow-lg dark:border-zinc-700 dark:to-zinc-900`}>
+              <div className={`mb-4 inline-flex rounded-2xl bg-${eq.tone}-500/10 px-3 py-1.5 text-[10px] font-black uppercase tracking-widest text-${eq.tone}-700 dark:text-${eq.tone}-300`}>
+                {eq.label}
+              </div>
+              <div className="truncate text-lg font-black text-zinc-950 dark:text-zinc-50">{eq.value}</div>
+              <div className="mt-1 text-xs font-semibold text-zinc-400">Collected</div>
+            </div>
+          ))}
+        </div>
+      </section>
 
       {/* Span GPS Map */}
       {hasAnyGps && (

@@ -16,8 +16,9 @@ interface CompletedSpan {
   tsc_collected: number;
   powersupply_collected: number;
   ps_housing_collected: number;
-  start_time: string;
+  start_time: string | null;
   end_time: string | null;
+  created_at?: string;
   team?: { id: number; name: string } | null;
   span?: {
     span_code?: string | null;
@@ -107,6 +108,7 @@ export default function DailyTeardownDelivery() {
   const [spans, setSpans] = useState<CompletedSpan[]>([]);
   const [deliveryRecords, setDeliveryRecords] = useState<DeliveryRecord[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [approving, setApproving] = useState<number | null>(null);
   const [submitNote, setSubmitNote] = useState("");
@@ -121,23 +123,28 @@ export default function DailyTeardownDelivery() {
     loadData();
   }, [selectedDate]);
 
-  async function loadData() {
-    setLoading(true);
+  async function loadData(silent = false) {
+    if (silent) {
+      setRefreshing(true);
+    } else {
+      setLoading(true);
+    }
     setError(null);
     try {
       const [spansRes, deliveriesRes] = await Promise.all([
-        // Use the teardown-logs endpoint — same source as daily-report
-        fetch(`${SKYCABLE_API}/teardowns?per_page=500`, { headers: authHeaders() }),
+        // Pass date to backend so it filters server-side (checks both start_time and end_time)
+        fetch(`${SKYCABLE_API}/teardowns?per_page=500&date=${selectedDate}`, { headers: authHeaders() }),
         fetch(`${SKYCABLE_API}/deliveries?date=${selectedDate}`, { headers: authHeaders() }).catch(() => null),
       ]);
 
       if (spansRes.ok) {
-        const data = await spansRes.json();
-        const all: CompletedSpan[] = Array.isArray(data) ? data : (data?.data ?? []);
-        // Filter to selected date using end_time (PHT)
+        const raw = await spansRes.json();
+        // Handle both paginated ({ data: [...] }) and plain array responses
+        const all: CompletedSpan[] = Array.isArray(raw) ? raw : (raw?.data ?? []);
+        // Client-side safety net: also filter by PHT date in case backend timezone differs
         const filtered = all.filter(s => {
-          const ts = s.end_time || s.start_time;
-          if (!ts) return false;
+          const ts = s.end_time || s.start_time || s.created_at;
+          if (!ts) return true; // include if no timestamp — backend already filtered by date
           const pht = new Date(new Date(ts).getTime() + 8 * 3600 * 1000);
           return pht.toISOString().slice(0, 10) === selectedDate;
         });
@@ -152,6 +159,7 @@ export default function DailyTeardownDelivery() {
       setError("Failed to load data. Check your connection.");
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
   }
 
@@ -251,7 +259,7 @@ export default function DailyTeardownDelivery() {
           </p>
         </div>
 
-        {/* Date picker */}
+        {/* Date picker + Refresh */}
         <div className="flex items-center gap-3">
           <input
             type="date"
@@ -265,6 +273,14 @@ export default function DailyTeardownDelivery() {
             className={`h-10 rounded-2xl px-4 text-xs font-bold transition ${selectedDate === today ? "bg-emerald-600 text-white" : "border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300"}`}
           >
             Today
+          </button>
+          <button
+            onClick={() => loadData(true)}
+            disabled={refreshing}
+            title="Refresh"
+            className="flex h-10 w-10 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-500 transition hover:border-emerald-300 hover:bg-emerald-50 hover:text-emerald-600 disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-400"
+          >
+            <i className={`bx bx-refresh text-lg ${refreshing ? 'animate-spin' : ''}`} />
           </button>
         </div>
       </div>
@@ -299,6 +315,12 @@ export default function DailyTeardownDelivery() {
         </div>
       )}
 
+      {refreshing && (
+        <div className="flex items-center gap-2 rounded-2xl border border-emerald-100 bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-700 dark:border-emerald-900/30 dark:bg-emerald-900/10 dark:text-emerald-400">
+          <i className="bx bx-loader-alt animate-spin" />
+          Refreshing teardown data…
+        </div>
+      )}
       {loading ? (
         <div className="flex items-center justify-center py-24">
           <i className="bx bx-loader-alt animate-spin text-3xl text-emerald-600" />
@@ -308,7 +330,7 @@ export default function DailyTeardownDelivery() {
           {/* ── Totals Grid ─────────────────────────────────────────────── */}
           <div>
             <p className="mb-3 text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 dark:text-zinc-500">
-              Collected Items — {spans.length} span{spans.length !== 1 ? "s" : ""} completed
+              Collected Items — {spans.length} completed teardown{spans.length !== 1 ? "s" : ""}
             </p>
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 xl:grid-cols-7">
               <StatCard label="Actual Cable" value={totals.cable} unit="m" icon="bx bx-cable-car" color="#059669" />

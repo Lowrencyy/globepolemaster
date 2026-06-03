@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import telcoImg from '../../assets/images/telco.png'
-import { getToken, isAdmin, SKYCABLE_API } from '../../lib/auth'
+import { getToken, isAdmin, isExecutive, SKYCABLE_API } from '../../lib/auth'
 import { slugify } from '../../lib/utils'
 import { fetchTile, arcgisTileUrl } from '../../lib/tile-cache'
 import { cacheGet, cacheSet, TTL } from '../../lib/cache'
@@ -432,7 +432,7 @@ function nodesKey(id: string) { return `sitenodes_nodes_${id}` }
 export default function SiteNodes() {
   const { siteId } = useParams<{ siteId: string }>()
   const navigate = useNavigate()
-  const admin = isAdmin()
+  const admin = isAdmin() || isExecutive()
 
   const [area, setArea] = useState<Area | null>(() => {
     if (!siteId) return null
@@ -604,11 +604,21 @@ export default function SiteNodes() {
 
   async function handleDelete() {
     if (!selected) return
-    setSaving(true)
+    setSaving(true); setFormErr('')
     try {
-      await fetch(`${SKYCABLE_API}/nodes/${selected.id}`, { method: 'DELETE', headers: h() })
+      // Try permanent/force delete first; fall back to standard DELETE
+      let res = await fetch(`${SKYCABLE_API}/nodes/${selected.id}/force-delete`, { method: 'DELETE', headers: h() })
+      if (res.status === 404) {
+        res = await fetch(`${SKYCABLE_API}/nodes/${selected.id}?force=true`, { method: 'DELETE', headers: h() })
+      }
+      if (!res.ok && res.status !== 204) {
+        const body = await res.json().catch(() => ({}))
+        throw new Error(body?.message ?? `Delete failed (HTTP ${res.status})`)
+      }
       closeAll(); loadData()
-    } catch { setFormErr('Failed to delete') } finally { setSaving(false) }
+    } catch (err) {
+      setFormErr(err instanceof Error ? err.message : 'Failed to delete')
+    } finally { setSaving(false) }
   }
 
   function openEdit(node: Node, e: React.MouseEvent) {

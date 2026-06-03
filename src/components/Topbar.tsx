@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import logoImg from '../assets/images/telcovantage-logo.png'
 import { removeToken, getUser } from '../lib/auth'
+import { useNotifications } from '../hooks/useNotifications'
 
 function getDisplayName(user: Record<string, unknown> | null): { initials: string; label: string } {
   if (!user) return { initials: 'U', label: 'User' }
@@ -45,12 +46,21 @@ function useDropdown() {
   return { open, setOpen, ref }
 }
 
-const notifications = [
-  { id: 1, name: 'James Lemire', text: 'It will seem like simplified English.', time: '1 hour ago', avatar: '/assets/images/avatar-3.jpg' },
-  { id: 2, name: 'Your order is placed', text: 'If several languages coalesce the grammar', time: '3 min ago', icon: 'bx bx-cart', iconBg: 'bg-violet-500' },
-  { id: 3, name: 'Your item is shipped', text: 'If several languages coalesce the grammar', time: '3 min ago', icon: 'bx bx-badge-check', iconBg: 'bg-green-500' },
-  { id: 4, name: 'Salena Layfield', text: 'As a skeptical Cambridge friend of mine occidental.', time: '1 hour ago', avatar: '/assets/images/avatar-6.jpg' },
-]
+const TYPE_META: Record<string, { icon: string; bg: string }> = {
+  pull_out_new:       { icon: 'bx bx-package',       bg: 'bg-amber-500'  },
+  pull_out_approved:  { icon: 'bx bx-check-circle',  bg: 'bg-green-500'  },
+  pull_out_rejected:  { icon: 'bx bx-x-circle',      bg: 'bg-red-500'    },
+  driver_arrived:     { icon: 'bx bx-truck',          bg: 'bg-blue-500'   },
+  delivery_accepted:  { icon: 'bx bx-badge-check',   bg: 'bg-green-600'  },
+}
+
+function timeAgo(iso: string): string {
+  const diff = Math.floor((Date.now() - new Date(iso).getTime()) / 1000)
+  if (diff < 60)   return 'just now'
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`
+  if (diff < 86400)return `${Math.floor(diff / 3600)}h ago`
+  return `${Math.floor(diff / 86400)}d ago`
+}
 
 export default function Topbar() {
   const navigate = useNavigate()
@@ -58,6 +68,7 @@ export default function Topbar() {
   const profile = useDropdown()
   const grid = useDropdown()
   const { initials, label } = getDisplayName(getUser())
+  const { notifications, unreadCount, markRead, markAllRead } = useNotifications()
 
   const [themeMode, setThemeMode] = useState(() => {
     return sessionStorage.getItem("data-layout-mode") || document.body.getAttribute('data-mode') || 'light'
@@ -148,34 +159,67 @@ export default function Topbar() {
                   className="btn border-0 h-[70px] px-4 text-gray-600 dark:text-gray-100">
                   <i data-feather="bell" className="w-5 h-5"></i>
                 </button>
-                <span className="absolute text-xs px-1 bg-red-500 text-white font-medium rounded-full left-6 top-2.5">5</span>
+                {unreadCount > 0 && (
+                  <span className="absolute text-xs px-1 min-w-[18px] text-center bg-red-500 text-white font-medium rounded-full left-6 top-2.5">
+                    {unreadCount > 99 ? '99+' : unreadCount}
+                  </span>
+                )}
               </div>
               {notif.open && (
                 <div className="absolute right-0 top-full mt-1 z-50 bg-white rounded shadow w-80 dark:bg-zinc-800 border border-gray-50 dark:border-gray-700">
-                  <div className="grid grid-cols-12 p-4">
-                    <div className="col-span-6"><h6 className="m-0 text-gray-700 dark:text-gray-100">Notifications</h6></div>
-                    <div className="col-span-6 justify-self-end"><a href="#!" className="text-xs underline dark:text-gray-400">Unread (3)</a></div>
+                  <div className="flex items-center justify-between px-4 py-3 border-b border-gray-50 dark:border-zinc-700">
+                    <h6 className="m-0 text-sm font-semibold text-gray-700 dark:text-gray-100">
+                      Notifications {unreadCount > 0 && <span className="ml-1 text-xs font-bold text-red-500">({unreadCount} new)</span>}
+                    </h6>
+                    {unreadCount > 0 && (
+                      <button onClick={markAllRead} className="text-xs text-violet-500 hover:underline">
+                        Mark all read
+                      </button>
+                    )}
                   </div>
-                  <div className="max-h-56 overflow-y-auto">
-                    {notifications.map(n => (
-                      <a key={n.id} href="#!" className="flex px-4 py-2 hover:bg-gray-50/50 dark:hover:bg-zinc-700/50">
-                        <div className="ltr:mr-3 rtl:ml-3 shrink-0">
-                          {n.avatar
-                            ? <img src={n.avatar} className="w-8 h-8 rounded-full" alt="" />
-                            : <div className={`w-8 h-8 text-center rounded-full ${n.iconBg}`}><i className={`text-xl leading-relaxed text-white ${n.icon}`}></i></div>
-                          }
-                        </div>
-                        <div className="flex-grow">
-                          <h6 className="mb-1 text-sm text-gray-700 dark:text-gray-100">{n.name}</h6>
-                          <p className="mb-0 text-gray-600 text-xs dark:text-gray-400">{n.text}</p>
-                          <p className="mb-0 text-xs text-gray-500 dark:text-gray-400"><i className="mdi mdi-clock-outline"></i> {n.time}</p>
-                        </div>
-                      </a>
-                    ))}
+
+                  <div className="max-h-72 overflow-y-auto">
+                    {notifications.length === 0 ? (
+                      <div className="py-8 text-center text-xs text-gray-400 dark:text-gray-500">
+                        <i className="bx bx-bell-off text-2xl block mb-1"></i>
+                        No notifications yet
+                      </div>
+                    ) : notifications.map(n => {
+                      const meta = TYPE_META[n.type] ?? { icon: 'bx bx-bell', bg: 'bg-gray-400' }
+                      const isUnread = !n.read_at
+                      return (
+                        <button
+                          key={n.id}
+                          onClick={() => markRead(n.id)}
+                          className={`w-full flex text-left px-4 py-3 hover:bg-gray-50/80 dark:hover:bg-zinc-700/50 transition-colors ${isUnread ? 'bg-violet-50/60 dark:bg-violet-900/10' : ''}`}
+                        >
+                          <div className="ltr:mr-3 rtl:ml-3 shrink-0">
+                            <div className={`w-8 h-8 flex items-center justify-center rounded-full ${meta.bg}`}>
+                              <i className={`text-base text-white ${meta.icon}`}></i>
+                            </div>
+                          </div>
+                          <div className="flex-grow min-w-0">
+                            <div className="flex items-start justify-between gap-2">
+                              <p className={`text-xs font-semibold truncate ${isUnread ? 'text-gray-800 dark:text-gray-100' : 'text-gray-600 dark:text-gray-300'}`}>
+                                {n.title}
+                              </p>
+                              {isUnread && <span className="shrink-0 w-2 h-2 rounded-full bg-violet-500 mt-1"></span>}
+                            </div>
+                            <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 line-clamp-2">{n.body}</p>
+                            <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">
+                              <i className="mdi mdi-clock-outline mr-0.5"></i>{timeAgo(n.created_at)}
+                            </p>
+                          </div>
+                        </button>
+                      )
+                    })}
                   </div>
-                  <div className="p-2 border-t border-gray-50 dark:border-zinc-600 text-center">
-                    <a href="#" className="text-violet-500 text-sm"><i className="mr-1 mdi mdi-arrow-right-circle"></i> View More..</a>
-                  </div>
+
+                  {notifications.length > 0 && (
+                    <div className="p-2 border-t border-gray-50 dark:border-zinc-700 text-center">
+                      <span className="text-gray-400 text-xs">Showing last {notifications.length} notifications</span>
+                    </div>
+                  )}
                 </div>
               )}
             </div>

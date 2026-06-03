@@ -37,9 +37,16 @@ type AddMemberForm = {
   role: string
   cellphone: string
   status: 'active' | 'inactive'
+  can_approve_delivery: boolean
 }
 
-const USER_ROLES = ['lineman', 'team_lead', 'helper', 'supervisor', 'field_staff']
+const USER_ROLES = ['lineman', 'project_manager', 'warehouse_incharge']
+
+const ROLE_LABELS: Record<string, string> = {
+  lineman:            'Lineman',
+  project_manager:    'Project Manager',
+  warehouse_incharge: 'Warehouse In-charge',
+}
 
 const AVATAR_COLORS = [
   'from-violet-500 to-purple-600',
@@ -58,18 +65,16 @@ const ACCENT_COLORS = [
 ]
 
 const roleBadge: Record<string, string> = {
-  team_lead:   'bg-violet-50 text-violet-700 ring-1 ring-violet-200',
-  lineman:     'bg-sky-50 text-sky-700 ring-1 ring-sky-200',
-  helper:      'bg-amber-50 text-amber-700 ring-1 ring-amber-200',
-  supervisor:  'bg-indigo-50 text-indigo-700 ring-1 ring-indigo-200',
-  field_staff: 'bg-teal-50 text-teal-700 ring-1 ring-teal-200',
+  lineman:            'bg-sky-50 text-sky-700 ring-1 ring-sky-200',
+  project_manager:    'bg-violet-50 text-violet-700 ring-1 ring-violet-200',
+  warehouse_incharge: 'bg-amber-50 text-amber-700 ring-1 ring-amber-200',
 }
 
 const iCls = 'h-10 w-full rounded-xl border border-[#d8e6f8] bg-[#f7fbff] px-3 text-sm text-slate-800 outline-none transition focus:border-[#1683ff] focus:bg-white focus:ring-4 focus:ring-[#1683ff]/10 dark:border-[#29456e] dark:bg-[#11203a]/70 dark:text-slate-100'
 const lCls = 'mb-1.5 block text-[11px] font-bold uppercase tracking-widest text-slate-400'
 
 function emptyForm(): AddMemberForm {
-  return { first_name: '', last_name: '', email: '', role: 'lineman', cellphone: '', status: 'active' }
+  return { first_name: '', last_name: '', email: '', role: 'lineman', cellphone: '', status: 'active', can_approve_delivery: false }
 }
 
 function authHeaders() {
@@ -88,7 +93,7 @@ function initials(name: string | null | undefined) {
 
 function roleLabel(role?: string) {
   if (!role) return '—'
-  return role.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+  return ROLE_LABELS[role] ?? role.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
 }
 
 type TempPassBannerProps = { name: string; password: string; onClose: () => void }
@@ -268,8 +273,9 @@ export default function TeamDetail() {
         first_name:       form.first_name.trim(),
         last_name:        form.last_name.trim(),
         email:            form.email.trim(),
-        role:             form.role,
-        status:           form.status,
+        role:                 form.role,
+        status:               form.status,
+        can_approve_delivery: form.can_approve_delivery,
         ...(form.cellphone.trim() ? { cellphone: form.cellphone.trim() } : {}),
       }
       const userRes = await fetch(`${ADMIN_API}/users`, {
@@ -684,7 +690,7 @@ export default function TeamDetail() {
                     <div>
                       <label className={lCls}>Role</label>
                       <div className="relative">
-                        <select value={form.role} onChange={e => setForm(p => ({ ...p, role: e.target.value }))} className={`${iCls} appearance-none pr-8 cursor-pointer`}>
+                        <select value={form.role} onChange={e => setForm(p => ({ ...p, role: e.target.value, can_approve_delivery: false }))} className={`${iCls} appearance-none pr-8 cursor-pointer`}>
                           {USER_ROLES.map(r => <option key={r} value={r}>{roleLabel(r)}</option>)}
                         </select>
                         <i className="bx bx-chevron-down pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" />
@@ -701,6 +707,18 @@ export default function TeamDetail() {
                       </div>
                     </div>
                   </div>
+                  {form.role === 'warehouse_incharge' && (
+                    <div>
+                      <label className={lCls}>Can Approve Deliveries?</label>
+                      <div className="relative">
+                        <select value={form.can_approve_delivery ? 'yes' : 'no'} onChange={e => setForm(p => ({ ...p, can_approve_delivery: e.target.value === 'yes' }))} className={`${iCls} appearance-none pr-8 cursor-pointer`}>
+                          <option value="no">No — can view only</option>
+                          <option value="yes">Yes — can approve & receive stock</option>
+                        </select>
+                        <i className="bx bx-chevron-down pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                      </div>
+                    </div>
+                  )}
                   <div>
                     <label className={lCls}>Cellphone</label>
                     <input value={form.cellphone} onChange={e => setForm(p => ({ ...p, cellphone: e.target.value }))} placeholder="09XXXXXXXXX" className={iCls} />

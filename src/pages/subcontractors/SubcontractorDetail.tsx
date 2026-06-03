@@ -1,19 +1,19 @@
-import { useEffect, useState, type ReactNode, type SyntheticEvent } from 'react'
+import { useEffect, useRef, useState, type ReactNode, type SyntheticEvent } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { getToken, API_BASE, isAdmin } from '../../lib/auth'
 import { cacheGet, cacheSet } from '../../lib/cache'
 
-const ADMIN_API = `${API_BASE}/api/v1/admin`
+const ADMIN_API    = `${API_BASE}/api/v1/admin`
 const SKYCABLE_API = `${API_BASE}/api/v1/skycable`
 
 type UserStatus = 'active' | 'inactive' | 'on_hold'
 type Tab = 'users' | 'teams' | 'warehouse'
 
 type StaffUser = {
-  id: number; full_name: string; first_name: string; last_name: string
+  id: number; name: string; full_name?: string; first_name: string; last_name: string
   email: string; role: string; status: UserStatus
   cellphone?: string | null; last_login?: string | null
-  team_id?: number | null
+  team_id?: number | null; can_approve_delivery?: boolean
 }
 
 type Team = {
@@ -25,7 +25,13 @@ type WarehouseStock = { id: number; item_type: string; quantity: number; unit?: 
 
 type Warehouse = {
   id: number; name: string; type?: string; status?: string; sqm?: number | null
+  lat?: number | null; lng?: number | null
   stocks?: WarehouseStock[]
+}
+
+type WarehouseForm = {
+  name: string; sqm: string; status: 'active' | 'inactive'
+  lat: number | null; lng: number | null
 }
 
 type SubcontractorDetail = {
@@ -38,13 +44,14 @@ type SubcontractorDetail = {
 type UserForm = {
   first_name: string; last_name: string; email: string
   role: string; cellphone: string; team_id: number | ''; status: UserStatus
+  can_approve_delivery: boolean
 }
 
 type TeamForm = { name: string; status: string }
 
 const emptyUserForm = (): UserForm => ({
   first_name: '', last_name: '', email: '', role: 'lineman',
-  cellphone: '', team_id: '', status: 'active',
+  cellphone: '', team_id: '', status: 'active', can_approve_delivery: false,
 })
 const emptyTeamForm = (): TeamForm => ({ name: '', status: 'active' })
 
@@ -55,11 +62,15 @@ const statusCfg: Record<UserStatus, { label: string; badge: string; dot: string 
 }
 
 const roleBadge: Record<string, string> = {
-  team_lead:  'bg-violet-50 text-violet-700 ring-1 ring-violet-200',
-  lineman:    'bg-sky-50 text-sky-700 ring-1 ring-sky-200',
-  helper:     'bg-amber-50 text-amber-700 ring-1 ring-amber-200',
-  supervisor: 'bg-indigo-50 text-indigo-700 ring-1 ring-indigo-200',
-  field_staff:'bg-teal-50 text-teal-700 ring-1 ring-teal-200',
+  lineman:             'bg-sky-50 text-sky-700 ring-1 ring-sky-200',
+  project_manager:     'bg-violet-50 text-violet-700 ring-1 ring-violet-200',
+  warehouse_incharge:  'bg-amber-50 text-amber-700 ring-1 ring-amber-200',
+}
+
+const roleLabel: Record<string, string> = {
+  lineman:             'Lineman',
+  project_manager:     'Project Manager',
+  warehouse_incharge:  'Warehouse In-charge',
 }
 
 const AVATAR_COLORS = [
@@ -68,7 +79,7 @@ const AVATAR_COLORS = [
   'from-pink-500 to-rose-600', 'from-cyan-500 to-sky-600',
 ]
 
-const USER_ROLES = ['lineman', 'team_lead', 'helper', 'supervisor', 'field_staff']
+const USER_ROLES = ['lineman', 'project_manager', 'warehouse_incharge']
 
 const iCls = 'h-10 w-full rounded-xl border border-[#d8e6f8] bg-[#f7fbff] px-3 text-sm text-slate-800 outline-none transition focus:border-[#1683ff] focus:bg-white focus:ring-4 focus:ring-[#1683ff]/10 dark:border-[#29456e] dark:bg-[#11203a]/70 dark:text-slate-100'
 const lCls = 'mb-1 block text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400'
@@ -149,7 +160,7 @@ function AddUserModal({ teams, onSubmit, onClose, saving, error }: {
             <F label="Role">
               <div className="relative">
                 <select value={form.role} onChange={e => setForm(p => ({ ...p, role: e.target.value }))} className={`${iCls} appearance-none pr-8 cursor-pointer`}>
-                  {USER_ROLES.map(r => <option key={r} value={r}>{r.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}</option>)}
+                  {USER_ROLES.map(r => <option key={r} value={r}>{roleLabel[r] ?? r}</option>)}
                 </select>
                 <i className="bx bx-chevron-down pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" />
               </div>
@@ -157,16 +168,25 @@ function AddUserModal({ teams, onSubmit, onClose, saving, error }: {
           </div>
           <div className="grid grid-cols-2 gap-4">
             <F label="Cellphone"><input value={form.cellphone} onChange={e => setForm(p => ({ ...p, cellphone: e.target.value }))} placeholder="09XXXXXXXXX" className={iCls} /></F>
-            <F label="Status">
+            <F label="Warehouse Access">
               <div className="relative">
-                <select value={form.status} onChange={e => setForm(p => ({ ...p, status: e.target.value as UserStatus }))} className={`${iCls} appearance-none pr-8 cursor-pointer`}>
-                  <option value="active">Active</option>
-                  <option value="inactive">Inactive</option>
+                <select value={form.can_approve_delivery ? 'yes' : 'no'} onChange={e => setForm(p => ({ ...p, can_approve_delivery: e.target.value === 'yes' }))} className={`${iCls} appearance-none pr-8 cursor-pointer`}>
+                  <option value="no">No — view only</option>
+                  <option value="yes">Yes — can approve deliveries</option>
                 </select>
                 <i className="bx bx-chevron-down pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" />
               </div>
             </F>
           </div>
+          <F label="Status">
+            <div className="relative">
+              <select value={form.status} onChange={e => setForm(p => ({ ...p, status: e.target.value as UserStatus }))} className={`${iCls} appearance-none pr-8 cursor-pointer`}>
+                <option value="active">Active</option>
+                <option value="inactive">Inactive</option>
+              </select>
+              <i className="bx bx-chevron-down pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            </div>
+          </F>
           {error && <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-600">{error}</div>}
           <div className="flex gap-2 border-t border-[#e4eefb] pt-4">
             <button type="button" onClick={onClose} className={`${secondaryBtn} flex-1`}>Cancel</button>
@@ -187,13 +207,14 @@ function EditStaffModal({ user, teams, onSubmit, onClose, saving, error }: {
   onClose: () => void; saving: boolean; error: string | null
 }) {
   const [form, setForm] = useState<UserForm>({
-    first_name: user.first_name,
-    last_name:  user.last_name,
-    email:      user.email,
-    role:       user.role,
-    cellphone:  user.cellphone ?? '',
-    team_id:    user.team_id ?? '',
-    status:     user.status,
+    first_name:           user.first_name,
+    last_name:            user.last_name,
+    email:                user.email,
+    role:                 user.role,
+    cellphone:            user.cellphone ?? '',
+    team_id:              user.team_id ?? '',
+    status:               user.status,
+    can_approve_delivery: user.can_approve_delivery ?? false,
   })
 
   return (
@@ -208,7 +229,7 @@ function EditStaffModal({ user, teams, onSubmit, onClose, saving, error }: {
             </div>
             <div className="flex-1">
               <h5 className="text-sm font-bold text-white">Edit Staff Member</h5>
-              <p className="text-xs text-white/80">{user.full_name} · reassign team or update details</p>
+              <p className="text-xs text-white/80">{user.name ?? user.full_name} · reassign team or update details</p>
             </div>
             <button onClick={onClose} className="flex h-9 w-9 items-center justify-center rounded-full border border-white/15 bg-white/10 text-white/80 hover:bg-white/20">
               <i className="bx bx-x text-[21px]" />
@@ -250,7 +271,7 @@ function EditStaffModal({ user, teams, onSubmit, onClose, saving, error }: {
               <div className="relative">
                 <select value={form.role} onChange={e => setForm(p => ({ ...p, role: e.target.value }))}
                   className={`${iCls} appearance-none pr-8 cursor-pointer`}>
-                  {USER_ROLES.map(r => <option key={r} value={r}>{r.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}</option>)}
+                  {USER_ROLES.map(r => <option key={r} value={r}>{roleLabel[r] ?? r}</option>)}
                 </select>
                 <i className="bx bx-chevron-down pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" />
               </div>
@@ -268,10 +289,21 @@ function EditStaffModal({ user, teams, onSubmit, onClose, saving, error }: {
             </F>
           </div>
 
-          <F label="Cellphone">
-            <input value={form.cellphone} onChange={e => setForm(p => ({ ...p, cellphone: e.target.value }))}
-              placeholder="09XXXXXXXXX" className={iCls} />
-          </F>
+          <div className="grid grid-cols-2 gap-4">
+            <F label="Cellphone">
+              <input value={form.cellphone} onChange={e => setForm(p => ({ ...p, cellphone: e.target.value }))}
+                placeholder="09XXXXXXXXX" className={iCls} />
+            </F>
+            <F label="Warehouse Access">
+              <div className="relative">
+                <select value={form.can_approve_delivery ? 'yes' : 'no'} onChange={e => setForm(p => ({ ...p, can_approve_delivery: e.target.value === 'yes' }))} className={`${iCls} appearance-none pr-8 cursor-pointer`}>
+                  <option value="no">No — view only</option>
+                  <option value="yes">Yes — can approve deliveries</option>
+                </select>
+                <i className="bx bx-chevron-down pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              </div>
+            </F>
+          </div>
 
           {error && <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-600">{error}</div>}
 
@@ -290,6 +322,209 @@ function EditStaffModal({ user, teams, onSubmit, onClose, saving, error }: {
   )
 }
 
+/* ── Map Picker ──────────────────────────────────────────────────── */
+function MapPicker({ lat, lng, onChange }: {
+  lat: number | null; lng: number | null
+  onChange: (lat: number, lng: number) => void
+}) {
+  const divRef  = useRef<HTMLDivElement>(null)
+  const mapRef  = useRef<any>(null)
+  const mrkRef  = useRef<any>(null)
+
+  useEffect(() => {
+    function init() {
+      if (!divRef.current || mapRef.current) return
+      const L   = (window as any).L
+      const map = L.map(divRef.current, { zoomControl: true, attributionControl: false })
+        .setView(lat && lng ? [lat, lng] : [12.8797, 121.774], lat && lng ? 13 : 6)
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map)
+
+      if (lat && lng) {
+        mrkRef.current = L.marker([lat, lng]).addTo(map)
+      }
+
+      map.on('click', (e: any) => {
+        const { lat: la, lng: lo } = e.latlng
+        onChange(la, lo)
+        if (mrkRef.current) mrkRef.current.setLatLng([la, lo])
+        else mrkRef.current = L.marker([la, lo]).addTo(map)
+      })
+
+      mapRef.current = map
+    }
+
+    if (!document.getElementById('lf-css')) {
+      const lnk = document.createElement('link')
+      lnk.id = 'lf-css'; lnk.rel = 'stylesheet'
+      lnk.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css'
+      document.head.appendChild(lnk)
+    }
+
+    if ((window as any).L) {
+      init()
+    } else if (!document.getElementById('lf-js')) {
+      const s = document.createElement('script')
+      s.id = 'lf-js'; s.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js'
+      s.onload = init; document.head.appendChild(s)
+    } else {
+      const poll = setInterval(() => { if ((window as any).L) { clearInterval(poll); init() } }, 80)
+      return () => clearInterval(poll)
+    }
+
+    return () => { if (mapRef.current) { mapRef.current.remove(); mapRef.current = null; mrkRef.current = null } }
+  }, [])
+
+  return (
+    <div className="space-y-1.5">
+      <div ref={divRef} style={{ height: 260, borderRadius: 14, overflow: 'hidden', zIndex: 0, border: '1.5px solid #d8e6f8' }} />
+      {lat && lng
+        ? <p className="text-center text-[11px] font-semibold text-emerald-600">
+            📍 {lat.toFixed(6)}, {lng.toFixed(6)}
+          </p>
+        : <p className="text-center text-[11px] text-slate-400">Click anywhere on the map to set warehouse location</p>}
+    </div>
+  )
+}
+
+/* ── Add Warehouse Modal ──────────────────────────────────────────── */
+function AddWarehouseModal({ subconName, onSubmit, onClose, saving, error }: {
+  subconName: string
+  onSubmit: (f: WarehouseForm) => void
+  onClose: () => void; saving: boolean; error: string | null
+}) {
+  const [form, setForm] = useState<WarehouseForm>({ name: '', sqm: '', status: 'active', lat: null, lng: null })
+  return (
+    <div className="fixed inset-0 z-[999] flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-slate-950/55 backdrop-blur-[6px]" onClick={onClose} />
+      <div className="relative w-full max-w-lg rounded-[30px] border border-[#d8f0e8] bg-white shadow-[0_36px_100px_-34px_rgba(0,100,60,0.3)] dark:border-[#1a3d2a] dark:bg-[#0f1728]">
+        <div className="overflow-hidden rounded-t-[30px] border-b border-white/20 bg-gradient-to-r from-emerald-600 to-teal-500 px-6 py-4">
+          <div className="flex items-center gap-3.5">
+            <div className="flex h-10 w-10 items-center justify-center rounded-[14px] border border-white/30 bg-white/15">
+              <i className="bx bx-store text-white text-[19px]" />
+            </div>
+            <div className="flex-1">
+              <h5 className="text-sm font-bold text-white">Add Warehouse</h5>
+              <p className="text-xs text-white/80">Under {subconName}</p>
+            </div>
+            <button onClick={onClose} className="flex h-9 w-9 items-center justify-center rounded-full border border-white/15 bg-white/10 text-white/80 hover:bg-white/20">
+              <i className="bx bx-x text-[21px]" />
+            </button>
+          </div>
+        </div>
+        <form onSubmit={e => { e.preventDefault(); onSubmit(form) }}
+          className="max-h-[78vh] overflow-y-auto p-6 space-y-4">
+          <div className="grid grid-cols-2 gap-4">
+            <div className="col-span-2">
+              <F label="Warehouse Name">
+                <input required value={form.name} onChange={e => setForm(p => ({ ...p, name: e.target.value }))}
+                  placeholder="e.g. Main Bodega" className={iCls} />
+              </F>
+            </div>
+            <F label="Floor Area (sqm)">
+              <input type="number" value={form.sqm} onChange={e => setForm(p => ({ ...p, sqm: e.target.value }))}
+                placeholder="e.g. 120" min="0" className={iCls} />
+            </F>
+            <F label="Status">
+              <div className="relative">
+                <select value={form.status} onChange={e => setForm(p => ({ ...p, status: e.target.value as 'active' | 'inactive' }))}
+                  className={`${iCls} appearance-none pr-8 cursor-pointer`}>
+                  <option value="active">Active</option>
+                  <option value="inactive">Inactive</option>
+                </select>
+                <i className="bx bx-chevron-down pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              </div>
+            </F>
+          </div>
+          <div>
+            <label className={lCls}>Warehouse Location <span className="normal-case font-normal text-slate-400">(click map to pin)</span></label>
+            <MapPicker lat={form.lat} lng={form.lng} onChange={(la, lo) => setForm(p => ({ ...p, lat: la, lng: lo }))} />
+          </div>
+          {error && <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-600">{error}</div>}
+          <div className="flex gap-2 border-t border-emerald-50 pt-4">
+            <button type="button" onClick={onClose} className={`${secondaryBtn} flex-1`}>Cancel</button>
+            <button type="submit" disabled={saving}
+              className="flex-1 h-10 rounded-2xl bg-emerald-600 px-5 text-sm font-semibold text-white shadow-md shadow-emerald-500/30 transition hover:bg-emerald-700 disabled:opacity-60">
+              {saving ? <span className="flex items-center justify-center gap-2"><i className="bx bx-loader-alt animate-spin" /> Creating…</span> : 'Create Warehouse'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  )
+}
+
+/* ── Edit Warehouse Modal ─────────────────────────────────────────── */
+function EditWarehouseModal({ warehouse, onSubmit, onClose, saving, error }: {
+  warehouse: Warehouse
+  onSubmit: (f: WarehouseForm) => void
+  onClose: () => void; saving: boolean; error: string | null
+}) {
+  const [form, setForm] = useState<WarehouseForm>({
+    name:   warehouse.name,
+    sqm:    warehouse.sqm ? String(warehouse.sqm) : '',
+    status: (warehouse.status ?? 'active') as 'active' | 'inactive',
+    lat:    warehouse.lat ?? null,
+    lng:    warehouse.lng ?? null,
+  })
+  return (
+    <div className="fixed inset-0 z-[999] flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-slate-950/55 backdrop-blur-[6px]" onClick={onClose} />
+      <div className="relative w-full max-w-lg rounded-[30px] border border-[#ffe8d8] bg-white shadow-[0_36px_100px_-34px_rgba(120,60,0,0.3)] dark:border-[#3a2010] dark:bg-[#0f1728]">
+        <div className="overflow-hidden rounded-t-[30px] border-b border-white/20 bg-gradient-to-r from-amber-500 to-orange-500 px-6 py-4">
+          <div className="flex items-center gap-3.5">
+            <div className="flex h-10 w-10 items-center justify-center rounded-[14px] border border-white/30 bg-white/15">
+              <i className="bx bx-map-pin text-white text-[19px]" />
+            </div>
+            <div className="flex-1">
+              <h5 className="text-sm font-bold text-white">Edit Warehouse</h5>
+              <p className="text-xs text-white/80">{warehouse.name}</p>
+            </div>
+            <button onClick={onClose} className="flex h-9 w-9 items-center justify-center rounded-full border border-white/15 bg-white/10 text-white/80 hover:bg-white/20">
+              <i className="bx bx-x text-[21px]" />
+            </button>
+          </div>
+        </div>
+        <form onSubmit={e => { e.preventDefault(); onSubmit(form) }}
+          className="max-h-[78vh] overflow-y-auto p-6 space-y-4">
+          <div className="grid grid-cols-2 gap-4">
+            <div className="col-span-2">
+              <F label="Warehouse Name">
+                <input required value={form.name} onChange={e => setForm(p => ({ ...p, name: e.target.value }))} className={iCls} />
+              </F>
+            </div>
+            <F label="Floor Area (sqm)">
+              <input type="number" value={form.sqm} onChange={e => setForm(p => ({ ...p, sqm: e.target.value }))}
+                min="0" className={iCls} />
+            </F>
+            <F label="Status">
+              <div className="relative">
+                <select value={form.status} onChange={e => setForm(p => ({ ...p, status: e.target.value as 'active' | 'inactive' }))}
+                  className={`${iCls} appearance-none pr-8 cursor-pointer`}>
+                  <option value="active">Active</option>
+                  <option value="inactive">Inactive</option>
+                </select>
+                <i className="bx bx-chevron-down pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              </div>
+            </F>
+          </div>
+          <div>
+            <label className={lCls}>Warehouse Location <span className="normal-case font-normal text-slate-400">(click map to move pin)</span></label>
+            <MapPicker lat={form.lat} lng={form.lng} onChange={(la, lo) => setForm(p => ({ ...p, lat: la, lng: lo }))} />
+          </div>
+          {error && <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-600">{error}</div>}
+          <div className="flex gap-2 border-t border-amber-50 pt-4">
+            <button type="button" onClick={onClose} className={`${secondaryBtn} flex-1`}>Cancel</button>
+            <button type="submit" disabled={saving}
+              className="flex-1 h-10 rounded-2xl bg-amber-500 px-5 text-sm font-semibold text-white shadow-md shadow-amber-400/30 transition hover:bg-amber-600 disabled:opacity-60">
+              {saving ? <span className="flex items-center justify-center gap-2"><i className="bx bx-loader-alt animate-spin" /> Saving…</span> : 'Save Changes'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  )
+}
+
 /* ═══════════════════════════════════════════════════════════════════ */
 export default function SubcontractorDetail() {
   const { id } = useParams<{ id: string }>()
@@ -300,7 +535,7 @@ export default function SubcontractorDetail() {
   const [subconLoading, setSubconLoading] = useState(true)
 
   const [users, setUsers]       = useState<StaffUser[]>([])
-  const [usersLoading, setUsersLoading] = useState(false)
+  const [usersLoading, setUsersLoading] = useState(true)
 
   const [tab, setTab]           = useState<Tab>('users')
 
@@ -315,6 +550,10 @@ export default function SubcontractorDetail() {
   const [editingUser, setEditingUser]       = useState<StaffUser | null>(null)
   const [editUserError, setEditUserError]   = useState<string | null>(null)
   const [deletingId, setDeletingId]         = useState<number | null>(null)
+  const [isAddWarehouseOpen, setIsAddWarehouseOpen] = useState(false)
+  const [warehouseError, setWarehouseError]         = useState<string | null>(null)
+  const [editingWarehouse, setEditingWarehouse]     = useState<Warehouse | null>(null)
+  const [warehouseSaving, setWarehouseSaving]       = useState(false)
 
   useEffect(() => {
     if (!subconId) return
@@ -343,13 +582,14 @@ export default function SubcontractorDetail() {
     setSaving(true); setAddUserError(null)
     try {
       const payload: Record<string, unknown> = {
-        company: subcon?.company ?? 'skycable',
-        role: form.role,
-        first_name: form.first_name,
-        last_name: form.last_name,
-        email: form.email,
-        status: form.status,
-        subcontractor_id: subconId,
+        company:              subcon?.company ?? 'skycable',
+        role:                 form.role,
+        first_name:           form.first_name,
+        last_name:            form.last_name,
+        email:                form.email,
+        status:               form.status,
+        subcontractor_id:     subconId,
+        can_approve_delivery: form.can_approve_delivery,
       }
       if (form.team_id) payload.team_id = form.team_id
       if (form.cellphone) payload.cellphone = form.cellphone
@@ -361,7 +601,7 @@ export default function SubcontractorDetail() {
         throw new Error(msg)
       }
       setIsAddUserOpen(false)
-      setTempPass({ name: data.user.full_name, password: data.temp_password })
+      setTempPass({ name: data.user.name ?? data.user.full_name, password: data.temp_password })
       loadUsers()
     } catch (err) { setAddUserError(err instanceof Error ? err.message : 'Something went wrong') }
     finally { setSaving(false) }
@@ -386,12 +626,13 @@ export default function SubcontractorDetail() {
     setSaving(true); setEditUserError(null)
     try {
       const payload: Record<string, unknown> = {
-        first_name: form.first_name,
-        last_name:  form.last_name,
-        role:       form.role,
-        status:     form.status,
-        cellphone:  form.cellphone,
-        team_id:    form.team_id || null,
+        first_name:           form.first_name,
+        last_name:            form.last_name,
+        role:                 form.role,
+        status:               form.status,
+        cellphone:            form.cellphone,
+        team_id:              form.team_id || null,
+        can_approve_delivery: form.can_approve_delivery,
       }
       const res  = await fetch(`${ADMIN_API}/users/${id}`, { method: 'PUT', headers: authHeaders(), body: JSON.stringify(payload) })
       const data = await res.json()
@@ -410,11 +651,47 @@ export default function SubcontractorDetail() {
     const res  = await fetch(`${ADMIN_API}/users/${u.id}/reset-password`, { method: 'POST', headers: authHeaders() })
     const data = await res.json()
     setResettingId(null)
-    if (res.ok) setTempPass({ name: u.full_name, password: data.temp_password })
+    if (res.ok) setTempPass({ name: u.name ?? u.full_name, password: data.temp_password })
+  }
+
+  function reloadSubcon() {
+    fetch(`${ADMIN_API}/subcontractors/${subconId}`, { headers: authHeaders() })
+      .then(r => r.json()).then(d => { setSubcon(d); cacheSet(`subcondetail_${subconId}`, d) }).catch(() => {})
+  }
+
+  async function handleAddWarehouse(form: WarehouseForm) {
+    setWarehouseSaving(true); setWarehouseError(null)
+    try {
+      const res  = await fetch(`${SKYCABLE_API}/warehouses`, {
+        method: 'POST', headers: authHeaders(),
+        body: JSON.stringify({ name: form.name, sqm: form.sqm ? Number(form.sqm) : null, status: form.status, lat: form.lat, lng: form.lng, subcontractor_id: subconId }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.message ?? 'Failed to create warehouse')
+      setIsAddWarehouseOpen(false)
+      reloadSubcon()
+    } catch (err) { setWarehouseError(err instanceof Error ? err.message : 'Something went wrong') }
+    finally { setWarehouseSaving(false) }
+  }
+
+  async function handleUpdateWarehouse(form: WarehouseForm) {
+    if (!editingWarehouse) return
+    setWarehouseSaving(true); setWarehouseError(null)
+    try {
+      const res  = await fetch(`${SKYCABLE_API}/warehouses/${editingWarehouse.id}`, {
+        method: 'PUT', headers: authHeaders(),
+        body: JSON.stringify({ name: form.name, sqm: form.sqm ? Number(form.sqm) : null, status: form.status, lat: form.lat, lng: form.lng }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.message ?? 'Failed to update warehouse')
+      setEditingWarehouse(null)
+      reloadSubcon()
+    } catch (err) { setWarehouseError(err instanceof Error ? err.message : 'Something went wrong') }
+    finally { setWarehouseSaving(false) }
   }
 
   async function handleDeleteUser(u: StaffUser) {
-    if (!confirm(`Delete ${u.full_name}? This cannot be undone.`)) return
+    if (!confirm(`Delete ${u.name ?? u.full_name}? This cannot be undone.`)) return
     setDeletingId(u.id)
     const res = await fetch(`${ADMIN_API}/users/${u.id}`, { method: 'DELETE', headers: authHeaders() })
     setDeletingId(null)
@@ -568,7 +845,7 @@ export default function SubcontractorDetail() {
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-3">
                           <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br ${avC} text-[11px] font-black text-white`}>{initials(u)}</div>
-                          <p className="font-semibold text-slate-800 dark:text-slate-100">{u.full_name}</p>
+                          <p className="font-semibold text-slate-800 dark:text-slate-100">{u.name ?? u.full_name}</p>
                         </div>
                       </td>
                       <td className="px-4 py-3 text-xs text-slate-500">{u.email}</td>
@@ -578,9 +855,17 @@ export default function SubcontractorDetail() {
                         </span>
                       </td>
                       <td className="px-4 py-3">
-                        <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] font-semibold ${rb}`}>
-                          {u.role.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}
-                        </span>
+                        <div className="flex flex-col gap-1">
+                          <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] font-semibold ${rb}`}>
+                            {roleLabel[u.role] ?? u.role.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}
+                          </span>
+                          {u.can_approve_delivery && (
+                            <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold bg-emerald-50 text-emerald-700">
+                              <i className="bx bx-store text-[11px]" />
+                              Warehouse Access
+                            </span>
+                          )}
+                        </div>
                       </td>
                       <td className="px-4 py-3">
                         <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11px] font-semibold ${sc.badge}`}>
@@ -636,31 +921,61 @@ export default function SubcontractorDetail() {
 
         {/* ── Warehouse Tab ──────────────────────────────────────────── */}
         {tab === 'warehouse' && (
-          <div className="p-5">
+          <div className="p-5 space-y-4">
+            {/* Toolbar */}
+            <div className="flex items-center justify-between">
+              <p className="text-[11px] font-bold uppercase tracking-widest text-slate-400">
+                {warehouses.length} warehouse{warehouses.length !== 1 ? 's' : ''}
+              </p>
+              <button
+                onClick={() => { setWarehouseError(null); setIsAddWarehouseOpen(true) }}
+                className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-3.5 py-2 text-xs font-semibold text-white shadow-sm shadow-emerald-500/30 transition hover:bg-emerald-700"
+              >
+                <i className="bx bx-plus text-sm" /> Add Warehouse
+              </button>
+            </div>
+
             {warehouses.length === 0 ? (
-              <div className="flex h-48 flex-col items-center justify-center gap-2 text-slate-400">
+              <div className="flex h-40 flex-col items-center justify-center gap-2 text-slate-400">
                 <i className="bx bx-store text-3xl" />
-                <p className="text-sm">No warehouse found</p>
-                <p className="text-xs text-slate-400">Warehouse is auto-created when subcontractor is added</p>
+                <p className="text-sm">No warehouses yet</p>
+                <button onClick={() => { setWarehouseError(null); setIsAddWarehouseOpen(true) }}
+                  className="text-xs font-semibold text-emerald-600 hover:underline">Add first warehouse</button>
               </div>
             ) : (
               <div className="space-y-4">
                 {warehouses.map(w => (
                   <div key={w.id} className="overflow-hidden rounded-xl border border-slate-100 dark:border-zinc-700">
+                    {/* Warehouse header */}
                     <div className="flex items-center justify-between border-b border-slate-100 bg-slate-50 px-4 py-3 dark:border-zinc-700 dark:bg-zinc-800">
                       <div className="flex items-center gap-2.5">
-                        <i className="bx bx-store text-sky-500" />
+                        <i className="bx bx-store text-emerald-500" />
                         <span className="font-semibold text-slate-800 dark:text-slate-100">{w.name}</span>
+                        {w.lat && w.lng && (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700 ring-1 ring-emerald-200">
+                            <i className="bx bx-map-pin text-[11px]" />
+                            {Number(w.lat).toFixed(4)}, {Number(w.lng).toFixed(4)}
+                          </span>
+                        )}
                       </div>
-                      <div className="flex items-center gap-2 text-[11px] text-slate-400">
-                        {w.sqm && <span>{w.sqm} sqm</span>}
-                        <span className={`rounded-full px-2 py-0.5 font-semibold ${w.status === 'active' ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
+                      <div className="flex items-center gap-2">
+                        {w.sqm && <span className="text-[11px] text-slate-400">{w.sqm} sqm</span>}
+                        <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${w.status === 'active' ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
                           {w.status ?? 'active'}
                         </span>
+                        <button
+                          onClick={() => { setWarehouseError(null); setEditingWarehouse(w) }}
+                          className="flex h-7 w-7 items-center justify-center rounded-lg text-slate-400 transition hover:bg-amber-50 hover:text-amber-500"
+                          title="Edit / set location"
+                        >
+                          <i className="bx bx-map-pin text-sm" />
+                        </button>
                       </div>
                     </div>
+
+                    {/* Stock table */}
                     {(w.stocks ?? []).length === 0 ? (
-                      <div className="flex h-28 items-center justify-center text-sm text-slate-400">
+                      <div className="flex h-24 items-center justify-center text-sm text-slate-400">
                         <i className="bx bx-package mr-2 text-slate-300" /> No stock yet
                       </div>
                     ) : (
@@ -757,6 +1072,28 @@ export default function SubcontractorDetail() {
 
       {/* Temp password banner */}
       {tempPass && <TempPassBanner name={tempPass.name} password={tempPass.password} onClose={() => setTempPass(null)} />}
+
+      {/* Add Warehouse Modal */}
+      {isAddWarehouseOpen && (
+        <AddWarehouseModal
+          subconName={subcon.name}
+          onSubmit={handleAddWarehouse}
+          onClose={() => setIsAddWarehouseOpen(false)}
+          saving={warehouseSaving}
+          error={warehouseError}
+        />
+      )}
+
+      {/* Edit Warehouse Modal */}
+      {editingWarehouse && (
+        <EditWarehouseModal
+          warehouse={editingWarehouse}
+          onSubmit={handleUpdateWarehouse}
+          onClose={() => setEditingWarehouse(null)}
+          saving={warehouseSaving}
+          error={warehouseError}
+        />
+      )}
     </div>
   )
 }

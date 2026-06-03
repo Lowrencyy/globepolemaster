@@ -215,6 +215,7 @@ interface TeardownLog {
   span: {
     id: number
     span_code: string | null
+    status?: string | null
     node: { id: number; name: string } | null
   } | null
   team: { id: number; name: string } | null
@@ -301,6 +302,8 @@ function statusColor(s: string) {
       return 'bg-blue-500/15 text-blue-600 dark:text-blue-400'
     case 'submitted':
       return 'bg-violet-500/15 text-violet-600 dark:text-violet-400'
+    case 'cleared':
+      return 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400'
     case 'rejected':
       return 'bg-red-500/15 text-red-600 dark:text-red-400'
     case 'in_progress':
@@ -315,6 +318,7 @@ function statusLabel(s: string) {
     backend_approved: 'Backend Approved',
     subcon_approved: 'Subcon Approved',
     submitted: 'Submitted',
+    cleared: 'Cleared',
     rejected: 'Rejected',
     in_progress: 'In Progress',
   }
@@ -914,6 +918,7 @@ export default function SubconDashboard() {
                             : '—'
                           const nodeName = log.span?.node?.name ?? '—'
                           const teamName = log.team?.name ?? '—'
+                          const displayStatus = log.span?.status === 'completed' ? 'cleared' : log.status
 
                           return (
                             <tr
@@ -955,11 +960,9 @@ export default function SubconDashboard() {
 
                               <td className="p-3 whitespace-nowrap">
                                 <span
-                                  className={`inline-flex text-[10px] font-semibold px-2 py-0.5 rounded-full ${statusColor(
-                                    log.status
-                                  )}`}
+                                  className={`inline-flex text-[10px] font-semibold px-2 py-0.5 rounded-full ${statusColor(displayStatus)}`}
                                 >
-                                  {statusLabel(log.status)}
+                                  {statusLabel(displayStatus)}
                                 </span>
                               </td>
 

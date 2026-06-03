@@ -67,6 +67,11 @@ type NodeInfo = {
   area?: { id: number; name: string };
 };
 
+type LatLngPoint = {
+  lat: number;
+  lng: number;
+};
+
 type SpanForm = {
   from_pole_id: number | "";
   to_pole_id: number | "";
@@ -105,6 +110,48 @@ const computeActual = (strand: string, runs: string) => {
   return !isNaN(s) && !isNaN(r) && s > 0 && r > 0 ? (s * r).toFixed(2) : "";
 };
 
+const sameLatLng = (a: LatLngPoint | null, b: LatLngPoint | null, epsilon = 1e-7) =>
+  !!a &&
+  !!b &&
+  Math.abs(a.lat - b.lat) < epsilon &&
+  Math.abs(a.lng - b.lng) < epsilon;
+
+const normalizeHeading = (heading: number) => ((heading % 360) + 360) % 360;
+
+const headingToCardinal = (heading: number) => {
+  const directions = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
+  return directions[Math.round(normalizeHeading(heading) / 45) % directions.length];
+};
+
+function projectPoint(origin: LatLngPoint, heading: number, meters = 12): LatLngPoint {
+  const earthRadius = 6378137;
+  const angularDistance = meters / earthRadius;
+  const bearing = normalizeHeading(heading) * Math.PI / 180;
+  const lat1 = origin.lat * Math.PI / 180;
+  const lng1 = origin.lng * Math.PI / 180;
+
+  const lat2 = Math.asin(
+    Math.sin(lat1) * Math.cos(angularDistance) +
+      Math.cos(lat1) * Math.sin(angularDistance) * Math.cos(bearing),
+  );
+  const lng2 =
+    lng1 +
+    Math.atan2(
+      Math.sin(bearing) * Math.sin(angularDistance) * Math.cos(lat1),
+      Math.cos(angularDistance) - Math.sin(lat1) * Math.sin(lat2),
+    );
+
+  return {
+    lat: lat2 * 180 / Math.PI,
+    lng: lng2 * 180 / Math.PI,
+  };
+}
+
+const getGoogleMapsApiKey = () =>
+  ((import.meta as ImportMeta & {
+    env?: Record<string, string | undefined>;
+  }).env?.VITE_GOOGLE_MAPS_API_KEY ?? "").trim();
+
 const statusCfg: Record<
   SpanStatus,
   { label: string; dot: string; badge: string }
@@ -133,6 +180,88 @@ const statusCfg: Record<
 
 const iCls =
   "h-10 w-full rounded-2xl border border-slate-200 bg-white px-3.5 text-sm text-slate-800 outline-none transition placeholder:text-slate-300 focus:border-emerald-400 focus:ring-4 focus:ring-emerald-400/15 dark:border-zinc-700 dark:bg-zinc-900 dark:text-white";
+
+// ── Searchable select ────────────────────────────────────────────────────────
+function SearchableSelect({
+  value, onChange, options, placeholder = "— select —", accentColor = "#10b981",
+}: {
+  value: number | ""
+  onChange: (v: number | "") => void
+  options: { id: number; label: string }[]
+  placeholder?: string
+  accentColor?: string
+}) {
+  const [open, setOpen] = useState(false)
+  const [q, setQ] = useState("")
+  const ref = useRef<HTMLDivElement>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    function handler(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener("mousedown", handler)
+    return () => document.removeEventListener("mousedown", handler)
+  }, [])
+
+  useEffect(() => {
+    if (open) { setQ(""); setTimeout(() => inputRef.current?.focus(), 50) }
+  }, [open])
+
+  const filtered = q.trim()
+    ? options.filter(o => o.label.toLowerCase().includes(q.toLowerCase()))
+    : options
+
+  const selected = options.find(o => o.id === value)
+
+  return (
+    <div ref={ref} className="relative">
+      <button type="button" onClick={() => setOpen(v => !v)}
+        className="flex h-10 w-full items-center justify-between rounded-2xl border border-slate-200 bg-white px-3.5 text-sm outline-none transition hover:border-emerald-300 dark:border-zinc-700 dark:bg-zinc-900 dark:text-white"
+        style={open ? { borderColor: accentColor, boxShadow: `0 0 0 4px ${accentColor}18` } : {}}>
+        <span className={selected ? "font-semibold text-slate-800 dark:text-white" : "text-slate-400"}>
+          {selected ? selected.label : placeholder}
+        </span>
+        <i className={`bx bx-chevron-${open ? "up" : "down"} text-slate-400 text-base`} />
+      </button>
+
+      {open && (
+        <div className="absolute left-0 right-0 top-[calc(100%+4px)] z-[9999] overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl dark:border-zinc-700 dark:bg-zinc-900">
+          {/* Search */}
+          <div className="p-2 border-b border-slate-100 dark:border-zinc-800">
+            <div className="relative">
+              <i className="bx bx-search absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm" />
+              <input ref={inputRef} value={q} onChange={e => setQ(e.target.value)}
+                placeholder="Search pole code…"
+                className="h-8 w-full rounded-xl bg-slate-50 pl-8 pr-3 text-xs font-medium outline-none border border-slate-200/80 focus:border-emerald-400 dark:bg-zinc-800 dark:border-zinc-700 dark:text-white dark:placeholder-zinc-500" />
+            </div>
+          </div>
+          {/* Options */}
+          <div className="max-h-48 overflow-y-auto">
+            <button type="button" onClick={() => { onChange(""); setOpen(false) }}
+              className="flex w-full items-center px-4 py-2.5 text-xs font-medium text-slate-400 hover:bg-slate-50 dark:hover:bg-zinc-800 transition">
+              — clear selection —
+            </button>
+            {filtered.length === 0 ? (
+              <p className="px-4 py-3 text-xs text-slate-400 text-center">No poles match "{q}"</p>
+            ) : filtered.map(o => (
+              <button key={o.id} type="button"
+                onClick={() => { onChange(o.id); setOpen(false) }}
+                className={`flex w-full items-center gap-2 px-4 py-2.5 text-sm font-mono font-semibold transition ${
+                  o.id === value
+                    ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300"
+                    : "text-slate-700 hover:bg-slate-50 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                }`}>
+                {o.id === value && <i className="bx bx-check text-emerald-500 text-base shrink-0" />}
+                {o.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
 const iReadCls =
   "h-10 w-full rounded-2xl border border-emerald-200 bg-emerald-50 px-3.5 text-sm font-bold text-emerald-700 outline-none dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-400";
 const lCls =
@@ -651,6 +780,10 @@ export default function NodeSpans() {
   const gpsMarkersRef = useRef<Map<number, L.Marker>>(new Map());
   const gpsLinesRef = useRef<L.Polyline[]>([]);
   const gpsLabelsRef = useRef<L.Marker[]>([]);
+  const gpsSpanLineMapRef = useRef<Map<number, L.Polyline>>(new Map()); // span id → line
+  const gpsSpanLabelMapRef = useRef<Map<number, L.Marker>>(new Map()); // span id → label
+  const poleOriginalIconsRef = useRef<Map<number, L.DivIcon>>(new Map()); // pole id → original icon
+  const [highlightedPoleId, setHighlightedPoleId] = useState<number | null>(null);
   const poleClickRef = useRef<(p: PoleOption) => void>(() => {});
   const spanLabelClickRef = useRef<(s: Span) => void>(() => {});
   // Map-click handler ref (used for "Add Pole" pick mode)
@@ -692,6 +825,21 @@ export default function NodeSpans() {
 
   // ── Map layer ────────────────────────────────────────────────────
   const [mapLayer, setMapLayer] = useState<"satellite" | "street" | "dark">("street");
+  const [streetViewOpen, setStreetViewOpen] = useState(false);
+  const [streetViewTarget, setStreetViewTarget] = useState<LatLngPoint | null>(null);
+  const [streetViewCoords, setStreetViewCoords] = useState<LatLngPoint | null>(null);
+  const streetViewCoordsRef = useRef<LatLngPoint | null>(null);
+  const [streetViewHeading, setStreetViewHeading] = useState<number | null>(null);
+  const streetViewHeadingRef = useRef<number | null>(null);
+  const [streetViewPitch, setStreetViewPitch] = useState(0);
+  const streetViewPinRef = useRef<L.Marker | null>(null);
+  const streetViewBearingRef = useRef<L.Polygon | null>(null);
+  const streetViewPanelRef = useRef<HTMLDivElement | null>(null);
+  const streetViewPanoramaRef = useRef<any>(null);
+  const streetViewListenersRef = useRef<any[]>([]);
+  const [panoLoading, setPanoLoading] = useState(false);
+  const [panoReady, setPanoReady] = useState(false);
+  const [panoUnavailable, setPanoUnavailable] = useState(false);
 
   // ── Area / location search ───────────────────────────────────────
   const [areaSearch, setAreaSearch] = useState("");
@@ -732,6 +880,88 @@ export default function NodeSpans() {
   const [addPoleCode, setAddPoleCode] = useState("");
   const [addPoleSaving, setAddPoleSaving] = useState(false);
   const [addPoleError, setAddPoleError] = useState<string | null>(null);
+
+  function upsertStreetViewPin(next: LatLngPoint) {
+    const svIcon = L.divIcon({
+      className: "",
+      html: `<div style="width:22px;height:22px;border-radius:50%;background:#0ea5e9;border:3px solid #fff;box-shadow:0 0 0 4px #0ea5e955,0 4px 14px rgba(0,0,0,.4);"></div>`,
+      iconSize: [22, 22],
+      iconAnchor: [11, 11],
+    });
+
+    if (streetViewPinRef.current) {
+      streetViewPinRef.current.setLatLng([next.lat, next.lng]);
+      return;
+    }
+
+    if (gpsMapObj.current) {
+      streetViewPinRef.current = L.marker([next.lat, next.lng], { icon: svIcon }).addTo(gpsMapObj.current);
+    }
+  }
+
+  function clearStreetViewBearing() {
+    streetViewBearingRef.current?.remove();
+    streetViewBearingRef.current = null;
+  }
+
+  function upsertStreetViewBearing(origin: LatLngPoint, heading: number | null) {
+    if (!gpsMapObj.current || heading == null) {
+      clearStreetViewBearing();
+      return;
+    }
+
+    const tip = projectPoint(origin, heading, 20);
+    const left = projectPoint(origin, heading - 28, 14);
+    const right = projectPoint(origin, heading + 28, 14);
+    const conePoints: [number, number][] = [
+      [origin.lat, origin.lng],
+      [left.lat, left.lng],
+      [tip.lat, tip.lng],
+      [right.lat, right.lng],
+    ];
+
+    if (streetViewBearingRef.current) {
+      streetViewBearingRef.current.setLatLngs(conePoints);
+    } else {
+      streetViewBearingRef.current = L.polygon(
+        conePoints,
+        {
+          color: "#38bdf8",
+          weight: 3,
+          opacity: 0.95,
+          fillColor: "#38bdf8",
+          fillOpacity: 0.34,
+          lineJoin: "round",
+        },
+      ).addTo(gpsMapObj.current);
+    }
+  }
+
+  function syncStreetViewPov(heading: number | null, pitch = 0) {
+    if (heading == null) {
+      streetViewHeadingRef.current = null;
+      setStreetViewHeading(null);
+      setStreetViewPitch(0);
+      clearStreetViewBearing();
+      return;
+    }
+
+    const normalized = normalizeHeading(heading);
+    streetViewHeadingRef.current = normalized;
+    setStreetViewHeading((prev) => (prev != null && Math.abs(prev - normalized) < 0.1 ? prev : normalized));
+    setStreetViewPitch((prev) => (Math.abs(prev - pitch) < 0.1 ? prev : pitch));
+
+    if (streetViewCoordsRef.current) {
+      upsertStreetViewBearing(streetViewCoordsRef.current, normalized);
+    }
+  }
+
+  function syncStreetViewLocation(next: LatLngPoint) {
+    streetViewCoordsRef.current = next;
+    upsertStreetViewPin(next);
+    upsertStreetViewBearing(next, streetViewHeadingRef.current);
+    setStreetViewCoords((prev) => (sameLatLng(prev, next) ? prev : next));
+  }
 
   useEffect(() => {
     if (!nodeId) return;
@@ -817,6 +1047,8 @@ export default function NodeSpans() {
         mapStateRef.current = { center: [c.lat, c.lng], zoom: gpsMapObj.current.getZoom() };
         gpsMapObj.current.remove();
         gpsMapObj.current = null;
+        streetViewPinRef.current = null;
+        streetViewBearingRef.current = null;
       }
       return;
     }
@@ -833,6 +1065,8 @@ export default function NodeSpans() {
         mapStateRef.current = { center: [c.lat, c.lng], zoom: gpsMapObj.current.getZoom() };
         gpsMapObj.current.remove(); 
         gpsMapObj.current = null; 
+        streetViewPinRef.current = null;
+        streetViewBearingRef.current = null;
       }
     };
 
@@ -846,6 +1080,8 @@ export default function NodeSpans() {
         mapStateRef.current = { center: [c.lat, c.lng], zoom: gpsMapObj.current.getZoom() };
         gpsMapObj.current.remove();
         gpsMapObj.current = null;
+        streetViewPinRef.current = null;
+        streetViewBearingRef.current = null;
       }
 
     // Default to Metro Manila center when no poles have GPS yet
@@ -876,6 +1112,7 @@ export default function NodeSpans() {
 
     const markerMap = new Map<number, L.Marker>();
     gpsMarkersRef.current = markerMap;
+    poleOriginalIconsRef.current.clear();
 
     const STATUS_HEX: Record<string, string> = {
       pending: "#f59e0b",
@@ -958,6 +1195,7 @@ export default function NodeSpans() {
       }
 
       markerMap.set(p.id, marker);
+      poleOriginalIconsRef.current.set(p.id, icon as L.DivIcon);
     });
 
     // Draw span lines with strand_length labels
@@ -965,6 +1203,8 @@ export default function NodeSpans() {
     gpsLabelsRef.current.forEach((l) => l.remove());
     gpsLinesRef.current = [];
     gpsLabelsRef.current = [];
+    gpsSpanLineMapRef.current.clear();
+    gpsSpanLabelMapRef.current.clear();
 
     spans.forEach((s) => {
       const fp = s.from_pole && poles.find((p) => p.id === s.from_pole!.id);
@@ -993,6 +1233,7 @@ export default function NodeSpans() {
         },
       ).addTo(map);
       gpsLinesRef.current.push(line);
+      gpsSpanLineMapRef.current.set(s.id, line);
 
       const cableDisplay = s.actual_cable ?? (s.strand_length && s.number_of_runs ? s.strand_length * s.number_of_runs : null);
       if (cableDisplay != null) {
@@ -1020,13 +1261,23 @@ export default function NodeSpans() {
         }).addTo(map);
         label.on("click", () => spanLabelClickRef.current(s));
         gpsLabelsRef.current.push(label);
+        gpsSpanLabelMapRef.current.set(s.id, label);
       }
     });
 
-    // Map click → "Add Pole" pick mode
+    if (streetViewOpen && streetViewCoordsRef.current) {
+      upsertStreetViewPin(streetViewCoordsRef.current);
+      upsertStreetViewBearing(streetViewCoordsRef.current, streetViewHeadingRef.current);
+    }
+
+    // Map click → delegate to mapClickRef (Add Pole / Field View) or clear highlight
     map.on("click", (e: L.LeafletMouseEvent) => {
-      if (!mapClickRef.current) return;
-      mapClickRef.current(e.latlng.lat, e.latlng.lng);
+      const { lat, lng } = e.latlng
+      if (mapClickRef.current) {
+        mapClickRef.current(lat, lng)
+        return
+      }
+      setHighlightedPoleId(null)
     });
 
       setTimeout(() => {
@@ -1076,7 +1327,29 @@ export default function NodeSpans() {
 
   /* ── Map pole click ── */
   function handleMapPoleClick(p: PoleOption) {
+    // Field View active: clicking a pole updates Street View to that pole's location
+    if (streetViewOpen) {
+      const lat = p.pole?.lat ? Number(p.pole.lat) : null
+      const lng = p.pole?.lng ? Number(p.pole.lng) : null
+      if (lat && lng) {
+        const next = { lat, lng }
+        syncStreetViewLocation(next)
+        setPanoReady(false)
+        setPanoLoading(true)
+        setPanoUnavailable(false)
+        setTimeout(() => setStreetViewTarget(next), 0)
+      }
+      return
+    }
+
     if (reassignMode) return;
+
+    // Zoom map to pole location when clicked from the directory
+    const lat = p.pole?.lat ? Number(p.pole.lat) : null
+    const lng = p.pole?.lng ? Number(p.pole.lng) : null
+    if (lat && lng && gpsMapObj.current) {
+      gpsMapObj.current.flyTo([lat, lng], 19, { animate: true, duration: 0.6 })
+    }
 
     // If already picking TO-pole, complete the pair normally
     if (mapFrom && mapFrom.id !== p.id) {
@@ -1119,11 +1392,279 @@ export default function NodeSpans() {
   // Keep the ref in sync so Leaflet click handlers always call the latest version
   poleClickRef.current = handleMapPoleClick;
   spanLabelClickRef.current = (s: Span) => setDetailSpan(s);
+  // Invalidate map size when Street View panel opens/closes so Leaflet resizes correctly
+  useEffect(() => {
+    const t = setTimeout(() => gpsMapObj.current?.invalidateSize(), 150)
+    return () => clearTimeout(t)
+  }, [streetViewOpen, !!streetViewTarget, panoLoading, panoReady, panoUnavailable])
 
-  // Wire mapClickRef: in addPoleMode, a map click drops a pick-marker and opens the modal
+  // streetViewOpen drives mapClickRef above — no separate ref needed
+
+  useEffect(() => {
+    if (!streetViewOpen) {
+      streetViewPinRef.current?.remove()
+      streetViewPinRef.current = null
+      streetViewCoordsRef.current = null
+      streetViewHeadingRef.current = null
+      setStreetViewTarget(null)
+      setStreetViewCoords(null)
+      setStreetViewHeading(null)
+      setStreetViewPitch(0)
+      clearStreetViewBearing()
+      setPanoLoading(false)
+      setPanoReady(false)
+      setPanoUnavailable(false)
+      streetViewPanoramaRef.current?.setVisible?.(false)
+      streetViewListenersRef.current.forEach((listener) => listener?.remove?.())
+      streetViewListenersRef.current = []
+      streetViewPanoramaRef.current = null
+    }
+  }, [streetViewOpen])
+
+  // Load Google Maps JS API once, then use StreetViewService to get pano ID
+  function loadGoogleMapsApi(): Promise<void> {
+    if ((window as any).google?.maps?.StreetViewService) return Promise.resolve()
+    return new Promise((resolve, reject) => {
+      if (document.getElementById('__gm_script')) {
+        // Already loading — poll until ready
+        const poll = setInterval(() => {
+          if ((window as any).google?.maps?.StreetViewService) { clearInterval(poll); resolve() }
+        }, 100)
+        return
+      }
+      const cbName = '__gm_init__'
+      const apiKey = getGoogleMapsApiKey()
+      ;(window as any)[cbName] = resolve
+      const s = document.createElement('script')
+      s.id = '__gm_script'
+      s.src = apiKey
+        ? `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(apiKey)}&v=weekly&callback=${cbName}`
+        : `https://maps.googleapis.com/maps/api/js?v=weekly&callback=${cbName}`
+      s.async = true
+      s.onerror = reject
+      document.head.appendChild(s)
+    })
+  }
+
+  const svReqRef = useRef(0) // increments on each pick so stale callbacks are ignored
+
+  useEffect(() => {
+    if (!streetViewOpen || viewMode !== "map") {
+      streetViewPanoramaRef.current?.setVisible?.(false)
+      streetViewListenersRef.current.forEach((listener) => listener?.remove?.())
+      streetViewListenersRef.current = []
+      streetViewPanoramaRef.current = null
+    }
+
+    if (!streetViewOpen || viewMode !== "map" || !streetViewTarget) {
+      setPanoLoading(false)
+      setPanoReady(false)
+      setPanoUnavailable(false)
+      return
+    }
+
+    if (!streetViewPanelRef.current) return
+
+    const { lat, lng } = streetViewTarget
+    const reqId = ++svReqRef.current
+    setPanoLoading(true)
+    setPanoReady(false)
+    setPanoUnavailable(false)
+
+    let cancelled = false
+
+    loadGoogleMapsApi()
+      .then(async () => {
+        if (cancelled || reqId !== svReqRef.current || !streetViewPanelRef.current) return
+        const google = (window as any).google
+        const svc = new google.maps.StreetViewService()
+        const requestPanorama = (request: any) =>
+          new Promise<{ data: any; status: any }>((resolve) => {
+            svc.getPanorama(request, (data: any, status: any) => resolve({ data, status }))
+          })
+
+        const attempts = [
+          { location: { lat, lng }, radius: 100, source: google.maps.StreetViewSource.OUTDOOR },
+          { location: { lat, lng }, radius: 250 },
+          { location: { lat, lng }, radius: 500 },
+        ]
+
+        let panoResult: { data: any; status: any } | null = null
+        for (const attempt of attempts) {
+          const result = await requestPanorama(attempt)
+          if (cancelled || reqId !== svReqRef.current) return
+          if (result.status === "OK" && result.data?.location?.pano) {
+            panoResult = result
+            break
+          }
+        }
+
+        if (!panoResult) {
+          streetViewPanoramaRef.current?.setVisible?.(false)
+          syncStreetViewPov(null)
+          setPanoUnavailable(true)
+          setPanoLoading(false)
+          return
+        }
+
+        let panorama = streetViewPanoramaRef.current
+
+        if (!panorama) {
+          panorama = new google.maps.StreetViewPanorama(streetViewPanelRef.current, {
+            addressControl: false,
+            enableCloseButton: false,
+            fullscreenControl: true,
+            linksControl: true,
+            motionTracking: false,
+            panControl: false,
+            showRoadLabels: true,
+            zoomControl: true,
+          })
+
+          streetViewListenersRef.current.forEach((listener) => listener?.remove?.())
+          streetViewListenersRef.current = [
+            google.maps.event.addListener(panorama, "position_changed", () => {
+              const pos = panorama.getPosition?.()
+              if (!pos) return
+              syncStreetViewLocation({ lat: pos.lat(), lng: pos.lng() })
+            }),
+            google.maps.event.addListener(panorama, "pov_changed", () => {
+              const pov = panorama.getPov?.()
+              if (!pov) return
+              syncStreetViewPov(pov.heading ?? 0, pov.pitch ?? 0)
+            }),
+            google.maps.event.addListener(panorama, "visible_changed", () => {
+              if (!panorama.getVisible?.()) return
+              const pos = panorama.getPosition?.()
+              if (!pos) return
+              syncStreetViewLocation({ lat: pos.lat(), lng: pos.lng() })
+              const pov = panorama.getPov?.()
+              if (pov) syncStreetViewPov(pov.heading ?? 0, pov.pitch ?? 0)
+            }),
+          ]
+          streetViewPanoramaRef.current = panorama
+        }
+
+        const resolvedLatLng = panoResult.data.location.latLng ?? new google.maps.LatLng(lat, lng)
+        panorama.setPano(panoResult.data.location.pano)
+        panorama.setPosition(resolvedLatLng)
+        panorama.setVisible(true)
+        syncStreetViewLocation({ lat: resolvedLatLng.lat(), lng: resolvedLatLng.lng() })
+        const pov = panorama.getPov?.()
+        if (pov) syncStreetViewPov(pov.heading ?? 0, pov.pitch ?? 0)
+        google.maps.event.trigger(panorama, "resize")
+        setPanoReady(true)
+        setPanoLoading(false)
+      })
+      .catch(() => {
+        if (cancelled || reqId !== svReqRef.current) return
+        setPanoUnavailable(true)
+        setPanoLoading(false)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [streetViewOpen, streetViewTarget, viewMode])
+
+  // ── Directory highlight: fly to pole + highlight its spans ───────────────
+  function handleDirectoryClick(p: PoleOption) {
+    const lat = p.pole?.lat ? Number(p.pole.lat) : null
+    const lng = p.pole?.lng ? Number(p.pole.lng) : null
+
+    // Toggle off if clicking the same pole again
+    if (highlightedPoleId === p.id) {
+      setHighlightedPoleId(null)
+      setStreetViewOpen(false)
+      return
+    }
+
+    setHighlightedPoleId(p.id)
+    if (lat && lng && gpsMapObj.current) {
+      gpsMapObj.current.flyTo([lat, lng], 19, { animate: true, duration: 0.6 })
+    }
+  }
+
+  // Build a custom marker icon for highlight states
+  function makeOverrideIcon(color: string, size: number, glow: boolean) {
+    const shadow = glow
+      ? `box-shadow:0 0 0 6px ${color}45,0 4px 16px rgba(0,0,0,.5);`
+      : `box-shadow:0 4px 14px rgba(0,0,0,.4);`
+    return L.divIcon({
+      className: '',
+      html: `<div style="width:${size}px;height:${size}px;border-radius:50%;background:${color};border:3px solid #fff;${shadow}display:flex;align-items:center;justify-content:center;">
+               <div style="width:${Math.round(size * 0.28)}px;height:${Math.round(size * 0.28)}px;border-radius:50%;background:white;"></div>
+             </div>`,
+      iconSize: [size, size],
+      iconAnchor: [size / 2, size / 2],
+    })
+  }
+
+  // Apply highlight / dim effect whenever highlightedPoleId changes
+  useEffect(() => {
+    const markers = gpsMarkersRef.current
+    const spanLines = gpsSpanLineMapRef.current
+    const origIcons = poleOriginalIconsRef.current
+
+    const spanLabels = gpsSpanLabelMapRef.current
+
+    if (!highlightedPoleId) {
+      // Restore everything
+      markers.forEach((m, id) => {
+        const orig = origIcons.get(id)
+        if (orig) m.setIcon(orig)
+        m.setOpacity(1)
+      })
+      spanLines.forEach(l => l.setStyle({ opacity: 0.9, weight: 5 }))
+      spanLabels.forEach(l => l.setOpacity(1))
+      return
+    }
+
+    // Collect connected span IDs and their neighbor pole IDs
+    const connectedSpanIds = new Set<number>()
+    const neighborPoleIds = new Set<number>()
+    spans.forEach(s => {
+      const fromId = s.from_pole?.id
+      const toId = s.to_pole?.id
+      if (fromId === highlightedPoleId || toId === highlightedPoleId) {
+        connectedSpanIds.add(s.id)
+        if (fromId !== undefined && fromId !== highlightedPoleId) neighborPoleIds.add(fromId)
+        if (toId !== undefined && toId !== highlightedPoleId) neighborPoleIds.add(toId)
+      }
+    })
+
+    // Update each marker
+    markers.forEach((m, id) => {
+      if (id === highlightedPoleId) {
+        m.setIcon(makeOverrideIcon('#f59e0b', 36, true))  // amber, large, glowing
+        m.setOpacity(1)
+      } else if (neighborPoleIds.has(id)) {
+        m.setIcon(makeOverrideIcon('#10b981', 30, false)) // green for connected poles
+        m.setOpacity(1)
+      } else {
+        const orig = origIcons.get(id)
+        if (orig) m.setIcon(orig)
+        m.setOpacity(0.12)
+      }
+    })
+
+    // Highlight connected span lines + labels, hide the rest
+    spanLines.forEach((line, spanId) => {
+      if (connectedSpanIds.has(spanId)) {
+        line.setStyle({ opacity: 1, weight: 9, color: '#f59e0b' })
+      } else {
+        line.setStyle({ opacity: 0.06, weight: 3 })
+      }
+    })
+
+    spanLabels.forEach((label, spanId) => {
+      label.setOpacity(connectedSpanIds.has(spanId) ? 1 : 0)
+    })
+  }, [highlightedPoleId, spans])
+
+  // Wire mapClickRef — Add Pole takes priority; Field View is next
   mapClickRef.current = addPoleMode
     ? (lat: number, lng: number) => {
-        // Drop / move a temporary marker on the map
         if (pickMarkerRef.current) pickMarkerRef.current.remove();
         const icon = L.divIcon({
           className: "",
@@ -1132,9 +1673,7 @@ export default function NodeSpans() {
           iconAnchor: [11, 11],
         });
         if (gpsMapObj.current) {
-          pickMarkerRef.current = L.marker([lat, lng], { icon }).addTo(
-            gpsMapObj.current,
-          );
+          pickMarkerRef.current = L.marker([lat, lng], { icon }).addTo(gpsMapObj.current);
         }
         setAddPoleLat(lat.toFixed(7));
         setAddPoleLng(lng.toFixed(7));
@@ -1142,14 +1681,23 @@ export default function NodeSpans() {
         setAddPoleError(null);
         setAddPoleModalOpen(true);
       }
+    : streetViewOpen
+    ? (lat: number, lng: number) => {
+        const next = { lat, lng }
+        syncStreetViewLocation(next)
+        setStreetViewTarget(next)
+        setPanoLoading(true)
+        setPanoReady(false)
+        setPanoUnavailable(false)
+      }
     : null;
 
   // Update map cursor based on active mode
   useEffect(() => {
     const container = gpsMapObj.current?.getContainer();
     if (!container) return;
-    container.style.cursor = addPoleMode ? "crosshair" : reassignMode ? "grab" : "";
-  }, [addPoleMode, reassignMode]);
+    container.style.cursor = addPoleMode ? "crosshair" : streetViewOpen ? "crosshair" : reassignMode ? "grab" : "";
+  }, [addPoleMode, streetViewOpen, reassignMode]);
 
   async function handleAddPole(e: React.FormEvent) {
     e.preventDefault();
@@ -1328,25 +1876,17 @@ export default function NodeSpans() {
         method: "PUT",
         headers: authHeaders(),
         body: JSON.stringify({
-          strand_length: editForm.strand_length
-            ? Number(editForm.strand_length)
-            : null,
-          number_of_runs: editForm.number_of_runs
-            ? Number(editForm.number_of_runs)
-            : null,
+          from_pole_id: editForm.from_pole_id || undefined,
+          to_pole_id: editForm.to_pole_id || undefined,
+          strand_length: editForm.strand_length ? Number(editForm.strand_length) : null,
+          number_of_runs: editForm.number_of_runs ? Number(editForm.number_of_runs) : null,
           actual_cable: actual ? Number(actual) : null,
-          nodes_count: editForm.nodes_count
-            ? Number(editForm.nodes_count)
-            : null,
+          nodes_count: editForm.nodes_count ? Number(editForm.nodes_count) : null,
           amplifier: editForm.amplifier ? Number(editForm.amplifier) : null,
           extender: editForm.extender ? Number(editForm.extender) : null,
           tsc: editForm.tsc ? Number(editForm.tsc) : null,
-          power_supply: editForm.power_supply
-            ? Number(editForm.power_supply)
-            : null,
-          power_supply_case: editForm.power_supply_case
-            ? Number(editForm.power_supply_case)
-            : null,
+          power_supply: editForm.power_supply ? Number(editForm.power_supply) : null,
+          power_supply_case: editForm.power_supply_case ? Number(editForm.power_supply_case) : null,
           status: editForm.status || undefined,
         }),
       });
@@ -1595,6 +2135,19 @@ export default function NodeSpans() {
                   {reassignMode ? "Done Dragging" : "Reassign GPS"}
                 </button>
 
+                {/* Street 360 View */}
+                <button
+                  onClick={() => setStreetViewOpen(v => !v)}
+                  className={`inline-flex h-9 items-center gap-2 rounded-xl px-4 text-xs font-semibold text-white shadow-md transition ${
+                    streetViewOpen
+                      ? "bg-sky-600 ring-2 ring-sky-400 hover:bg-sky-700 shadow-sky-500/30"
+                      : "bg-sky-600 hover:bg-sky-700 shadow-sky-500/30"
+                  }`}
+                >
+                  <i className="bx bx-street-view text-sm" />
+                  Street 360 View
+                </button>
+
                 {/* Add Pole pick mode */}
                 <button
                   onClick={() => {
@@ -1716,6 +2269,7 @@ export default function NodeSpans() {
                     ))}
                   </div>
 
+
                   {/* Add Pole hint */}
                   {addPoleMode && (
                     <div className="pointer-events-none absolute left-1/2 top-3 z-[999] -translate-x-1/2">
@@ -1723,6 +2277,77 @@ export default function NodeSpans() {
                         <i className="bx bx-map-pin text-base" />
                         Click anywhere on the map to place the new pole
                       </div>
+                    </div>
+                  )}
+
+                  {/* Street 360 View — pick mode hint */}
+                  {streetViewOpen && !streetViewTarget && (
+                    <div className="pointer-events-none absolute left-1/2 top-3 z-[999] -translate-x-1/2">
+                      <div className="flex items-center gap-2 rounded-2xl bg-sky-600/95 px-4 py-2.5 text-xs font-bold text-white shadow-lg backdrop-blur-sm">
+                        <i className="bx bx-map-pin text-base" />
+                        Click anywhere on the map to view that area
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Street 360 View — right panel */}
+                  {streetViewOpen && streetViewTarget && (
+                    <div className="absolute top-0 right-0 bottom-0 z-[500] flex w-[45%] flex-col bg-slate-950 border-l border-sky-500/30 shadow-2xl">
+                      <div
+                        ref={streetViewPanelRef}
+                        className={`h-full w-full ${panoReady && !panoUnavailable ? "opacity-100" : "opacity-0"}`}
+                      />
+                      {streetViewHeading != null && !panoLoading && !panoUnavailable && (
+                        <div className="pointer-events-none absolute left-3 top-3 z-[650]">
+                          <div className="rounded-2xl border border-white/10 bg-slate-950/78 px-3 py-2.5 text-white shadow-xl backdrop-blur-md">
+                            <p className="text-[10px] font-black uppercase tracking-[0.2em] text-sky-300/85">
+                              Gyro Tracker
+                            </p>
+                            <div className="mt-2 flex items-center gap-3">
+                              <div className="relative flex h-12 w-12 items-center justify-center rounded-full border border-white/15 bg-white/5">
+                                <span className="absolute top-1 text-[9px] font-black text-white/70">N</span>
+                                <span className="absolute bottom-1 text-[9px] font-black text-white/45">S</span>
+                                <span className="absolute left-1.5 text-[9px] font-black text-white/45">W</span>
+                                <span className="absolute right-1.5 text-[9px] font-black text-white/45">E</span>
+                                <div
+                                  className="h-0 w-0 border-l-[6px] border-r-[6px] border-b-[16px] border-l-transparent border-r-transparent border-b-sky-400 drop-shadow-[0_0_8px_rgba(56,189,248,.65)] transition-transform duration-150"
+                                  style={{ transform: `rotate(${streetViewHeading}deg)` }}
+                                />
+                              </div>
+                              <div>
+                                <p className="text-sm font-black text-white">
+                                  Facing {headingToCardinal(streetViewHeading)}
+                                </p>
+                                <p className="text-[11px] font-semibold text-white/60">
+                                  {streetViewHeading.toFixed(0)}deg | Pitch {streetViewPitch.toFixed(0)}deg
+                                </p>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                      {panoLoading && (
+                        <div className="absolute inset-0 flex items-center justify-center bg-slate-950">
+                          <div className="flex flex-col items-center justify-center gap-3">
+                            <div className="h-8 w-8 animate-spin rounded-full border-[3px] border-sky-400 border-t-transparent" />
+                            <p className="text-xs font-bold text-white/60">Finding Street View…</p>
+                          </div>
+                        </div>
+                      )}
+                      {panoUnavailable && (
+                        <div className="absolute inset-0 flex items-center justify-center bg-slate-950 px-6">
+                          <div className="flex flex-col items-center justify-center gap-3 text-center">
+                          <i className="bx bx-street-view text-5xl text-white/10" />
+                          <p className="text-sm font-black text-white/50">No Street View here</p>
+                          <p className="text-xs text-white/30">Try clicking a different spot</p>
+                          <a href={`https://www.google.com/maps?q=${(streetViewCoords ?? streetViewTarget).lat},${(streetViewCoords ?? streetViewTarget).lng}&z=19&t=h`}
+                            target="_blank" rel="noopener noreferrer"
+                            className="mt-1 flex items-center gap-1.5 rounded-xl bg-sky-600/70 px-3 py-1.5 text-[11px] font-black text-white hover:bg-sky-500 transition">
+                            <i className="bx bx-map text-xs" /> View Satellite
+                          </a>
+                        </div>
+                        </div>
+                      )}
                     </div>
                   )}
 
@@ -1836,11 +2461,18 @@ export default function NodeSpans() {
                       const isFrom = mapFrom?.id === p.id;
                       const isTo = mapTo?.id === p.id;
                       const isCleared = p.pole?.skycable_status === "cleared";
+                      const isHighlighted = highlightedPoleId === p.id
                       return (
                         <button
                           key={p.id}
-                          onClick={() => handleMapPoleClick(p)}
-                          className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs font-semibold transition ${isFrom ? "bg-blue-50 text-blue-700" : isTo ? "bg-orange-50 text-orange-700" : "text-slate-600 hover:bg-slate-50 dark:text-zinc-400 dark:hover:bg-zinc-700"}`}
+                          onClick={() => handleDirectoryClick(p)}
+                          className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs font-semibold transition ${
+                            isHighlighted
+                              ? "bg-amber-50 text-amber-700 ring-1 ring-amber-200 dark:bg-amber-500/10 dark:text-amber-400"
+                              : isFrom ? "bg-blue-50 text-blue-700"
+                              : isTo ? "bg-orange-50 text-orange-700"
+                              : "text-slate-600 hover:bg-slate-50 dark:text-zinc-400 dark:hover:bg-zinc-700"
+                          }`}
                         >
                           <span
                             className="h-2 w-2 rounded-full shrink-0"
@@ -2437,26 +3069,53 @@ export default function NodeSpans() {
         onClose={() => setIsEditOpen(false)}
         widthClass="max-w-xl"
       >
-        <form onSubmit={handleEdit} className="space-y-4">
+        <form id="edit-span-form" onSubmit={handleEdit} className="space-y-4">
+          {/* FROM / TO pole reassignment */}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className={lCls}>From Pole</label>
+              <SearchableSelect
+                value={editForm.from_pole_id}
+                onChange={(v) => setEditForm((p) => ({ ...p, from_pole_id: v }))}
+                options={poles.map((p) => ({ id: p.id, label: p.pole?.pole_code ?? `Pole #${p.id}` }))}
+                placeholder="— select from pole —"
+                accentColor="#2563eb"
+              />
+              {selected?.from_pole?.pole?.pole_code && (
+                <p className="mt-1 text-[10px] font-mono text-slate-400">
+                  Current: <b className="text-blue-600">{selected.from_pole.pole.pole_code}</b>
+                </p>
+              )}
+            </div>
+            <div>
+              <label className={lCls}>To Pole</label>
+              <SearchableSelect
+                value={editForm.to_pole_id}
+                onChange={(v) => setEditForm((p) => ({ ...p, to_pole_id: v }))}
+                options={poles.map((p) => ({ id: p.id, label: p.pole?.pole_code ?? `Pole #${p.id}` }))}
+                placeholder="— select to pole —"
+                accentColor="#f97316"
+              />
+              {selected?.to_pole?.pole?.pole_code && (
+                <p className="mt-1 text-[10px] font-mono text-slate-400">
+                  Current: <b className="text-orange-500">{selected.to_pole.pole.pole_code}</b>
+                </p>
+              )}
+            </div>
+          </div>
+
           <SpanFields
             form={editForm}
             onChange={(f, v) => setEditForm((p) => ({ ...p, [f]: v }))}
-            actualCable={computeActual(
-              editForm.strand_length,
-              editForm.number_of_runs,
-            )}
+            actualCable={computeActual(editForm.strand_length, editForm.number_of_runs)}
           />
+
           <div>
             <label className={lCls}>Status</label>
             <div className="relative">
               <select
                 value={editForm.status}
-                onChange={(e) =>
-                  setEditForm((p) => ({
-                    ...p,
-                    status: e.target.value as SpanStatus,
-                  }))
-                }
+                onChange={(e) => setEditForm((p) => ({ ...p, status: e.target.value as SpanStatus }))}
                 className={`${iCls} appearance-none pr-10 cursor-pointer`}
               >
                 <option value="">— unchanged —</option>
@@ -2468,34 +3127,29 @@ export default function NodeSpans() {
               <i className="bx bx-chevron-down pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" />
             </div>
           </div>
+
           {editError && (
             <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-600">
               {editError}
             </div>
           )}
-          <div className="flex justify-end gap-2 border-t border-slate-100 dark:border-zinc-700 pt-4">
-            <button
-              type="button"
-              onClick={() => setIsEditOpen(false)}
-              className={secondaryBtn}
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={saving}
-              className={`${primaryBtn} disabled:opacity-60`}
-            >
-              {saving ? (
-                <span className="flex items-center gap-2">
-                  <i className="bx bx-loader-alt animate-spin" /> Saving…
-                </span>
-              ) : (
-                "Save Changes"
-              )}
-            </button>
-          </div>
         </form>
+
+        {/* Sticky footer — outside the scrollable form so always visible */}
+        <div className="sticky bottom-0 -mx-6 -mb-6 mt-4 flex justify-end gap-2 border-t border-slate-100 bg-white px-6 py-4 dark:border-zinc-700 dark:bg-zinc-950">
+          <button type="button" onClick={() => setIsEditOpen(false)} className={secondaryBtn}>
+            Cancel
+          </button>
+          <button type="submit" form="edit-span-form" disabled={saving} className={`${primaryBtn} disabled:opacity-60`}>
+            {saving ? (
+              <span className="flex items-center gap-2">
+                <i className="bx bx-loader-alt animate-spin" /> Saving…
+              </span>
+            ) : (
+              "Save Changes"
+            )}
+          </button>
+        </div>
       </Modal>
 
       {/* Delete Modal */}
