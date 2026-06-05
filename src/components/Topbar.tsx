@@ -68,7 +68,7 @@ export default function Topbar() {
   const profile = useDropdown()
   const grid = useDropdown()
   const { initials, label } = getDisplayName(getUser())
-  const { notifications, unreadCount, markRead, markAllRead } = useNotifications()
+  const { notifications, unreadCount, loading, listLoaded, markRead, markAllRead, loadList } = useNotifications()
 
   const [themeMode, setThemeMode] = useState(() => {
     return sessionStorage.getItem("data-layout-mode") || document.body.getAttribute('data-mode') || 'light'
@@ -155,7 +155,7 @@ export default function Topbar() {
             {/* Notifications */}
             <div className="relative" ref={notif.ref}>
               <div className="relative">
-                <button onClick={() => notif.setOpen(o => !o)}
+                <button onClick={() => { notif.setOpen(o => !o); if (!notif.open) loadList() }}
                   className="btn border-0 h-[70px] px-4 text-gray-600 dark:text-gray-100">
                   <i data-feather="bell" className="w-5 h-5"></i>
                 </button>
@@ -179,7 +179,12 @@ export default function Topbar() {
                   </div>
 
                   <div className="max-h-72 overflow-y-auto">
-                    {notifications.length === 0 ? (
+                    {loading && !listLoaded ? (
+                      <div className="py-8 text-center text-xs text-gray-400 dark:text-gray-500">
+                        <i className="bx bx-loader-alt animate-spin text-2xl block mb-1"></i>
+                        Loading…
+                      </div>
+                    ) : notifications.length === 0 ? (
                       <div className="py-8 text-center text-xs text-gray-400 dark:text-gray-500">
                         <i className="bx bx-bell-off text-2xl block mb-1"></i>
                         No notifications yet

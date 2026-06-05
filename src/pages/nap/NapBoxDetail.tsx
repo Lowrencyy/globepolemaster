@@ -127,7 +127,6 @@ export default function NapBoxDetail() {
     const token = getToken()
     const headers: Record<string, string> = {
       Accept: 'application/json',
-      'ngrok-skip-browser-warning': '1',
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     }
     setLoading(true)
@@ -181,7 +180,6 @@ export default function NapBoxDetail() {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       Accept: 'application/json',
-      'ngrok-skip-browser-warning': '1',
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     }
     try {

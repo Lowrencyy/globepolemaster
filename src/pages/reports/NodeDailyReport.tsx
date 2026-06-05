@@ -161,8 +161,7 @@ export default function NodeDailyReport() {
     const headers = {
       Authorization: `Bearer ${getToken()}`,
       Accept: 'application/json',
-      'ngrok-skip-browser-warning': '1',
-    }
+      }
 
     async function loadReport() {
       if (hasCachedData) {

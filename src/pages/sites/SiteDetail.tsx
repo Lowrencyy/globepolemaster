@@ -29,8 +29,7 @@ export default function SiteDetail() {
       headers: {
         Authorization: `Bearer ${token}`,
         Accept: 'application/json',
-        'ngrok-skip-browser-warning': '1',
-      },
+        },
     })
       .then(r => r.json())
       .then((data: Area) => { setSite(data); cacheSet(`sitedetail_${siteId}`, data) })

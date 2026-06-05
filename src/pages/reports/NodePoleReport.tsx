@@ -49,8 +49,7 @@ function authHeaders() {
   return {
     Authorization: `Bearer ${getToken()}`,
     Accept: 'application/json',
-    'ngrok-skip-browser-warning': '1',
-  }
+    }
 }
 
 function imgUrl(path: string | null | undefined): string | null {
@@ -75,7 +74,6 @@ function fetchCachedBlob(src: string): Promise<string | null> {
 
   const promise = fetch(src, {
     headers: {
-      'ngrok-skip-browser-warning': '1',
       Authorization: `Bearer ${getToken()}`,
     },
   })

@@ -77,7 +77,7 @@ const primaryBtn = 'h-10 rounded-2xl bg-violet-600 px-5 text-sm font-semibold te
 const secondaryBtn = 'h-10 rounded-2xl border border-slate-200 bg-white px-4 text-sm font-medium text-slate-600 transition hover:bg-slate-50 dark:border-zinc-600 dark:bg-zinc-800 dark:text-zinc-300'
 
 function authHeaders() {
-  return { Authorization: `Bearer ${getToken()}`, Accept: 'application/json', 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': '1' }
+  return { Authorization: `Bearer ${getToken()}`, Accept: 'application/json', 'Content-Type': 'application/json', }
 }
 
 function F({ label, children }: { label: string; children: ReactNode }) {

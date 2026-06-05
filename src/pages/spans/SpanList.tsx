@@ -1,16 +1,27 @@
-import { useEffect, useMemo, useState, useRef, type ReactNode, type SyntheticEvent } from 'react'
+import { useEffect, useMemo, useState, useRef, type CSSProperties, type ReactNode, type SyntheticEvent } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 import { getToken, SKYCABLE_API, isAdmin } from '../../lib/auth'
-import { cacheGet, cacheSet, cacheDel } from '../../lib/cache'
+import { cacheGet, cacheSet, cacheDel, TTL } from '../../lib/cache'
 import { slugify } from '../../lib/utils'
+import { fetchTile, arcgisTileUrl } from '../../lib/tile-cache'
+import telcoImg from '../../assets/images/telco.png'
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
 type SpanStatus = 'pending' | 'in_progress' | 'completed' | 'cancelled'
 
-type Area = { id: number; name: string; nodes_count?: number }
+type PolePin = { lat: number; lng: number; status: string; area: string }
+
+type Area = {
+  id: number
+  name: string
+  nodes_count?: number
+  pending_count?: number
+  in_progress_count?: number
+  completed_count?: number
+}
 
 type NodeItem = {
   id: number
@@ -18,7 +29,10 @@ type NodeItem = {
   full_label?: string | null
   status: 'pending' | 'in_progress' | 'completed'
   expected_cable?: number | null
+  spans_count?: number | null
   subcontractor?: { name: string } | null
+  team?: { name: string } | null
+  barangay?: { name: string } | null
 }
 
 type Span = {
@@ -52,25 +66,39 @@ type PoleOption = { id: number; pole_code: string; lat?: string | null; lng?: st
 // ── Brand UI ─────────────────────────────────────────────────────────────────
 
 const BRAND = {
-  blue: '#2E3791',
-  blue2: '#4450C4',
-  dark: '#1F276F',
-  textDark: '#0D123F',
-  soft: '#EEF1FF',
-  softer: '#F7F8FF',
-  panel: '#F4F6FF',
-  border: '#D8DCFF',
-  borderStrong: '#C9D0FF',
-  muted: '#6B73A8',
-  muted2: '#8E96C5',
+  blue: '#2563eb',
+  blue2: '#0ea5e9',
+  dark: '#0f172a',
+  textDark: '#0f172a',
+  soft: '#eff6ff',
+  softer: '#f8fafc',
+  panel: '#ffffff',
+  border: '#e2e8f0',
+  borderStrong: '#bfdbfe',
+  muted: '#64748b',
+  muted2: '#94a3b8',
 }
 
+const LIVE_NODE_DATA_TTL = TTL.SHORT
+const LIVE_NODE_REFRESH_MS = 5_000
+const LIVE_SITE_PREVIEW_TTL = TTL.SHORT
+const LIVE_SITE_PREVIEW_REFRESH_MS = 5_000
+
 const BRAND_GRADIENTS = [
-  'linear-gradient(135deg, #2E3791 0%, #4450C4 100%)',
-  'linear-gradient(135deg, #1F276F 0%, #2E3791 100%)',
-  'linear-gradient(135deg, #2E3791 0%, #5362D8 100%)',
-  'linear-gradient(135deg, #283184 0%, #4450C4 100%)',
-  'linear-gradient(135deg, #182060 0%, #2E3791 100%)',
+  'linear-gradient(135deg, #2563eb 0%, #38bdf8 100%)',
+  'linear-gradient(135deg, #0f172a 0%, #1d4ed8 100%)',
+  'linear-gradient(135deg, #1d4ed8 0%, #0ea5e9 100%)',
+  'linear-gradient(135deg, #0369a1 0%, #2563eb 100%)',
+  'linear-gradient(135deg, #0f172a 0%, #2563eb 100%)',
+]
+
+const REGION_ORDER = [
+  'north luzon',
+  'south luzon',
+  'ncr',
+  'metro manila',
+  'visayas',
+  'mindanao',
 ]
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -153,8 +181,7 @@ function authHeaders() {
     Authorization: `Bearer ${getToken()}`,
     Accept: 'application/json',
     'Content-Type': 'application/json',
-    'ngrok-skip-browser-warning': '1',
-  }
+    }
 }
 
 function poleCode(spanPole?: { pole?: { pole_code: string } | null } | null) {
@@ -168,6 +195,45 @@ function expectedCable(strand?: number | null, runs?: number | null) {
 
 function formatMeters(value?: number | null) {
   return value != null ? `${value}m` : '—'
+}
+
+function normalizeAreaName(name: string) {
+  const key = name.trim().toLowerCase()
+  if (key === 'metro manila') return 'ncr'
+  if (key === 'national capital region') return 'ncr'
+  return key
+}
+
+function areaDisplayName(name: string) {
+  const key = normalizeAreaName(name)
+  if (key === 'ncr') return 'NCR'
+  if (key === 'north luzon') return 'North Luzon'
+  if (key === 'south luzon') return 'South Luzon'
+  if (key === 'visayas') return 'Visayas'
+  if (key === 'mindanao') return 'Mindanao'
+  return name
+}
+
+function areaSortIndex(name: string) {
+  const key = normalizeAreaName(name)
+  const index = REGION_ORDER.findIndex((item) => item === key)
+  return index === -1 ? 999 : index
+}
+
+function buildPoleAreaMap(rows: any[]) {
+  const map = new Map<string, PolePin[]>()
+  ;(Array.isArray(rows) ? rows : []).forEach((p: any) => {
+    if (!p.lat || !p.lng || !p.area) return
+    const key = String(p.area).toLowerCase().trim()
+    if (!map.has(key)) map.set(key, [])
+    map.get(key)!.push({
+      lat: Number(p.lat),
+      lng: Number(p.lng),
+      status: p.skycable_status ?? 'pending',
+      area: key,
+    })
+  })
+  return map
 }
 
 function fmt(n: number | string | null | undefined, dec = 0) {
@@ -184,7 +250,7 @@ const inputCls =
 const selectCls = `${inputCls} appearance-none pr-10 cursor-pointer`
 
 const labelCls =
-  'mb-1.5 block text-[10px] font-black uppercase tracking-[0.18em] text-[#8E96C5]'
+  'mb-1.5 block text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500'
 
 const primaryBtnCls =
   'inline-flex h-10 items-center justify-center gap-2 rounded-xl px-4 text-sm font-black text-white transition hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0'
@@ -244,28 +310,24 @@ function Modal({
 
       <div
         className={cx(
-          'relative max-h-[90vh] w-full overflow-hidden rounded-[24px] bg-white shadow-2xl',
+          'relative max-h-[90vh] w-full overflow-hidden rounded-2xl bg-white shadow-[0_30px_90px_-35px_rgba(15,23,42,0.55)] dark:bg-slate-900',
           wide ? 'max-w-2xl' : 'max-w-md',
         )}
-        style={{ border: `1px solid ${danger ? '#fecaca' : BRAND.borderStrong}` }}
+        
       >
         <div
-          className="relative overflow-hidden px-6 py-5"
+          className="relative overflow-hidden border-b border-slate-100 px-6 py-5"
           style={{
-            background: danger
-              ? 'linear-gradient(135deg, #dc2626 0%, #e11d48 100%)'
-              : 'linear-gradient(135deg, #2E3791 0%, #4450C4 100%)',
+            backgroundColor: danger ? '#dc2626' : '#0f172a',
           }}
         >
           <div className="relative flex items-start justify-between gap-3">
             <div>
-              <h3 className="text-base font-black text-white">{title}</h3>
-              {sub && <p className="mt-0.5 text-xs font-semibold text-white/75">{sub}</p>}
+              <h3 className="text-base font-semibold text-white">{title}</h3>
+              {sub && <p className="mt-1 text-xs text-blue-100/75">{sub}</p>}
             </div>
 
-            <button onClick={onClose} className="rounded-full p-1.5 text-white/75 transition hover:bg-white/10 hover:text-white">
-              <i className="bx bx-x text-xl leading-none" />
-            </button>
+            <button onClick={onClose} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-white/10 bg-white/10 text-lg font-bold text-white/75 transition hover:bg-white/20 hover:text-white">×</button>
           </div>
         </div>
 
@@ -278,15 +340,15 @@ function Modal({
 function SkeletonCard() {
   return (
     <div
-      className="relative min-h-[190px] overflow-hidden rounded-[22px] bg-white p-5"
+      className="relative min-h-[190px] overflow-hidden rounded-2xl bg-white p-5"
       style={{
-        border: `1px solid ${BRAND.border}`,
-        boxShadow: '0 12px 30px -24px rgba(46,55,145,0.35)',
+        border: `1px solid #e2e8f0`,
+        boxShadow: '0 20px 40px -30px rgba(15,23,42,0.35)',
       }}
     >
-      <div className="h-11 w-11 animate-pulse rounded-2xl bg-[#EEF1FF]" />
-      <div className="mt-7 h-4 w-2/3 animate-pulse rounded-full bg-[#EEF1FF]" />
-      <div className="mt-3 h-3 w-1/3 animate-pulse rounded-full bg-[#EEF1FF]" />
+      <div className="h-11 w-11 animate-pulse rounded-xl bg-slate-100" />
+      <div className="mt-7 h-4 w-2/3 animate-pulse rounded-full bg-slate-100" />
+      <div className="mt-3 h-3 w-1/3 animate-pulse rounded-full bg-slate-100" />
     </div>
   )
 }
@@ -294,15 +356,16 @@ function SkeletonCard() {
 function EmptyState({ icon, title, text, action }: { icon: string; title: string; text?: string; action?: ReactNode }) {
   return (
     <div
-      className="flex min-h-[280px] flex-col items-center justify-center rounded-[24px] bg-white px-6 py-14 text-center"
+      className="flex min-h-[280px] flex-col items-center justify-center rounded-2xl border-dashed bg-slate-50 px-6 py-14 text-center"
       style={{
-        color: BRAND.muted2,
-        border: `1px solid ${BRAND.border}`,
+        border: `1px solid #e2e8f0`,
       }}
     >
-      <i className={cx('bx text-5xl', icon)} />
-      <h3 className="mt-3 text-base font-black" style={{ color: BRAND.textDark }}>{title}</h3>
-      {text && <p className="mt-1 max-w-sm text-sm font-semibold" style={{ color: BRAND.muted }}>{text}</p>}
+      <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-blue-50 text-blue-600">
+        <i className={cx('bx text-3xl', icon)} />
+      </div>
+      <h3 className="mt-3 text-base font-black" style={{ color: '#0f172a' }}>{title}</h3>
+      {text && <p className="mt-1 max-w-sm text-sm font-semibold" style={{ color: '#64748b' }}>{text}</p>}
       {action && <div className="mt-5">{action}</div>}
     </div>
   )
@@ -310,36 +373,29 @@ function EmptyState({ icon, title, text, action }: { icon: string; title: string
 
 function StatCard({ label, value, icon, accent, helper }: { label: string; value: number | string; icon: string; accent: string; helper?: string }) {
   return (
-    <div
-      className="relative overflow-hidden rounded-[20px] bg-white p-4"
-      style={{
-        border: `1px solid ${BRAND.border}`,
-        boxShadow: '0 12px 30px -24px rgba(46,55,145,0.35)',
-      }}
-    >
+    <article className="group relative overflow-hidden rounded-2xl border border-slate-200 bg-white p-4 shadow-sm transition hover:-translate-y-0.5 hover:shadow-lg dark:border-slate-700 dark:bg-slate-900">
+      <div className="absolute inset-x-0 top-0 h-1" style={{ background: accent }} />
+      <div className="pointer-events-none absolute -right-7 -top-7 h-20 w-20 rounded-full opacity-10 blur-xl" style={{ background: accent }} />
       <div className="relative flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="text-[10px] font-black uppercase tracking-[0.16em]" style={{ color: BRAND.muted2 }}>
+          <p className="truncate text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400 dark:text-slate-500">
             {label}
           </p>
-
-          <p className="mt-2 truncate font-mono text-[28px] font-black leading-none" style={{ color: BRAND.textDark }}>
+          <h3 className="mt-2 text-3xl font-bold tracking-tight text-slate-950 dark:text-white">
             {value}
-          </p>
-
-          {helper && <p className="mt-2 text-[11px] font-bold" style={{ color: BRAND.muted2 }}>{helper}</p>}
+          </h3>
+          {helper && <p className="mt-1 truncate text-xs text-slate-500 dark:text-slate-400">{helper}</p>}
         </div>
-
-        <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl text-white" style={{ background: accent }}>
-          <i className={cx('bx text-[22px]', icon)} />
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-white" style={{ background: accent }}>
+          <i className={cx('bx text-xl', icon)} />
         </div>
       </div>
-    </div>
+    </article>
   )
 }
 
 function PageShell({ children }: { children: ReactNode }) {
-  return <div className="flex flex-col gap-5 bg-slate-50 px-4 py-4 pb-10 sm:px-6 lg:px-8">{children}</div>
+  return <div className="flex flex-col gap-5 pb-10">{children}</div>
 }
 
 function ViewHero({
@@ -367,18 +423,16 @@ function ViewHero({
 }) {
   return (
     <div
-      className="relative overflow-hidden rounded-[28px] px-6 py-7"
+      className="relative overflow-hidden rounded-2xl border bg-white p-5 shadow-sm"
       style={{
-        background: `linear-gradient(135deg, #ffffff 0%, ${BRAND.softer} 40%, ${BRAND.soft} 100%)`,
-        border: `1px solid ${BRAND.borderStrong}`,
-        boxShadow: '0 24px 60px -38px rgba(46,55,145,0.38)',
+        borderColor: '#e2e8f0',
       }}
     >
-      <div className="pointer-events-none absolute -left-16 -top-20 h-64 w-64 rounded-full blur-3xl" style={{ background: 'rgba(46,55,145,0.12)' }} />
-      <div className="pointer-events-none absolute -right-16 -bottom-20 h-64 w-64 rounded-full blur-3xl" style={{ background: 'rgba(68,80,196,0.12)' }} />
+      <div className="pointer-events-none absolute inset-y-0 right-0 w-72 bg-gradient-to-l from-blue-50 via-sky-50/60 to-transparent" />
+      <div className="pointer-events-none absolute -right-8 -top-10 h-32 w-32 rounded-full bg-blue-500/10 blur-2xl" />
 
       <div className="relative">
-        <nav className="mb-4 flex flex-wrap items-center gap-2 text-xs font-bold" style={{ color: BRAND.muted2 }}>
+        <nav className="mb-4 flex flex-wrap items-center gap-2 text-xs font-bold" style={{ color: '#64748b' }}>
           {crumbs.map((c, i) => (
             <span key={i} className="inline-flex items-center gap-2">
               {i > 0 && <i className="bx bx-chevron-right text-base" />}
@@ -387,7 +441,7 @@ function ViewHero({
                   {c.label}
                 </button>
               ) : (
-                <span style={{ color: BRAND.textDark }}>{c.label}</span>
+                <span style={{ color: '#0f172a' }}>{c.label}</span>
               )}
             </span>
           ))}
@@ -396,22 +450,20 @@ function ViewHero({
         <div className="flex flex-wrap items-start justify-between gap-5">
           <div className="min-w-0">
             <span
-              className="inline-flex items-center gap-2 rounded-full px-3 py-1 text-[10px] font-black uppercase tracking-[0.22em]"
+              className="inline-flex items-center gap-2 rounded-full border bg-blue-50 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-blue-700"
               style={{
-                backgroundColor: BRAND.soft,
-                color: BRAND.blue,
-                border: `1px solid ${BRAND.borderStrong}`,
+                borderColor: '#bfdbfe',
               }}
             >
-              <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: BRAND.blue }} />
+              <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: "#2563eb" }} />
               {eyebrow}
             </span>
 
-            <h2 className="mt-3 text-3xl font-black tracking-[-0.05em]" style={{ color: BRAND.blue }}>
+            <h2 className="mt-3 text-xl font-semibold text-slate-950">
               {title}
             </h2>
 
-            <p className="mt-2 text-sm font-semibold" style={{ color: BRAND.muted }}>{subtitle}</p>
+            <p className="mt-1 text-sm text-slate-500">{subtitle}</p>
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
@@ -473,15 +525,338 @@ function ViewHero({
 function PolePill({ value }: { value: ReactNode }) {
   return (
     <span
-      className="inline-flex rounded-full px-3 py-1 font-mono text-[11px] font-black"
+      className="inline-flex rounded-full border bg-blue-50 px-3 py-1 font-mono text-[11px] font-semibold text-blue-700"
       style={{
-        backgroundColor: BRAND.soft,
-        color: BRAND.blue,
-        border: `1px solid ${BRAND.borderStrong}`,
+        borderColor: '#bfdbfe',
       }}
     >
       {value}
     </span>
+  )
+}
+
+const TILE_PX = 256
+const MAP_H = 128
+
+function latLngToTileFrac(lat: number, lng: number, z: number) {
+  const n = Math.pow(2, z)
+  const xFrac = ((lng + 180) / 360) * n
+  const latRad = (lat * Math.PI) / 180
+  const yFrac = ((1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2) * n
+  return { xFrac, yFrac, tileX: Math.floor(xFrac), tileY: Math.floor(yFrac) }
+}
+
+function SiteCardMap({ poles, siteName }: { poles: PolePin[]; siteName: string }) {
+  const [w, setW] = useState(300)
+  const divRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const el = divRef.current
+    if (!el) return
+    const rect = el.getBoundingClientRect()
+    if (rect.width > 0) setW(rect.width)
+    const obs = new ResizeObserver(entries => {
+      const width = entries[0]?.contentRect.width
+      if (width && width > 0) setW(width)
+    })
+    obs.observe(el)
+    return () => obs.disconnect()
+  }, [])
+
+  if (poles.length === 0) {
+    return (
+      <div className="overflow-hidden rounded-xl border border-slate-200 bg-slate-50">
+        <img src={telcoImg} alt="Telcovantage" className="h-32 w-full object-contain p-4 opacity-40" />
+      </div>
+    )
+  }
+
+  const h = MAP_H
+  const lats = poles.map(p => p.lat)
+  const lngs = poles.map(p => p.lng)
+  const minLat = Math.min(...lats), maxLat = Math.max(...lats)
+  const minLng = Math.min(...lngs), maxLng = Math.max(...lngs)
+  const centerLat = lats.reduce((a, b) => a + b, 0) / lats.length
+  const centerLng = lngs.reduce((a, b) => a + b, 0) / lngs.length
+
+  const latSpan = Math.max(maxLat - minLat, 0.0005)
+  const lngSpan = Math.max(maxLng - minLng, 0.0005)
+  const zLng = Math.log2((w * 0.55 * 360) / (256 * lngSpan))
+  const zLat = Math.log2((h * 0.55 * 180) / (256 * latSpan))
+  const zoom = Math.max(8, Math.min(14, Math.floor(Math.min(zLng, zLat))))
+
+  const { xFrac, yFrac, tileX, tileY } = latLngToTileFrac(centerLat, centerLng, zoom)
+  const fracX = xFrac - tileX
+  const fracY = yFrac - tileY
+  const scale = Math.max(w / 256, h / 256)
+  const imgW = 256 * scale
+  const imgH = 256 * scale
+  const offX = w / 2 - fracX * imgW
+  const offY = h / 2 - fracY * imgH
+
+  const sw = latLngToTileFrac(minLat, minLng, zoom)
+  const ne = latLngToTileFrac(maxLat, maxLng, zoom)
+  const bxL = offX + (sw.xFrac - tileX) * imgW
+  const bxT = offY + (ne.yFrac - tileY) * imgH
+  const bxW = (ne.xFrac - sw.xFrac) * imgW
+  const bxH = (sw.yFrac - ne.yFrac) * imgH
+
+  const STATUS_COLOR: Record<string, string> = {
+    pending: '#f59e0b',
+    in_progress: '#6366f1',
+    completed: '#10b981',
+    cleared: '#10b981',
+  }
+
+  return (
+    <div ref={divRef} className="relative w-full overflow-hidden rounded-xl" style={{ height: MAP_H, background: '#1a1a2e' }}>
+      {[-1, 0, 1].flatMap(dx =>
+        [-1, 0, 1].map(dy => (
+          <img
+            key={`${dx}-${dy}`}
+            src={`https://mt1.google.com/vt/lyrs=s&x=${tileX + dx}&y=${tileY + dy}&z=${zoom}`}
+            alt=""
+            draggable={false}
+            style={{
+              position: 'absolute',
+              left: offX + dx * imgW,
+              top: offY + dy * imgH,
+              width: imgW,
+              height: imgH,
+              userSelect: 'none',
+            }}
+          />
+        ))
+      )}
+
+      {poles.length > 1 && bxW > 2 && bxH > 2 && (
+        <div
+          style={{
+            position: 'absolute',
+            left: bxL,
+            top: bxT,
+            width: bxW,
+            height: bxH,
+            border: '2.5px solid #f59e0b',
+            borderRadius: 3,
+            background: 'rgba(245,158,11,0.13)',
+            pointerEvents: 'none',
+          }}
+        />
+      )}
+
+      {poles.map((p, i) => {
+        const { xFrac: px, yFrac: py } = latLngToTileFrac(p.lat, p.lng, zoom)
+        const color = STATUS_COLOR[p.status] ?? '#94a3b8'
+        return (
+          <div
+            key={i}
+            style={{
+              position: 'absolute',
+              left: offX + (px - tileX) * imgW - 3.5,
+              top: offY + (py - tileY) * imgH - 3.5,
+              width: 7,
+              height: 7,
+              borderRadius: '50%',
+              background: '#ffffff',
+              border: `1.5px solid ${color}`,
+              pointerEvents: 'none',
+              zIndex: 1,
+            }}
+          />
+        )
+      })}
+
+      <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, background: 'rgba(0,0,0,0.5)', padding: '4px 10px', zIndex: 2 }}>
+        <span style={{ fontSize: 11, fontWeight: 700, color: '#fff' }}>{siteName}</span>
+      </div>
+    </div>
+  )
+}
+
+function CachedTile({ z, y, x, style }: { z: number; y: number; x: number; style: CSSProperties }) {
+  const url = arcgisTileUrl(z, y, x)
+  const [src, setSrc] = useState<string>(url)
+
+  useEffect(() => {
+    let alive = true
+    fetchTile(url).then(blobUrl => {
+      if (alive) setSrc(blobUrl)
+    })
+    return () => {
+      alive = false
+    }
+  }, [url])
+
+  return <img src={src} alt="" draggable={false} style={style} />
+}
+
+const NODE_STATUS_DOT: Record<string, string> = {
+  pending: '#f59e0b',
+  in_progress: '#8b5cf6',
+  completed: '#10b981',
+  cleared: '#10b981',
+}
+
+const nodePolesCache = new Map<number, { lat: number; lng: number; status: string }[]>()
+
+function NodeVicinityMap({ nodeId, nodeName }: { nodeId: number; nodeName: string }) {
+  const [poles, setPoles] = useState<{ lat: number; lng: number; status: string }[]>(
+    () => nodePolesCache.get(nodeId) ?? []
+  )
+  const [loaded, setLoaded] = useState(() => nodePolesCache.has(nodeId))
+  const [w, setW] = useState(320)
+  const divRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    fetch(`${SKYCABLE_API}/nodes/${nodeId}/poles`, { headers: authHeaders() })
+      .then(r => r.json())
+      .then((rows: any) => {
+        const list: any[] = Array.isArray(rows) ? rows : (rows?.data ?? [])
+        const pins = list.flatMap((sp: any) => {
+          const lat = sp.pole?.lat ? Number(sp.pole.lat) : null
+          const lng = sp.pole?.lng ? Number(sp.pole.lng) : null
+          if (!lat || !lng) return []
+          return [{ lat, lng, status: sp.pole?.skycable_status ?? 'pending' }]
+        })
+        nodePolesCache.set(nodeId, pins)
+        setPoles(pins)
+        setLoaded(true)
+      })
+      .catch(() => setLoaded(true))
+  }, [nodeId])
+
+  useEffect(() => {
+    const el = divRef.current
+    if (!el) return
+    const rect = el.getBoundingClientRect()
+    if (rect.width > 0) setW(rect.width)
+    const obs = new ResizeObserver(entries => {
+      const width = entries[0]?.contentRect.width
+      if (width && width > 0) setW(width)
+    })
+    obs.observe(el)
+    return () => obs.disconnect()
+  }, [])
+
+  if (!loaded) {
+    return <div className="h-36 w-full animate-pulse rounded-xl bg-slate-100" />
+  }
+
+  if (poles.length === 0) {
+    return (
+      <div className="overflow-hidden rounded-xl border border-slate-100 bg-slate-50">
+        <img src={telcoImg} alt="No GPS" className="h-36 w-full object-contain p-4 opacity-25" />
+      </div>
+    )
+  }
+
+  const h = MAP_H
+  const lats = poles.map(p => p.lat)
+  const lngs = poles.map(p => p.lng)
+  const minLat = Math.min(...lats), maxLat = Math.max(...lats)
+  const minLng = Math.min(...lngs), maxLng = Math.max(...lngs)
+  const centerLat = (minLat + maxLat) / 2
+  const centerLng = (minLng + maxLng) / 2
+
+  const latSpan = Math.max(maxLat - minLat, 0.0005)
+  const lngSpan = Math.max(maxLng - minLng, 0.0005)
+  const zLng = Math.log2((w * 0.45 * 360) / (TILE_PX * lngSpan))
+  const zLat = Math.log2((h * 0.45 * 180) / (TILE_PX * latSpan))
+  const zoom = Math.max(11, Math.min(17, Math.floor(Math.min(zLng, zLat))))
+
+  const { xFrac, yFrac, tileX, tileY } = latLngToTileFrac(centerLat, centerLng, zoom)
+  const fracX = xFrac - tileX
+  const fracY = yFrac - tileY
+  const scale = Math.max(w / TILE_PX, h / TILE_PX)
+  const imgW = TILE_PX * scale
+  const imgH = TILE_PX * scale
+  const offX = w / 2 - fracX * imgW
+  const offY = h / 2 - fracY * imgH
+
+  const sw = latLngToTileFrac(minLat, minLng, zoom)
+  const ne = latLngToTileFrac(maxLat, maxLng, zoom)
+  const bxL = offX + (sw.xFrac - tileX) * imgW
+  const bxT = offY + (ne.yFrac - tileY) * imgH
+  const bxW = (ne.xFrac - sw.xFrac) * imgW
+  const bxH = (sw.yFrac - ne.yFrac) * imgH
+
+  return (
+    <div
+      ref={divRef}
+      className="relative w-full overflow-hidden rounded-xl border border-white/5 shadow-inner transition-transform duration-500 group-hover:scale-[1.02]"
+      style={{ height: MAP_H, background: '#0f172a' }}
+    >
+      {([-1, 0, 1] as const).flatMap(dy =>
+        ([-1, 0, 1] as const).map(dx => (
+          <CachedTile
+            key={`${dx},${dy}`}
+            z={zoom}
+            y={tileY + dy}
+            x={tileX + dx}
+            style={{
+              position: 'absolute',
+              left: offX + dx * imgW,
+              top: offY + dy * imgH,
+              width: imgW,
+              height: imgH,
+              userSelect: 'none',
+              filter: 'brightness(0.95) contrast(1.05)',
+            }}
+          />
+        ))
+      )}
+
+      <div className="absolute inset-x-0 top-0 h-12 bg-gradient-to-b from-slate-950/60 to-transparent pointer-events-none z-[1]" />
+      <div className="absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-slate-950/80 via-slate-950/40 to-transparent pointer-events-none z-[1]" />
+
+      {poles.length > 1 && bxW > 2 && bxH > 2 && (
+        <div
+          style={{
+            position: 'absolute',
+            left: bxL,
+            top: bxT,
+            width: bxW,
+            height: bxH,
+            border: '2px dashed rgba(245, 158, 11, 0.8)',
+            borderRadius: 6,
+            background: 'rgba(245, 158, 11, 0.15)',
+            pointerEvents: 'none',
+            zIndex: 1,
+          }}
+        />
+      )}
+
+      {poles.map((p, i) => {
+        const { xFrac: px, yFrac: py } = latLngToTileFrac(p.lat, p.lng, zoom)
+        const dotColor = NODE_STATUS_DOT[p.status] ?? '#94a3b8'
+        return (
+          <div
+            key={i}
+            style={{
+              position: 'absolute',
+              left: offX + (px - tileX) * imgW - 4,
+              top: offY + (py - tileY) * imgH - 4,
+              width: 8,
+              height: 8,
+              borderRadius: '50%',
+              background: '#ffffff',
+              border: `2px solid ${dotColor}`,
+              boxShadow: `0 0 8px ${dotColor}`,
+              pointerEvents: 'none',
+              zIndex: 2,
+            }}
+          />
+        )
+      })}
+
+      <div className="absolute bottom-2.5 left-2.5 right-2.5 flex items-center justify-between gap-2 rounded-lg border border-white/10 bg-slate-950/60 px-3 py-1.5 shadow-lg backdrop-blur-md z-[3]">
+        <span className="truncate text-xs font-bold tracking-wide text-white">{nodeName}</span>
+        <span className="shrink-0 rounded-md bg-white/10 px-1.5 py-0.5 text-[9px] font-black uppercase tracking-widest text-white/80">
+          {poles.length} {poles.length === 1 ? 'Pole' : 'Poles'}
+        </span>
+      </div>
+    </div>
   )
 }
 
@@ -755,6 +1130,7 @@ export default function SpanList() {
   }, [spanSiteSlug, spanNodeSlug])
 
   const [areas, setAreas] = useState<Area[]>([])
+  const [polesByArea, setPolesByArea] = useState<Map<string, PolePin[]>>(new Map())
   const [nodes, setNodes] = useState<NodeItem[]>([])
   const [spans, setSpans] = useState<Span[]>([])
   const [poles, setPoles] = useState<PoleOption[]>([])
@@ -786,15 +1162,16 @@ export default function SpanList() {
   useEffect(() => {
     const hit = cacheGet<Area[]>('spanlist_areas')
     if (hit) {
-      setAreas(hit)
+      setAreas([...hit].sort((a, b) => areaSortIndex(a.name) - areaSortIndex(b.name)))
       setAreasLoading(false)
       // silent background revalidation fetch:
       fetch(`${SKYCABLE_API}/areas`, { headers: authHeaders() })
         .then(r => r.json())
         .then(data => {
           const list = Array.isArray(data) ? data : data?.data ?? []
-          setAreas(list)
-          cacheSet('spanlist_areas', list)
+          const sorted = [...list].sort((a, b) => areaSortIndex(a.name) - areaSortIndex(b.name))
+          setAreas(sorted)
+          cacheSet('spanlist_areas', sorted)
           setLastSynced(Date.now())
         }).catch(() => {})
       if (spanSiteSlug) {
@@ -809,18 +1186,78 @@ export default function SpanList() {
       .then(r => r.json())
       .then(data => {
         const list: Area[] = Array.isArray(data) ? data : data?.data ?? []
-        setAreas(list)
-        cacheSet('spanlist_areas', list)
+        const sorted = [...list].sort((a, b) => areaSortIndex(a.name) - areaSortIndex(b.name))
+        setAreas(sorted)
+        cacheSet('spanlist_areas', sorted)
         setLastSynced(Date.now())
         if (spanSiteSlug) {
           const areaId = idFromSlug(spanSiteSlug)
-          const area = list.find(a => a.id === areaId) ?? null
+          const area = sorted.find(a => a.id === areaId) ?? null
           setSelectedArea(area)
         }
       })
       .catch(() => {})
       .finally(() => setAreasLoading(false))
   }, [])
+
+  const loadSitePolePreview = ({ forceFresh = false }: { forceFresh?: boolean } = {}) => {
+    const POLE_MAP_KEY = 'spanlist_site_pole_map'
+    const cached = forceFresh ? null : cacheGet<any[]>(POLE_MAP_KEY, LIVE_SITE_PREVIEW_TTL)
+
+    if (cached) {
+      setPolesByArea(buildPoleAreaMap(cached))
+      fetch(`${SKYCABLE_API}/poles/map`, {
+        headers: { Authorization: `Bearer ${getToken()}`, Accept: 'application/json' },
+      })
+        .then(r => r.json())
+        .then((rows: any[]) => {
+          cacheSet(POLE_MAP_KEY, rows, LIVE_SITE_PREVIEW_TTL)
+          setPolesByArea(buildPoleAreaMap(rows))
+          setLastSynced(Date.now())
+        })
+        .catch(() => {})
+      return
+    }
+
+    fetch(`${SKYCABLE_API}/poles/map`, {
+      headers: { Authorization: `Bearer ${getToken()}`, Accept: 'application/json' },
+    })
+      .then(r => r.json())
+      .then((rows: any[]) => {
+        cacheSet(POLE_MAP_KEY, rows, LIVE_SITE_PREVIEW_TTL)
+        setPolesByArea(buildPoleAreaMap(rows))
+        setLastSynced(Date.now())
+      })
+      .catch(() => {})
+  }
+
+  useEffect(() => {
+    loadSitePolePreview({ forceFresh: true })
+  }, [])
+
+  useEffect(() => {
+    if (!isOnline) return
+
+    const refreshSitePreview = () => {
+      if (document.visibilityState !== 'visible') return
+      loadSitePolePreview({ forceFresh: true })
+    }
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') refreshSitePreview()
+    }
+
+    window.addEventListener('focus', refreshSitePreview)
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+
+    const id = window.setInterval(refreshSitePreview, LIVE_SITE_PREVIEW_REFRESH_MS)
+
+    return () => {
+      window.removeEventListener('focus', refreshSitePreview)
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+      window.clearInterval(id)
+    }
+  }, [isOnline])
 
   useEffect(() => {
     let mounted = true
@@ -944,11 +1381,11 @@ export default function SpanList() {
       .finally(() => setNodesLoading(false))
   }, [selectedArea])
 
-  const loadSpans = (silent = false) => {
+  const loadSpans = ({ silent = false, forceFresh = false }: { silent?: boolean; forceFresh?: boolean } = {}) => {
     if (!selectedNode) return
 
     const ck = `spanlist_spans_${selectedNode.id}`
-    const hit = cacheGet<Span[]>(ck)
+    const hit = forceFresh ? null : cacheGet<Span[]>(ck, LIVE_NODE_DATA_TTL)
     if (hit) {
       setSpans(hit)
       setSpansLoading(false)
@@ -958,7 +1395,7 @@ export default function SpanList() {
         .then(data => {
           const list = Array.isArray(data) ? data : data?.data ?? []
           setSpans(list)
-          cacheSet(ck, list)
+          cacheSet(ck, list, LIVE_NODE_DATA_TTL)
           setLastSynced(Date.now())
         }).catch(() => {})
       return
@@ -971,29 +1408,20 @@ export default function SpanList() {
       .then(data => {
         const list = Array.isArray(data) ? data : data?.data ?? []
         setSpans(list)
-        cacheSet(ck, list)
+        cacheSet(ck, list, LIVE_NODE_DATA_TTL)
         setLastSynced(Date.now())
       })
       .catch(() => setSpans([]))
       .finally(() => setSpansLoading(false))
   }
 
-  useEffect(() => {
-    if (!selectedNode) {
-      setSpans([])
-      setPoles([])
-      setSavedPairs([])
-      setSpanView('list')
-      return
-    }
-
-    loadSpans()
+  const loadPoles = ({ forceFresh = false }: { forceFresh?: boolean } = {}) => {
+    if (!selectedNode) return
 
     const pck = `spanlist_poles_${selectedNode.id}`
-    const phit = cacheGet<any[]>(pck)
+    const phit = forceFresh ? null : cacheGet<any[]>(pck, LIVE_NODE_DATA_TTL)
     if (phit) {
       setPoles(phit)
-      // silent background fetch to revalidate
       fetch(`${SKYCABLE_API}/nodes/${selectedNode.id}/poles`, { headers: authHeaders() })
         .then(r => r.json())
         .then(data => {
@@ -1005,7 +1433,7 @@ export default function SpanList() {
             lng:       p.pole?.lng  ?? null,
           }))
           setPoles(parsed)
-          cacheSet(pck, parsed)
+          cacheSet(pck, parsed, LIVE_NODE_DATA_TTL)
           setLastSynced(Date.now())
         }).catch(() => {})
       return
@@ -1022,11 +1450,49 @@ export default function SpanList() {
           lng:       p.pole?.lng  ?? null,
         }))
         setPoles(parsed)
-        cacheSet(pck, parsed)
+        cacheSet(pck, parsed, LIVE_NODE_DATA_TTL)
         setLastSynced(Date.now())
       })
       .catch(() => setPoles([]))
+  }
+
+  useEffect(() => {
+    if (!selectedNode) {
+      setSpans([])
+      setPoles([])
+      setSavedPairs([])
+      setSpanView('list')
+      return
+    }
+
+    loadSpans({ forceFresh: true })
+    loadPoles({ forceFresh: true })
   }, [selectedNode])
+
+  useEffect(() => {
+    if (!selectedNode || !isOnline) return
+
+    const refreshNodeData = () => {
+      if (document.visibilityState !== 'visible') return
+      loadSpans({ silent: true, forceFresh: true })
+      loadPoles({ forceFresh: true })
+    }
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') refreshNodeData()
+    }
+
+    window.addEventListener('focus', refreshNodeData)
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+
+    const id = window.setInterval(refreshNodeData, LIVE_NODE_REFRESH_MS)
+
+    return () => {
+      window.removeEventListener('focus', refreshNodeData)
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+      window.clearInterval(id)
+    }
+  }, [selectedNode, isOnline])
 
   async function handleManualSync() {
     if (syncing || !isOnline) return
@@ -1100,7 +1566,7 @@ export default function SpanList() {
             .then(data => {
               const list = Array.isArray(data) ? data : data?.data ?? []
               setSpans(list)
-              cacheSet(`spanlist_spans_${selectedNode.id}`, list)
+              cacheSet(`spanlist_spans_${selectedNode.id}`, list, LIVE_NODE_DATA_TTL)
             })
         )
 
@@ -1116,7 +1582,7 @@ export default function SpanList() {
                 lng:       p.pole?.lng  ?? null,
               }))
               setPoles(parsed)
-              cacheSet(`spanlist_poles_${selectedNode.id}`, parsed)
+              cacheSet(`spanlist_poles_${selectedNode.id}`, parsed, LIVE_NODE_DATA_TTL)
             })
         )
       }
@@ -1257,7 +1723,7 @@ export default function SpanList() {
       const newSpan: Span = data.data ?? data
       setSpans(prev => {
         const next = [newSpan, ...prev]
-        cacheSet(`spanlist_spans_${selectedNode.id}`, next)
+        cacheSet(`spanlist_spans_${selectedNode.id}`, next, LIVE_NODE_DATA_TTL)
         return next
       })
 
@@ -1265,6 +1731,7 @@ export default function SpanList() {
       const toId = Number(addForm.to_pole_id)
       closeModal()
       if (fromId && toId) setSavedPairs(prev => [...prev, { from: fromId, to: toId }])
+      loadSpans({ silent: true, forceFresh: true }) // auto-refresh — show new span immediately
     } catch (err: any) {
       setFormErr(err.message)
     } finally {
@@ -1297,11 +1764,12 @@ export default function SpanList() {
       const updatedSpan: Span = data.data ?? data
       setSpans(prev => {
         const next = prev.map(s => s.id === updatedSpan.id ? updatedSpan : s)
-        cacheSet(`spanlist_spans_${selectedNode.id}`, next)
+        cacheSet(`spanlist_spans_${selectedNode.id}`, next, LIVE_NODE_DATA_TTL)
         return next
       })
 
       closeModal()
+      loadSpans({ silent: true, forceFresh: true }) // auto-refresh — reflect backend changes immediately
     } catch (err: any) {
       setFormErr(err.message)
     } finally {
@@ -1325,7 +1793,7 @@ export default function SpanList() {
 
       setSpans(prev => {
         const next = prev.filter(s => s.id !== selected.id)
-        cacheSet(`spanlist_spans_${selectedNode.id}`, next)
+        cacheSet(`spanlist_spans_${selectedNode.id}`, next, LIVE_NODE_DATA_TTL)
         return next
       })
 
@@ -1372,7 +1840,7 @@ export default function SpanList() {
           onClear={handleClearCache}
         />
 
-        <div className="rounded-[24px] p-4" style={{ background: BRAND.panel, border: `1px solid ${BRAND.border}` }}>
+        <div className="rounded-2xl border bg-white p-5 shadow-sm" className="border-slate-200 dark:border-slate-700">
           <div className="overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
             <div className="grid min-w-[1080px] grid-cols-5 gap-4 xl:min-w-0">
               {siteHeaderCards.map(card => <StatCard key={card.label} {...card} />)}
@@ -1387,17 +1855,18 @@ export default function SpanList() {
         ) : areas.length === 0 ? (
           <EmptyState icon="bx-buildings" title="No sites available" text="Once sites are available, they will appear here." />
         ) : (
-          <div className="rounded-[24px] p-4" style={{ background: BRAND.panel, border: `1px solid ${BRAND.border}` }}>
+          <div className="rounded-2xl border bg-white p-5 shadow-sm" className="border-slate-200 dark:border-slate-700">
             <div className="overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
               <div className="grid min-w-[1180px] grid-cols-5 gap-4 xl:min-w-0">
-                {areas.map((area, index) => {
-                  const gradient = BRAND_GRADIENTS[index % BRAND_GRADIENTS.length]
+                {areas.map((area) => {
                   const nodeCount = Number(area.nodes_count ?? 0)
+                  const pendingCount = Number(area.pending_count ?? 0)
+                  const ongoingCount = Number(area.in_progress_count ?? 0)
+                  const completedCount = Number(area.completed_count ?? 0)
 
                   return (
-                    <button
+                    <article
                       key={area.id}
-                      type="button"
                       onClick={() => {
                         navigate(`/spans/${slugify(area.name)}-${area.id}`)
                         setSelectedArea(area)
@@ -1405,47 +1874,69 @@ export default function SpanList() {
                         setSearch('')
                         setStatusFilter('')
                       }}
-                      className="group relative overflow-hidden rounded-[22px] bg-white p-5 text-left transition duration-300 hover:-translate-y-1"
-                      style={{ border: `1px solid ${BRAND.border}`, boxShadow: '0 12px 30px -24px rgba(46,55,145,0.35)' }}
+                      className="group relative min-w-0 cursor-pointer overflow-hidden rounded-2xl border border-slate-200 bg-white p-3.5 shadow-sm transition hover:-translate-y-1 hover:border-blue-300 hover:shadow-xl"
                     >
-                      <div className="absolute inset-x-0 top-0 h-1" style={{ background: gradient }} />
+                      <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-blue-600 to-sky-400 opacity-0 transition group-hover:opacity-100" />
 
-                      <div className="relative flex min-h-[190px] flex-col justify-between">
-                        <div>
-                          <div className="flex items-start justify-between gap-3">
-                            <div>
-                              <p className="text-[10px] font-black uppercase tracking-[0.16em]" style={{ color: BRAND.muted2 }}>
-                                Site {index + 1}
-                              </p>
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <h3 className="truncate text-sm font-semibold text-slate-950">
+                            {areaDisplayName(area.name)}
+                          </h3>
 
-                              <p className="mt-3 line-clamp-2 text-xl font-black leading-tight tracking-[-0.04em]" style={{ color: BRAND.textDark }}>
-                                {area.name}
-                              </p>
-                            </div>
-
-                            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl text-white" style={{ background: gradient }}>
-                              <i className="bx bx-map-pin text-[22px]" />
-                            </div>
-                          </div>
-
-                          <p className="mt-3 text-sm font-semibold leading-6" style={{ color: BRAND.muted }}>
-                            Open nodes and manage declared pole-to-pole spans.
+                          <p className="mt-1 text-xs text-slate-400">
+                            {nodeCount} node{nodeCount !== 1 ? 's' : ''}
                           </p>
                         </div>
 
-                        <div className="mt-5 flex items-end justify-between border-t pt-4" style={{ borderColor: BRAND.border }}>
-                          <div>
-                            <p className="text-[10px] font-black uppercase tracking-[0.16em]" style={{ color: BRAND.muted2 }}>Nodes</p>
-                            <p className="mt-1 font-mono text-3xl font-black leading-none" style={{ color: BRAND.textDark }}>{nodeCount}</p>
-                          </div>
+                        <span className="inline-flex shrink-0 items-center gap-1 rounded-lg bg-blue-50 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-blue-700">
+                          View
+                          <svg className="h-3 w-3 transition group-hover:translate-x-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                          </svg>
+                        </span>
+                      </div>
 
-                          <span className="inline-flex items-center gap-1 rounded-full px-3 py-2 text-xs font-black transition" style={{ backgroundColor: BRAND.soft, color: BRAND.blue }}>
-                            View Nodes
-                            <i className="bx bx-right-arrow-alt text-base" />
-                          </span>
+                      <div className="mt-3">
+                        <SiteCardMap poles={polesByArea.get(normalizeAreaName(area.name)) ?? []} siteName={areaDisplayName(area.name)} />
+                      </div>
+
+                      <div className="mt-3 grid grid-cols-3 gap-1.5">
+                        <div className="rounded-xl border border-amber-100 bg-amber-50/70 px-1.5 py-2 text-center">
+                          <p className="truncate text-[8px] font-bold uppercase tracking-wide text-slate-500">
+                            Pending
+                          </p>
+                          <p className="mt-1 text-base font-bold text-amber-600">
+                            {pendingCount}
+                          </p>
+                        </div>
+
+                        <div className="rounded-xl border border-indigo-100 bg-indigo-50/70 px-1.5 py-2 text-center">
+                          <p className="truncate text-[8px] font-bold uppercase tracking-wide text-slate-500">
+                            Ongoing
+                          </p>
+                          <p className="mt-1 text-base font-bold text-indigo-600">
+                            {ongoingCount}
+                          </p>
+                        </div>
+
+                        <div className="rounded-xl border border-emerald-100 bg-emerald-50/70 px-1.5 py-2 text-center">
+                          <p className="truncate text-[8px] font-bold uppercase tracking-wide text-slate-500">
+                            Done
+                          </p>
+                          <p className="mt-1 text-base font-bold text-emerald-600">
+                            {completedCount}
+                          </p>
                         </div>
                       </div>
-                    </button>
+
+                      <div className="mt-3">
+                        <div className="flex items-center justify-center gap-1 rounded-xl border border-slate-200 bg-white py-2 text-xs font-semibold text-slate-600 transition group-hover:border-blue-300 group-hover:bg-blue-50 group-hover:text-blue-700">
+                          <i className="bx bx-map-pin text-sm" />
+                          View Site
+                        </div>
+                      </div>
+                    </article>
                   )
                 })}
               </div>
@@ -1479,7 +1970,7 @@ export default function SpanList() {
             type="button"
             onClick={() => { navigate('/spans'); setSelectedArea(null); setSelectedNode(null) }}
             className={secondaryBtnCls}
-            style={{ border: `1px solid ${BRAND.borderStrong}`, color: BRAND.dark }}
+            className="inline-flex h-10 items-center justify-center gap-2 rounded-xl border border-blue-100 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-blue-50"
           >
             <i className="bx bx-arrow-back text-base" />
             All Sites
@@ -1487,7 +1978,7 @@ export default function SpanList() {
         }
       />
 
-      <div className="rounded-[24px] p-4" style={{ background: BRAND.panel, border: `1px solid ${BRAND.border}` }}>
+      <div className="rounded-2xl border bg-white p-5 shadow-sm" className="border-slate-200 dark:border-slate-700">
         <div className="overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           <div className="grid min-w-[940px] grid-cols-4 gap-4 xl:min-w-0">
             <StatCard label="Total Nodes" value={nodeStats.total} icon="bx-network-chart" accent={BRAND_GRADIENTS[0]} />
@@ -1499,73 +1990,109 @@ export default function SpanList() {
       </div>
 
       {nodesLoading ? (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-2">
+        <div className="grid justify-start gap-4 [grid-template-columns:repeat(auto-fit,minmax(320px,420px))]">
           {Array.from({ length: 6 }).map((_, i) => <SkeletonCard key={i} />)}
         </div>
       ) : nodes.length === 0 ? (
         <EmptyState icon="bx-layer" title="No nodes in this site" text="This site does not have any nodes yet." />
       ) : (
-        <div className="rounded-[24px] p-4" style={{ background: BRAND.panel, border: `1px solid ${BRAND.border}` }}>
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-2">
-            {nodes.map((node, index) => {
+        <div className="rounded-2xl border bg-white p-5 shadow-sm" className="border-slate-200 dark:border-slate-700">
+          <div className="grid justify-start gap-4 [grid-template-columns:repeat(auto-fit,minmax(320px,420px))]">
+            {nodes.map((node) => {
               const cfg = NODE_STATUS_CFG[node.status] ?? NODE_STATUS_CFG.pending
-              const gradient = BRAND_GRADIENTS[index % BRAND_GRADIENTS.length]
+              const nodeCode = node.full_label ?? `Node #${node.id}`
+              const contractor = node.subcontractor?.name ?? 'No contractor'
+              const team = node.team?.name ?? 'No team assigned'
+              const spansCount = Number(node.spans_count ?? 0)
+              const expectedCable = Number(node.expected_cable ?? 0)
 
               return (
-                <button
+                <article
                   key={node.id}
-                  type="button"
                   onClick={() => {
                     navigate(`/spans/${slugify(selectedArea!.name)}-${selectedArea!.id}/${slugify(node.full_label ?? node.name)}-${node.id}`)
                     setSelectedNode(node)
                     setSearch('')
                     setStatusFilter('')
                   }}
-                  className="group relative overflow-hidden rounded-[22px] bg-white p-5 text-left transition duration-300 hover:-translate-y-1"
-                  style={{ border: `1px solid ${BRAND.border}`, boxShadow: '0 12px 30px -24px rgba(46,55,145,0.35)' }}
+                  className="group relative cursor-pointer overflow-hidden rounded-2xl border border-slate-200 bg-white p-3.5 shadow-sm transition hover:-translate-y-1 hover:border-blue-300 hover:shadow-xl"
                 >
-                  <div className="absolute inset-x-0 top-0 h-1" style={{ background: cfg.bar }} />
-
-                  <div className="relative flex min-h-[170px] flex-col justify-between">
-                    <div>
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <p className="truncate text-[10px] font-black uppercase tracking-[0.16em]" style={{ color: BRAND.muted2 }}>
-                            {node.full_label ?? `Node #${node.id}`}
-                          </p>
-
-                          <p className="mt-3 truncate text-xl font-black leading-tight tracking-[-0.04em]" style={{ color: BRAND.textDark }}>
-                            {node.name}
-                          </p>
-                        </div>
-
-                        <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl text-white" style={{ background: gradient }}>
-                          <i className="bx bx-git-branch text-[22px]" />
-                        </div>
-                      </div>
-
-                      <div className="mt-4 flex flex-wrap items-center gap-2">
-                        <StatusChip status={node.status} />
-
-                        {node.subcontractor?.name ? (
-                          <span className="max-w-full truncate rounded-full px-2.5 py-1 text-[10px] font-black" style={{ backgroundColor: BRAND.soft, color: BRAND.blue }}>
-                            {node.subcontractor.name}
-                          </span>
-                        ) : (
-                          <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-black text-slate-400">No contractor</span>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="mt-5 flex items-center justify-between border-t pt-4" style={{ borderColor: BRAND.border }}>
-                      <span className="text-xs font-bold" style={{ color: BRAND.muted }}>View span inventory</span>
-                      <span className="inline-flex items-center gap-1 rounded-full px-3 py-2 text-xs font-black" style={{ backgroundColor: BRAND.soft, color: BRAND.blue }}>
-                        View
-                        <i className="bx bx-right-arrow-alt text-base" />
-                      </span>
+                  <div className="relative overflow-hidden rounded-xl border border-slate-100">
+                    <NodeVicinityMap nodeId={node.id} nodeName={node.name} />
+                    <div
+                      className="absolute top-2.5 right-2.5 rounded-md px-2.5 py-1 text-[10px] font-black uppercase tracking-wider text-white shadow-md"
+                      style={{ background: cfg.bar }}
+                    >
+                      {cfg.label}
                     </div>
                   </div>
-                </button>
+
+                  <div className="flex flex-1 flex-col px-3.5 pt-4">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-[10px] font-black uppercase tracking-[0.16em]" style={{ color: '#64748b' }}>
+                          {nodeCode}
+                        </p>
+                        <h3 className="mt-1 truncate text-lg font-bold tracking-tight text-slate-900 transition-colors group-hover:text-indigo-600" title={node.name}>
+                          {node.name}
+                        </h3>
+                        <p className="mt-0.5 truncate text-xs font-medium text-slate-500">
+                          Skycable Node · ID: {node.id}{node.barangay?.name ? ` · ${node.barangay.name}` : ''}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="mt-4 grid grid-cols-4 rounded-2xl border border-slate-100/80 bg-slate-50/80 p-2.5 text-center">
+                      <div className="border-r border-slate-200/60 last:border-none">
+                        <span className="block text-sm font-black text-slate-900">
+                          {spansCount}
+                        </span>
+                        <span className="mt-0.5 block text-[8px] font-bold uppercase tracking-wider text-slate-400">
+                          Spans
+                        </span>
+                      </div>
+                      <div className="border-r border-slate-200/60 last:border-none">
+                        <span className="block text-sm font-black text-rose-600">
+                          {expectedCable ? `${expectedCable}m` : '0m'}
+                        </span>
+                        <span className="mt-0.5 block text-[8px] font-bold uppercase tracking-wider text-slate-400">
+                          Target
+                        </span>
+                      </div>
+                      <div className="border-r border-slate-200/60 last:border-none">
+                        <span className="block truncate px-1 text-[10px] font-black text-blue-600">
+                          {team}
+                        </span>
+                        <span className="mt-0.5 block text-[8px] font-bold uppercase tracking-wider text-slate-400">
+                          Team
+                        </span>
+                      </div>
+                      <div className="border-r border-slate-200/60 last:border-none">
+                        <span className="block text-sm font-black" style={{ color: cfg.text }}>
+                          {cfg.label}
+                        </span>
+                        <span className="mt-0.5 block text-[8px] font-bold uppercase tracking-wider text-slate-400">
+                          Status
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="mt-4 flex items-center justify-between gap-2 border-t border-slate-100 pt-2.5">
+                      <div className="flex min-w-0 flex-wrap gap-1.5">
+                        <span className="truncate rounded-md bg-slate-100 px-2 py-0.5 text-[9px] font-bold text-slate-600" title={`Subcontractor: ${contractor}`}>
+                          {contractor}
+                        </span>
+                        <span className="truncate rounded-md bg-indigo-50 px-2 py-0.5 text-[9px] font-bold text-indigo-600" title={`Team: ${team}`}>
+                          {team}
+                        </span>
+                      </div>
+
+                      <svg className="h-3.5 w-3.5 shrink-0 text-slate-300 transition-transform duration-300 group-hover:translate-x-1" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                      </svg>
+                    </div>
+                  </div>
+                </article>
               )
             })}
           </div>
@@ -1607,7 +2134,7 @@ export default function SpanList() {
                   setAddOpen(true)
                 }}
                 className={primaryBtnCls}
-                style={{ background: 'linear-gradient(135deg, #2E3791 0%, #4450C4 100%)' }}
+                style={{ backgroundColor: '#059669' }}
               >
                 <i className="bx bx-plus text-base" />
                 Add Span
@@ -1617,7 +2144,7 @@ export default function SpanList() {
             {/* View toggle */}
             <div
               className="flex overflow-hidden rounded-xl"
-              style={{ border: `1px solid ${BRAND.borderStrong}` }}
+              style={{ border: `1px solid #bfdbfe` }}
             >
               {(['list', 'map'] as const).map(v => (
                 <button
@@ -1626,8 +2153,8 @@ export default function SpanList() {
                   onClick={() => setSpanView(v)}
                   className="inline-flex h-10 items-center gap-1.5 px-3.5 text-xs font-black transition"
                   style={{
-                    background: spanView === v ? 'linear-gradient(135deg, #2E3791 0%, #4450C4 100%)' : '#ffffff',
-                    color: spanView === v ? '#ffffff' : BRAND.muted,
+                    background: spanView === v ? '#059669' : '#ffffff',
+                    color: spanView === v ? '#ffffff' : '#64748b',
                   }}
                 >
                   <i className={`bx text-base ${v === 'list' ? 'bx-list-ul' : 'bx-map-alt'}`} />
@@ -1640,7 +2167,7 @@ export default function SpanList() {
               type="button"
               onClick={() => { navigate(`/spans/${slugify(selectedArea?.name ?? '')}-${selectedArea?.id}`); setSelectedNode(null) }}
               className={secondaryBtnCls}
-              style={{ border: `1px solid ${BRAND.borderStrong}`, color: BRAND.dark }}
+              className="inline-flex h-10 items-center justify-center gap-2 rounded-xl border border-blue-100 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-blue-50"
             >
               <i className="bx bx-arrow-back text-base" />
               Back
@@ -1649,7 +2176,7 @@ export default function SpanList() {
         }
       />
 
-      <div className="rounded-[24px] p-4" style={{ background: BRAND.panel, border: `1px solid ${BRAND.border}` }}>
+      <div className="rounded-2xl border bg-white p-5 shadow-sm" className="border-slate-200 dark:border-slate-700">
         <div className="overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           <div className="grid min-w-[1080px] grid-cols-5 gap-4 xl:min-w-0">
             <StatCard label="Total Spans" value={spanStats.total} icon="bx-git-branch" accent={BRAND_GRADIENTS[0]} />
@@ -1662,8 +2189,8 @@ export default function SpanList() {
       </div>
 
       <div
-        className="flex flex-wrap items-center justify-between gap-3 rounded-[20px] bg-white p-3"
-        style={{ border: `1px solid ${BRAND.border}`, boxShadow: '0 12px 30px -24px rgba(46,55,145,0.35)' }}
+        className="flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-white p-4 shadow-sm"
+        style={{ border: `1px solid #e2e8f0` }}
       >
         <div className="relative min-w-[260px] max-w-xl flex-1">
           <i className="bx bx-search absolute left-4 top-1/2 -translate-y-1/2 text-[#8E96C5]" />
@@ -1673,7 +2200,7 @@ export default function SpanList() {
             onChange={e => setSearch(e.target.value)}
             placeholder="Search span or pole..."
             className="h-10 w-full rounded-xl bg-white pl-10 pr-4 text-sm font-semibold outline-none"
-            style={{ border: `1px solid ${BRAND.border}`, color: BRAND.textDark }}
+            style={{ border: `1px solid #e2e8f0`, color: '#0f172a' }}
           />
         </div>
 
@@ -1683,9 +2210,9 @@ export default function SpanList() {
             onClick={() => setStatusFilter('')}
             className="h-10 rounded-xl px-3.5 text-xs font-black transition"
             style={{
-              background: !statusFilter ? 'linear-gradient(135deg, #2E3791 0%, #4450C4 100%)' : '#ffffff',
-              color: !statusFilter ? '#ffffff' : BRAND.muted,
-              border: !statusFilter ? '1px solid transparent' : `1px solid ${BRAND.border}`,
+              background: !statusFilter ? '#0f172a' : '#ffffff',
+              color: !statusFilter ? '#ffffff' : '#64748b',
+              border: !statusFilter ? '1px solid transparent' : '1px solid #e2e8f0',
             }}
           >
             All
@@ -1708,7 +2235,7 @@ export default function SpanList() {
             </button>
           ))}
 
-          <span className="rounded-xl px-3 py-2 text-xs font-black" style={{ backgroundColor: BRAND.softer, color: BRAND.muted, border: `1px solid ${BRAND.border}` }}>
+          <span className="rounded-xl px-3 py-2 text-xs font-black" style={{ backgroundColor: '#eff6ff', color: '#64748b', border: `1px solid #e2e8f0` }}>
             {filtered.length} results
           </span>
         </div>
@@ -1717,7 +2244,7 @@ export default function SpanList() {
       {spanView === 'map' ? (
         <div
           className="overflow-hidden rounded-[20px]"
-          style={{ height: 640, border: `1px solid ${BRAND.border}`, boxShadow: '0 12px 30px -24px rgba(46,55,145,0.35)' }}
+          style={{ height: 640, border: `1px solid #e2e8f0`, boxShadow: '0 20px 40px -30px rgba(15,23,42,0.28)' }}
         >
           <LeafletSpanMap
             poles={poles}
@@ -1733,8 +2260,8 @@ export default function SpanList() {
       ) : spansLoading ? (
         <div className="flex items-center justify-center py-20">
           <div className="text-center">
-            <div className="mx-auto h-10 w-10 animate-spin rounded-full border-2 border-t-transparent" style={{ borderColor: BRAND.blue, borderTopColor: 'transparent' }} />
-            <p className="mt-4 text-sm font-bold" style={{ color: BRAND.muted }}>Loading spans...</p>
+            <div className="mx-auto h-10 w-10 animate-spin rounded-full border-2 border-blue-500 border-t-transparent" />
+            <p className="mt-4 text-sm font-bold" style={{ color: '#64748b' }}>Loading spans...</p>
           </div>
         </div>
       ) : filtered.length === 0 ? (
@@ -1752,7 +2279,7 @@ export default function SpanList() {
                   setAddOpen(true)
                 }}
                 className={primaryBtnCls}
-                style={{ background: 'linear-gradient(135deg, #2E3791 0%, #4450C4 100%)' }}
+                style={{ backgroundColor: '#059669' }}
               >
                 <i className="bx bx-plus" />
                 Declare First Span
@@ -1761,13 +2288,13 @@ export default function SpanList() {
           }
         />
       ) : (
-        <div className="overflow-hidden rounded-[20px] bg-white" style={{ border: `1px solid ${BRAND.border}`, boxShadow: '0 12px 30px -24px rgba(46,55,145,0.35)' }}>
-          <div className="flex items-center justify-between gap-3 border-b px-4 py-3" style={{ borderColor: BRAND.border }}>
+        <div className="overflow-hidden rounded-2xl bg-white shadow-sm" style={{ border: `1px solid #e2e8f0` }}>
+          <div className="flex items-center justify-between gap-3 border-b px-5 py-4" className="border-slate-200 dark:border-slate-700">
             <div>
-              <p className="text-[10px] font-black uppercase tracking-[0.16em]" style={{ color: BRAND.muted2 }}>Span Inventory</p>
-              <h3 className="mt-1 text-lg font-black" style={{ color: BRAND.textDark }}>{selectedNode?.name}</h3>
+              <p className="text-[10px] font-semibold uppercase tracking-[0.16em]" style={{ color: '#64748b' }}>Span Inventory</p>
+              <h3 className="mt-1 text-base font-semibold" style={{ color: '#0f172a' }}>{selectedNode?.name}</h3>
             </div>
-            <span className="rounded-xl px-3 py-2 text-xs font-black" style={{ backgroundColor: BRAND.soft, color: BRAND.blue, border: `1px solid ${BRAND.borderStrong}` }}>
+            <span className="rounded-xl border bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-600" className="border-slate-200 dark:border-slate-700">
               Showing {filtered.length} {filtered.length === 1 ? 'span' : 'spans'}
             </span>
           </div>
@@ -1775,7 +2302,7 @@ export default function SpanList() {
           <div className="overflow-x-auto">
             <table className="w-full min-w-[980px] text-sm">
               <thead>
-                <tr style={{ background: BRAND.blue }}>
+                <tr className="bg-slate-900">
                   {['Span Code', 'From Pole', 'To Pole', 'Length', 'Runs', 'Exp. Cable', 'Status', ...(admin ? ['Actions'] : [])].map(h => (
                     <th key={h} className="px-4 py-3 text-center text-[10px] font-black uppercase tracking-[0.16em] text-white/80 first:text-left">
                       {h}
@@ -1791,19 +2318,19 @@ export default function SpanList() {
                   return (
                     <tr
                       key={span.id}
-                      className="transition hover:bg-[#F8F9FF]"
-                      style={{ backgroundColor: index % 2 === 0 ? '#ffffff' : BRAND.softer }}
+                      className="transition hover:bg-slate-50"
+                      
                     >
                       <td className="border-b px-4 py-3 align-middle" style={{ borderColor: '#ECEEFF' }}>
                         <div className="flex items-center gap-3">
-                          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl text-white" style={{ background: cfg.bar }}>
+                          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-white" style={{ background: cfg.bar }}>
                             <i className="bx bx-git-branch text-lg" />
                           </div>
                           <div>
-                            <p className="font-mono text-sm font-black" style={{ color: BRAND.blue }}>
+                            <p className="font-mono text-sm font-bold" style={{ color: '#2563eb' }}>
                               {span.span_code ?? <span className="font-sans text-slate-400">No code</span>}
                             </p>
-                            <p className="mt-0.5 text-[10px] font-bold uppercase tracking-wider" style={{ color: BRAND.muted2 }}>Span #{span.id}</p>
+                            <p className="mt-0.5 text-[10px] font-bold uppercase tracking-wider" style={{ color: '#64748b' }}>Span #{span.id}</p>
                           </div>
                         </div>
                       </td>
@@ -1817,15 +2344,15 @@ export default function SpanList() {
                       </td>
 
                       <td className="border-b px-4 py-3 text-center align-middle" style={{ borderColor: '#ECEEFF' }}>
-                        <p className="font-mono text-sm font-black" style={{ color: BRAND.textDark }}>{formatMeters(span.strand_length)}</p>
+                        <p className="font-mono text-sm font-black" style={{ color: '#0f172a' }}>{formatMeters(span.strand_length)}</p>
                       </td>
 
                       <td className="border-b px-4 py-3 text-center align-middle" style={{ borderColor: '#ECEEFF' }}>
-                        <p className="font-mono text-sm font-black" style={{ color: BRAND.textDark }}>{span.number_of_runs ?? '—'}</p>
+                        <p className="font-mono text-sm font-black" style={{ color: '#0f172a' }}>{span.number_of_runs ?? '—'}</p>
                       </td>
 
                       <td className="border-b px-4 py-3 text-center align-middle" style={{ borderColor: '#ECEEFF' }}>
-                        <p className="font-mono text-sm font-black" style={{ color: BRAND.textDark }}>{expectedCable(span.strand_length, span.number_of_runs)}</p>
+                        <p className="font-mono text-sm font-black" style={{ color: '#0f172a' }}>{expectedCable(span.strand_length, span.number_of_runs)}</p>
                       </td>
 
                       <td className="border-b px-4 py-3 text-center align-middle" style={{ borderColor: '#ECEEFF' }}>
@@ -1834,13 +2361,13 @@ export default function SpanList() {
 
                       {admin && (
                         <td className="border-b px-4 py-3 text-center align-middle" style={{ borderColor: '#ECEEFF' }}>
-                          <div className="inline-flex items-center gap-1 rounded-xl bg-[#F7F8FF] p-1" style={{ border: `1px solid ${BRAND.border}` }}>
+                          <div className="inline-flex items-center gap-1 rounded-xl border bg-slate-50 p-1" className="border-slate-200 dark:border-slate-700">
                             <button
                               type="button"
                               onClick={() => openEdit(span)}
                               title="Edit"
                               className="rounded-lg p-2 transition hover:text-white"
-                              style={{ color: BRAND.blue }}
+                              style={{ color: '#2563eb' }}
                             >
                               <i className="bx bx-edit text-base" />
                             </button>
@@ -1865,8 +2392,8 @@ export default function SpanList() {
               </tbody>
 
               <tfoot>
-                <tr style={{ backgroundColor: BRAND.panel }}>
-                  <td colSpan={admin ? 8 : 7} className="px-4 py-3 text-center text-[10px] font-black uppercase tracking-[0.16em]" style={{ color: BRAND.muted }}>
+                <tr className="bg-slate-50 dark:bg-slate-800/50">
+                  <td colSpan={admin ? 8 : 7} className="px-4 py-3 text-center text-[10px] font-black uppercase tracking-[0.16em]" style={{ color: '#64748b' }}>
                     Live filter active — {filtered.length} displayed
                   </td>
                 </tr>
@@ -1896,7 +2423,7 @@ export default function SpanList() {
                     value={addForm[k]}
                     onChange={e => setAddForm(f => ({ ...f, [k]: e.target.value }))}
                     className={selectCls}
-                    style={{ border: `1px solid ${BRAND.border}`, color: BRAND.textDark }}
+                    style={{ border: `1px solid #e2e8f0`, color: '#0f172a' }}
                   >
                     <option value="">Select pole...</option>
                     {poles.map(p => <option key={p.id} value={p.id}>{p.pole_code}</option>)}
@@ -1911,7 +2438,7 @@ export default function SpanList() {
             <label className={labelCls}>
               Span Code
               {addForm.span_code && addForm.span_code === autoSpanCodeRef.current && (
-                <span className="ml-2 rounded-full px-2 py-0.5 text-[9px] font-black uppercase tracking-wider" style={{ background: BRAND.soft, color: BRAND.blue, border: `1px solid ${BRAND.borderStrong}` }}>
+                <span className="ml-2 rounded-full px-2 py-0.5 text-[9px] font-black uppercase tracking-wider" style={{ background: '#eff6ff', color: '#2563eb', border: `1px solid #bfdbfe` }}>
                   Auto
                 </span>
               )}
@@ -1924,7 +2451,7 @@ export default function SpanList() {
               }}
               placeholder="Auto-generated from poles"
               className={inputCls}
-              style={{ border: `1px solid ${BRAND.border}`, color: BRAND.textDark }}
+              style={{ border: `1px solid #e2e8f0`, color: '#0f172a' }}
             />
           </div>
 
@@ -1939,7 +2466,7 @@ export default function SpanList() {
                 onChange={e => setAddForm(f => ({ ...f, strand_length: e.target.value }))}
                 placeholder="0.00"
                 className={inputCls}
-                style={{ border: `1px solid ${BRAND.border}`, color: BRAND.textDark }}
+                style={{ border: `1px solid #e2e8f0`, color: '#0f172a' }}
               />
             </div>
 
@@ -1951,15 +2478,15 @@ export default function SpanList() {
                 value={addForm.number_of_runs}
                 onChange={e => setAddForm(f => ({ ...f, number_of_runs: e.target.value }))}
                 className={inputCls}
-                style={{ border: `1px solid ${BRAND.border}`, color: BRAND.textDark }}
+                style={{ border: `1px solid #e2e8f0`, color: '#0f172a' }}
               />
             </div>
           </div>
 
           {addForm.strand_length && (
-            <div className="flex items-center justify-between rounded-2xl px-4 py-3" style={{ backgroundColor: BRAND.soft, border: `1px solid ${BRAND.borderStrong}` }}>
-              <span className="text-xs font-black uppercase tracking-wider" style={{ color: BRAND.blue }}>Expected Cable</span>
-              <span className="text-lg font-black" style={{ color: BRAND.blue }}>
+            <div className="flex items-center justify-between rounded-2xl px-4 py-3" style={{ backgroundColor: '#eff6ff', border: `1px solid #bfdbfe` }}>
+              <span className="text-xs font-black uppercase tracking-wider" style={{ color: '#2563eb' }}>Expected Cable</span>
+              <span className="text-lg font-black" style={{ color: '#2563eb' }}>
                 {(parseFloat(addForm.strand_length || '0') * (parseInt(addForm.number_of_runs) || 1)).toFixed(1)}m
               </span>
             </div>
@@ -1967,9 +2494,9 @@ export default function SpanList() {
 
           {formErr && <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-bold text-red-600">{formErr}</div>}
 
-          <div className="flex justify-end gap-2 border-t pt-4" style={{ borderColor: BRAND.border }}>
-            <button type="button" onClick={closeModal} className={secondaryBtnCls} style={{ border: `1px solid ${BRAND.border}`, color: BRAND.dark }}>Cancel</button>
-            <button type="submit" disabled={saving} className={primaryBtnCls} style={{ background: 'linear-gradient(135deg, #2E3791 0%, #4450C4 100%)' }}>
+          <div className="flex justify-end gap-2 border-t pt-4" className="border-slate-200 dark:border-slate-700">
+            <button type="button" onClick={closeModal} className={secondaryBtnCls} style={{ border: `1px solid #e2e8f0`, color: '#0f172a' }}>Cancel</button>
+            <button type="submit" disabled={saving} className="inline-flex h-10 items-center justify-center gap-2 rounded-xl px-5 text-sm font-semibold text-white shadow-lg transition active:scale-[0.98] disabled:opacity-60" style={{ backgroundColor: '#059669' }}>
               {saving ? <><i className="bx bx-loader-alt animate-spin" />Saving...</> : <><i className="bx bx-check" />Declare Span</>}
             </button>
           </div>
@@ -1985,7 +2512,7 @@ export default function SpanList() {
             ].map(({ label, code }) => (
               <div key={label}>
                 <p className={labelCls}>{label}</p>
-                <div className="flex h-11 items-center rounded-xl bg-[#F7F8FF] px-4 font-mono text-sm font-black" style={{ border: `1px solid ${BRAND.border}`, color: BRAND.textDark }}>{code}</div>
+                <div className="flex h-11 items-center rounded-xl bg-[#F7F8FF] px-4 font-mono text-sm font-black" style={{ border: `1px solid #e2e8f0`, color: '#0f172a' }}>{code}</div>
               </div>
             ))}
           </div>
@@ -1997,7 +2524,7 @@ export default function SpanList() {
               onChange={e => setEditForm(f => ({ ...f, span_code: e.target.value }))}
               placeholder="SP-001"
               className={inputCls}
-              style={{ border: `1px solid ${BRAND.border}`, color: BRAND.textDark }}
+              style={{ border: `1px solid #e2e8f0`, color: '#0f172a' }}
             />
           </div>
 
@@ -2011,7 +2538,7 @@ export default function SpanList() {
                 value={editForm.strand_length}
                 onChange={e => setEditForm(f => ({ ...f, strand_length: e.target.value }))}
                 className={inputCls}
-                style={{ border: `1px solid ${BRAND.border}`, color: BRAND.textDark }}
+                style={{ border: `1px solid #e2e8f0`, color: '#0f172a' }}
               />
             </div>
 
@@ -2023,15 +2550,15 @@ export default function SpanList() {
                 value={editForm.number_of_runs}
                 onChange={e => setEditForm(f => ({ ...f, number_of_runs: e.target.value }))}
                 className={inputCls}
-                style={{ border: `1px solid ${BRAND.border}`, color: BRAND.textDark }}
+                style={{ border: `1px solid #e2e8f0`, color: '#0f172a' }}
               />
             </div>
           </div>
 
           {editForm.strand_length && (
-            <div className="flex items-center justify-between rounded-2xl px-4 py-3" style={{ backgroundColor: BRAND.soft, border: `1px solid ${BRAND.borderStrong}` }}>
-              <span className="text-xs font-black uppercase tracking-wider" style={{ color: BRAND.blue }}>Expected Cable</span>
-              <span className="text-lg font-black" style={{ color: BRAND.blue }}>
+            <div className="flex items-center justify-between rounded-2xl px-4 py-3" style={{ backgroundColor: '#eff6ff', border: `1px solid #bfdbfe` }}>
+              <span className="text-xs font-black uppercase tracking-wider" style={{ color: '#2563eb' }}>Expected Cable</span>
+              <span className="text-lg font-black" style={{ color: '#2563eb' }}>
                 {(parseFloat(editForm.strand_length || '0') * (parseInt(editForm.number_of_runs) || 1)).toFixed(1)}m
               </span>
             </div>
@@ -2044,7 +2571,7 @@ export default function SpanList() {
                 value={editForm.status}
                 onChange={e => setEditForm(f => ({ ...f, status: e.target.value as SpanStatus }))}
                 className={selectCls}
-                style={{ border: `1px solid ${BRAND.border}`, color: BRAND.textDark }}
+                style={{ border: `1px solid #e2e8f0`, color: '#0f172a' }}
               >
                 {STATUSES.map(s => <option key={s} value={s}>{STATUS_CFG[s].label}</option>)}
               </select>
@@ -2054,9 +2581,9 @@ export default function SpanList() {
 
           {formErr && <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-bold text-red-600">{formErr}</div>}
 
-          <div className="flex justify-end gap-2 border-t pt-4" style={{ borderColor: BRAND.border }}>
-            <button type="button" onClick={closeModal} className={secondaryBtnCls} style={{ border: `1px solid ${BRAND.border}`, color: BRAND.dark }}>Cancel</button>
-            <button type="submit" disabled={saving} className={primaryBtnCls} style={{ background: 'linear-gradient(135deg, #2E3791 0%, #4450C4 100%)' }}>
+          <div className="flex justify-end gap-2 border-t pt-4" className="border-slate-200 dark:border-slate-700">
+            <button type="button" onClick={closeModal} className={secondaryBtnCls} style={{ border: `1px solid #e2e8f0`, color: '#0f172a' }}>Cancel</button>
+            <button type="submit" disabled={saving} className="inline-flex h-10 items-center justify-center gap-2 rounded-xl px-5 text-sm font-semibold text-white shadow-lg transition active:scale-[0.98] disabled:opacity-60" style={{ backgroundColor: '#059669' }}>
               {saving ? <><i className="bx bx-loader-alt animate-spin" />Saving...</> : <><i className="bx bx-save" />Update Span</>}
             </button>
           </div>
@@ -2065,7 +2592,7 @@ export default function SpanList() {
 
       <Modal open={delOpen && !!selected} title="Delete Span?" sub="This action cannot be undone." onClose={closeModal} danger>
         <div className="space-y-5">
-          <div className="rounded-2xl bg-[#F7F8FF] p-4" style={{ border: `1px solid ${BRAND.border}` }}>
+          <div className="rounded-2xl bg-[#F7F8FF] p-4" style={{ border: `1px solid #e2e8f0` }}>
             <dl className="grid grid-cols-2 gap-3 text-sm">
               {[
                 ['Span', selected?.span_code ?? `SPAN-${selected?.id}`],
@@ -2074,8 +2601,8 @@ export default function SpanList() {
                 ['Status', selected?.status ? STATUS_CFG[selected.status].label : '—'],
               ].map(([k, v]) => (
                 <div key={String(k)}>
-                  <dt className="text-[10px] font-black uppercase tracking-[0.18em]" style={{ color: BRAND.muted2 }}>{k}</dt>
-                  <dd className="mt-1 font-black" style={{ color: BRAND.textDark }}>{v}</dd>
+                  <dt className="text-[10px] font-black uppercase tracking-[0.18em]" style={{ color: '#64748b' }}>{k}</dt>
+                  <dd className="mt-1 font-black" style={{ color: '#0f172a' }}>{v}</dd>
                 </div>
               ))}
             </dl>
@@ -2088,7 +2615,7 @@ export default function SpanList() {
               {saving ? <><i className="bx bx-loader-alt animate-spin" />Deleting...</> : <><i className="bx bx-trash" />Yes, Delete</>}
             </button>
 
-            <button type="button" onClick={closeModal} className={`${secondaryBtnCls} flex-1`} style={{ border: `1px solid ${BRAND.border}`, color: BRAND.dark }}>Cancel</button>
+            <button type="button" onClick={closeModal} className={`${secondaryBtnCls} flex-1`} style={{ border: `1px solid #e2e8f0`, color: '#0f172a' }}>Cancel</button>
           </div>
         </div>
       </Modal>

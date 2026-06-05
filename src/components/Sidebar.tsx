@@ -318,11 +318,11 @@ export default function Sidebar() {
                     {sub('/users', 'All Users')}
                   </ul>
                 </li>
-                <li>
-                  <a href="#" className={linkCls}>
-                    <i data-feather="settings" />
-                    <span>System Settings</span>
-                  </a>
+                <li className={pathname === '/maintenance' ? 'mm-active' : ''}>
+                  <Link to="/maintenance" className={pathname === '/maintenance' ? activeLinkCls : linkCls}>
+                    <i data-feather="tool" />
+                    <span>Maintenance Mode</span>
+                  </Link>
                 </li>
               </>
             )}

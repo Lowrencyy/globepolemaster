@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useMemo } from 'react'
 import type { ReactNode } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { getToken, API_BASE } from '../../lib/auth'
 import telcoImg from '../../assets/images/telco.png'
 
@@ -187,7 +188,7 @@ function AddModal({ subs, onClose, onSaved }: {
     try {
       const res = await fetch(`${SKYCABLE_API}/warehouses`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${getToken()}`, 'ngrok-skip-browser-warning': '1' },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${getToken()}`, },
         body: JSON.stringify({
           name: form.name.trim(), subcontractor_id: Number(form.subcontractor_id),
           type: form.type.trim() || undefined, sqm: form.sqm ? Number(form.sqm) : undefined,
@@ -298,7 +299,7 @@ function EditModal({ wh, onClose, onSaved }: {
     try {
       const res = await fetch(`${SKYCABLE_API}/warehouses/${wh.id}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${getToken()}`, 'ngrok-skip-browser-warning': '1' },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${getToken()}`, },
         body: JSON.stringify({
           name: form.name.trim(), type: form.type.trim() || undefined,
           sqm: form.sqm ? Number(form.sqm) : null, status: form.status,
@@ -482,25 +483,65 @@ function WarehouseMap({ lat, lng, name }: { lat: number; lng: number; name: stri
   return <div ref={divRef} style={{ height: 220 }} className="w-full" />
 }
 
+// ── Types for approved receipts ─────────────────────────────────────────────
+type ApprovedReceipt = {
+  id: number
+  status: string
+  notes?: string | null
+  receipt_date?: string | null
+  created_at?: string | null
+  updated_at?: string | null
+  items?: { item_type: string; quantity: number; unit?: string }[]
+  node?: { id: number; name: string } | null
+  receivedBy?: { id: number; name: string } | null
+  approvedBy?: { id: number; name: string } | null
+}
+
+function fmtDate(iso: string | null | undefined) {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  return d.toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: 'numeric' })
+}
+function fmtTime(iso: string | null | undefined) {
+  if (!iso) return ''
+  const d = new Date(iso)
+  return d.toLocaleTimeString('en-PH', { hour: 'numeric', minute: '2-digit', hour12: true })
+}
+
 // ── Warehouse detail (right panel) ─────────────────────────────────────────
 function WhDetail({ wh, onEdit }: { wh: Warehouse; onEdit: () => void }) {
+  const navigate = useNavigate()
   const [height, setHeight] = useState(String(getStoredH(wh.id)))
   const [_editH, setEditH] = useState(false)
   const [tempH, setTempH] = useState(height)
   const [nodes, setNodes] = useState<NodeItem[]>([])
   const [nodesLoading, setNodesLoading] = useState(false)
+  const [approvedReceipts, setApprovedReceipts] = useState<ApprovedReceipt[]>([])
+  const [receiptsLoading, setReceiptsLoading] = useState(false)
 
   useEffect(() => {
     setNodes([])
     setNodesLoading(true)
     fetch(`${SKYCABLE_API}/nodes?subcontractor_id=${wh.subcontractor_id}&per_page=200`, {
-      headers: { Authorization: `Bearer ${getToken()}`, 'ngrok-skip-browser-warning': '1' },
+      headers: { Authorization: `Bearer ${getToken()}`, },
     })
       .then(r => r.ok ? r.json() : null)
       .then(d => { if (d) setNodes(Array.isArray(d) ? d : (d.data ?? [])) })
       .catch(() => {})
       .finally(() => setNodesLoading(false))
   }, [wh.subcontractor_id])
+
+  useEffect(() => {
+    setApprovedReceipts([])
+    setReceiptsLoading(true)
+    fetch(`${SKYCABLE_API}/warehouses/${wh.id}/receipts?status=approved&per_page=15`, {
+      headers: { Authorization: `Bearer ${getToken()}`, },
+    })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d) setApprovedReceipts(Array.isArray(d) ? d : (d.data ?? [])) })
+      .catch(() => {})
+      .finally(() => setReceiptsLoading(false))
+  }, [wh.id])
 
   useEffect(() => {
     const h = String(getStoredH(wh.id))
@@ -714,7 +755,7 @@ function WhDetail({ wh, onEdit }: { wh: Warehouse; onEdit: () => void }) {
                   { key: 'powersupply', label: 'PSU',   cls: 'border-red-100 bg-red-50/70 dark:border-red-900/40 dark:bg-red-950/20',                 val: 'text-red-500 dark:text-red-400'         },
                 ]
                 return (
-                  <article key={n.id} className="group relative min-w-0 cursor-pointer overflow-hidden rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950/30 p-3.5 shadow-sm transition hover:-translate-y-1 hover:border-blue-300 hover:shadow-xl dark:hover:border-blue-500">
+                  <article key={n.id} onClick={() => navigate(`/warehouses/${wh.id}/nodes/${n.id}/deliveries`)} className="group relative min-w-0 cursor-pointer overflow-hidden rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950/30 p-3.5 shadow-sm transition hover:-translate-y-1 hover:border-blue-300 hover:shadow-xl dark:hover:border-blue-500">
                     <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-blue-600 to-sky-400 opacity-0 transition group-hover:opacity-100" />
 
                     {/* Header */}
@@ -784,6 +825,83 @@ function WhDetail({ wh, onEdit }: { wh: Warehouse; onEdit: () => void }) {
             </div>
           </div>
         )}
+
+        {/* ── Approved Deliveries ── */}
+        <div className="overflow-hidden rounded-2xl border border-slate-200/70 bg-white dark:border-zinc-800 dark:bg-zinc-900 shadow-[0_18px_60px_-42px_rgba(15,23,42,0.65)]">
+          <div className="flex items-center justify-between px-5 py-3 border-b border-slate-100 dark:border-zinc-800">
+            <div className="flex items-center gap-2">
+              <i className="bx bx-check-circle text-emerald-500 text-sm" />
+              <p className="text-[10px] font-black uppercase tracking-widest text-slate-500 dark:text-slate-400">Approved Deliveries</p>
+              {approvedReceipts.length > 0 && (
+                <span className="rounded-full bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400 ring-1 ring-emerald-200 dark:ring-emerald-800/40 px-2 py-0.5 text-[9px] font-black">
+                  {approvedReceipts.length}
+                </span>
+              )}
+            </div>
+          </div>
+          {receiptsLoading ? (
+            <div className="px-5 py-8 text-center">
+              <div className="inline-block h-5 w-5 animate-spin rounded-full border-2 border-emerald-500 border-t-transparent" />
+              <p className="mt-2 text-xs font-bold text-slate-400">Loading…</p>
+            </div>
+          ) : approvedReceipts.length === 0 ? (
+            <div className="px-5 py-10 text-center">
+              <i className="bx bx-package text-3xl text-slate-200 dark:text-zinc-700" />
+              <p className="mt-1 text-xs font-bold text-slate-400 dark:text-slate-500">No approved deliveries yet</p>
+            </div>
+          ) : (
+            <div className="divide-y divide-slate-100 dark:divide-zinc-800">
+              {approvedReceipts.map(r => {
+                const dateStr = fmtDate(r.updated_at ?? r.created_at)
+                const timeStr = fmtTime(r.updated_at ?? r.created_at)
+                const itemChips = (r.items ?? []).filter(i => i.quantity > 0)
+                return (
+                  <div key={r.id} className="px-5 py-3.5 flex items-start gap-3 hover:bg-slate-50 dark:hover:bg-zinc-800/40 transition">
+                    <div className="shrink-0 mt-0.5 flex h-8 w-8 items-center justify-center rounded-xl bg-emerald-50 dark:bg-emerald-900/30">
+                      <i className="bx bx-check-double text-emerald-600 dark:text-emerald-400 text-sm" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between gap-2 mb-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-xs font-black text-slate-800 dark:text-slate-100">
+                            Receipt #{r.id}
+                          </span>
+                          {r.node && (
+                            <span className="inline-flex items-center gap-1 rounded-lg bg-blue-50 dark:bg-blue-950/40 px-2 py-0.5 text-[9px] font-bold text-blue-700 dark:text-blue-300">
+                              <i className="bx bx-router text-[10px]" />{r.node.name}
+                            </span>
+                          )}
+                        </div>
+                        <div className="shrink-0 text-right">
+                          <p className="text-[11px] font-black text-slate-700 dark:text-slate-200">{dateStr}</p>
+                          {timeStr && <p className="text-[9px] font-mono text-slate-400">{timeStr}</p>}
+                        </div>
+                      </div>
+                      {itemChips.length > 0 && (
+                        <div className="flex flex-wrap gap-1 mt-1">
+                          {itemChips.map(i => (
+                            <span key={i.item_type}
+                              className="inline-flex items-center gap-1 rounded-md bg-slate-100 dark:bg-zinc-700 px-1.5 py-0.5 text-[9px] font-bold text-slate-600 dark:text-slate-300">
+                              {i.item_type.replace(/_/g, ' ')} ×{i.quantity}{i.unit && i.unit !== 'pcs' ? ` ${i.unit}` : ''}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                      {(r.approvedBy ?? r.receivedBy) && (
+                        <p className="text-[9px] text-slate-400 dark:text-slate-500 mt-1">
+                          {r.approvedBy ? `Approved by ${r.approvedBy.name}` : `Received by ${r.receivedBy!.name}`}
+                        </p>
+                      )}
+                      {r.notes && (
+                        <p className="text-[10px] italic text-slate-400 dark:text-slate-500 mt-0.5 truncate">{r.notes}</p>
+                      )}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
 
         {/* Inventory cards */}
         <div className="overflow-hidden rounded-2xl border border-slate-200/70 bg-white dark:border-zinc-800 dark:bg-zinc-900 shadow-[0_18px_60px_-42px_rgba(15,23,42,0.65)]">
@@ -873,8 +991,8 @@ export default function Warehouses() {
     setError('')
     try {
       const [whRes, subRes] = await Promise.all([
-        fetch(`${SKYCABLE_API}/warehouses`, { headers: { Authorization: `Bearer ${getToken()}`, 'ngrok-skip-browser-warning': '1' } }),
-        fetch(`${ADMIN_API}/subcontractors?per_page=200`, { headers: { Authorization: `Bearer ${getToken()}`, 'ngrok-skip-browser-warning': '1' } }),
+        fetch(`${SKYCABLE_API}/warehouses`, { headers: { Authorization: `Bearer ${getToken()}`, } }),
+        fetch(`${ADMIN_API}/subcontractors?per_page=200`, { headers: { Authorization: `Bearer ${getToken()}`, } }),
       ])
       if (!whRes.ok) throw new Error(`HTTP ${whRes.status}`)
       const wd = await whRes.json()

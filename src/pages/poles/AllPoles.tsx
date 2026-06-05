@@ -218,7 +218,7 @@ export default function AllPoles() {
   const [siteNodesLoading, setSiteNodesLoading] = useState(false)
 
   const perPage = 50
-  const h = { Authorization: `Bearer ${getToken()}`, Accept: 'application/json', 'ngrok-skip-browser-warning': '1' }
+  const h = { Authorization: `Bearer ${getToken()}`, Accept: 'application/json', }
   const siteNodesFetchRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {

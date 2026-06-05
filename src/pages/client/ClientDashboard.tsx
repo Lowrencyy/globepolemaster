@@ -29,8 +29,7 @@ type TeardownLog = {
 const h = () => ({
   Authorization: `Bearer ${getToken()}`,
   Accept: 'application/json',
-  'ngrok-skip-browser-warning': '1',
-})
+  })
 
 function timeAgo(iso: string) {
   const diff = Math.floor((Date.now() - new Date(iso).getTime()) / 1000)

@@ -77,7 +77,6 @@ function apiHeaders() {
   const token = getToken()
   return {
     Accept: 'application/json',
-    'ngrok-skip-browser-warning': 'true',
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
   }
 }

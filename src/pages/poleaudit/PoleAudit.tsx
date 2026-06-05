@@ -42,7 +42,7 @@ const poleStatusCfg: Record<PoleStatus, { label: string; dot: string; badge: str
 const STATUSES: Array<'all' | PoleStatus> = ['all', 'pending', 'in_progress', 'cleared']
 
 function authHeaders() {
-  return { Authorization: `Bearer ${getToken()}`, Accept: 'application/json', 'ngrok-skip-browser-warning': '1' }
+  return { Authorization: `Bearer ${getToken()}`, Accept: 'application/json', }
 }
 
 function exportCSV(rows: PoleRecord[]) {

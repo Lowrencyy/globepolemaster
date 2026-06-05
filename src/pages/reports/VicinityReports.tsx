@@ -42,8 +42,7 @@ function headers() {
   return {
     Authorization: `Bearer ${getToken()}`,
     Accept: 'application/json',
-    'ngrok-skip-browser-warning': '1',
-  }
+    }
 }
 
 function fmt(n: number | string | null | undefined, dec = 1) {

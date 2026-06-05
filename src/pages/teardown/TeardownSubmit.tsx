@@ -37,8 +37,7 @@ const PHOTO_SLOTS: PhotoSlot[] = [
 const h = () => ({
   Authorization: `Bearer ${getToken()}`,
   Accept: 'application/json',
-  'ngrok-skip-browser-warning': '1',
-})
+  })
 
 const imgUrl = (path: string | null) =>
   path ? `${API_BASE}/api/v1/files/${path}` : null
@@ -216,7 +215,6 @@ export default function TeardownSubmit() {
         headers: {
           Authorization: `Bearer ${getToken()}`,
           Accept: 'application/json',
-          'ngrok-skip-browser-warning': '1',
           // no Content-Type — let browser set multipart boundary
         },
         body: fd,

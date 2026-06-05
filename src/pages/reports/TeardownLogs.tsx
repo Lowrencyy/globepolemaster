@@ -117,7 +117,6 @@ function fetchCachedBlob(src: string): Promise<string | null> {
   if (inflight) return inflight
   const p = fetch(src, {
     headers: {
-      'ngrok-skip-browser-warning': '1',
       Authorization: `Bearer ${getToken()}`,
     },
   })
@@ -206,8 +205,7 @@ function statusColor(status: string) {
 const authHeaders = () => ({
   Authorization: `Bearer ${getToken()}`,
   Accept: 'application/json',
-  'ngrok-skip-browser-warning': '1',
-})
+  })
 
 // ── Mini photo thumb ──────────────────────────────────────────────────────────
 

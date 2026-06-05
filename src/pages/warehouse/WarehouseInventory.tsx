@@ -192,8 +192,7 @@ const MOVEMENT_META: Record<
 const authHeaders = () => ({
   Accept: "application/json",
   Authorization: `Bearer ${getToken()}`,
-  "ngrok-skip-browser-warning": "1",
-});
+  });
 
 const WAREHOUSE_STATUS_META: Record<
   WarehouseStatus,

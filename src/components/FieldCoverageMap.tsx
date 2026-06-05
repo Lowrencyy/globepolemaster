@@ -144,8 +144,7 @@ export default function FieldCoverageMap({ mapView: mapViewProp = 'satellite', s
       headers: {
         'Authorization': `Bearer ${token}`,
         'Accept': 'application/json',
-        'ngrok-skip-browser-warning': '1',
-      },
+        },
     })
       .then(r => r.json())
       .then(data => {

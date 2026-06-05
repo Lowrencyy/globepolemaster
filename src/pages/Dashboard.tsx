@@ -7,6 +7,42 @@ import { cacheDel, cacheGet, cacheSet } from '../lib/cache'
 
 declare const ApexCharts: any
 
+type ApexChartInstance = { destroy?: () => void }
+type ApexWindow = Window & { __routeApexCharts?: Set<ApexChartInstance> }
+
+const DASHBOARD_CHART_SELECTORS = [
+  '#mini-chart1',
+  '#mini-chart2',
+  '#mini-chart3',
+  '#mini-chart4',
+  '#nap-slot-chart',
+  '#span-teardown-chart',
+  '#validation-progress-chart',
+]
+
+function getChartRegistry() {
+  const w = window as ApexWindow
+  if (!w.__routeApexCharts) w.__routeApexCharts = new Set()
+  return w.__routeApexCharts
+}
+
+function rememberChart(chart: ApexChartInstance) {
+  getChartRegistry().add(chart)
+  return chart
+}
+
+function destroyCharts() {
+  const registry = getChartRegistry()
+  registry.forEach(chart => chart.destroy?.())
+  registry.clear()
+
+  for (const selector of DASHBOARD_CHART_SELECTORS) {
+    const el = document.querySelector(selector) as { _apexChart?: { destroy?: () => void } } | null
+    el?._apexChart?.destroy?.()
+    if (el && '_apexChart' in el) delete el._apexChart
+  }
+}
+
 function initCharts() {
   const w = window as any
   const AC = w.ApexCharts ?? (typeof ApexCharts !== 'undefined' ? ApexCharts : null)
@@ -29,7 +65,7 @@ function initCharts() {
       },
     })
     c.render()
-    ;(el as any)._apexChart = c
+    ;(el as any)._apexChart = rememberChart(c)
   }
 
   mini('#mini-chart1', [2, 10, 18, 22, 36, 15, 47, 75, 65, 19, 14, 2, 47, 42, 15])
@@ -49,7 +85,7 @@ function initCharts() {
       legend: { show: false },
     })
     c.render()
-    ;(napEl as any)._apexChart = c
+    ;(napEl as any)._apexChart = rememberChart(c)
   }
 
   const spanEl = document.querySelector('#span-teardown-chart')
@@ -72,7 +108,7 @@ function initCharts() {
       },
     })
     c.render()
-    ;(spanEl as any)._apexChart = c
+    ;(spanEl as any)._apexChart = rememberChart(c)
   }
 
   const valEl = document.querySelector('#validation-progress-chart')
@@ -114,7 +150,7 @@ function initCharts() {
       labels: ['Approved'],
     })
     c.render()
-    ;(valEl as any)._apexChart = c
+    ;(valEl as any)._apexChart = rememberChart(c)
   }
 }
 
@@ -346,13 +382,13 @@ function statusLabel(s: string) {
 const h = () => ({
   Authorization: `Bearer ${getToken()}`,
   Accept: 'application/json',
-  'ngrok-skip-browser-warning': '1',
-})
+  })
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function Dashboard() {
   const navigate = useNavigate()
+  const abortControllersRef = useRef<Set<AbortController>>(new Set())
   const [mapView, setMapView] = useState<MapView>('satellite')
   const [surveyTab, setSurveyTab] = useState<'all' | 'active' | 'inactive' | 'for_removal'>('all')
   const [nodes, setNodes] = useState<NodeStat[]>(() => cacheGet<NodeStat[]>('dashboard_nodes') ?? [])
@@ -380,6 +416,15 @@ export default function Dashboard() {
   })
   const [syncText, setSyncText] = useState('Never')
   const lastManualSyncRef = useRef<number>(0)
+
+  function createSignal() {
+    const controller = new AbortController()
+    abortControllersRef.current.add(controller)
+    return {
+      signal: controller.signal,
+      done: () => abortControllersRef.current.delete(controller),
+    }
+  }
 
   // Dynamic relative time calculations for sync label
   useEffect(() => {
@@ -416,7 +461,12 @@ export default function Dashboard() {
 
   useEffect(() => {
     const timer = setTimeout(initCharts, 100)
-    return () => clearTimeout(timer)
+    return () => {
+      clearTimeout(timer)
+      destroyCharts()
+      abortControllersRef.current.forEach(controller => controller.abort())
+      abortControllersRef.current.clear()
+    }
   }, [])
 
   function fetchNodes(silent = false) {
@@ -427,7 +477,8 @@ export default function Dashboard() {
       return
     }
 
-    fetch(`${SKYCABLE_API}/nodes`, { headers: h() })
+    const request = createSignal()
+    fetch(`${SKYCABLE_API}/nodes`, { headers: h(), signal: request.signal })
       .then(r => r.json())
       .then(d => {
         const list: NodeStat[] = Array.isArray(d) ? d : d?.data ?? []
@@ -436,6 +487,7 @@ export default function Dashboard() {
         setLastSynced(Date.now())
       })
       .catch(() => {})
+      .finally(request.done)
   }
 
   function fetchTeardowns(silent = false) {
@@ -449,9 +501,11 @@ export default function Dashboard() {
 
     if (!silent) setTdLoading(true)
 
+    const spanRequest = createSignal()
+    const poleRequest = createSignal()
     Promise.allSettled([
-      fetch(`${SKYCABLE_API}/teardowns?per_page=15`, { headers: h() }).then(r => r.json()),
-      fetch(`${SKYCABLE_API}/pole-reports?per_page=15`, { headers: h() }).then(r => r.json()),
+      fetch(`${SKYCABLE_API}/teardowns?per_page=15`, { headers: h(), signal: spanRequest.signal }).then(r => r.json()),
+      fetch(`${SKYCABLE_API}/pole-reports?per_page=15`, { headers: h(), signal: poleRequest.signal }).then(r => r.json()),
     ]).then(([spanRes, poleRes]) => {
       if (spanRes.status === 'fulfilled') {
         const d = spanRes.value
@@ -469,6 +523,8 @@ export default function Dashboard() {
       setPulse(true)
       setTimeout(() => setPulse(false), 800)
     }).catch(() => {}).finally(() => {
+      spanRequest.done()
+      poleRequest.done()
       if (!silent) setTdLoading(false)
     })
   }
@@ -487,14 +543,14 @@ export default function Dashboard() {
 
   async function fetchNapSurveysForce(silent = false) {
     if (!silent) setNapSurveyLoading(true)
+    const request = createSignal()
     try {
       const headers = {
         Accept: 'application/json',
-        'ngrok-skip-browser-warning': '1',
         Authorization: `Bearer ${getToken()}`,
       }
 
-      const res = await fetch(`${GLOBE_API}/poles/0/nap-boxes?per_page=20`, { headers })
+      const res = await fetch(`${GLOBE_API}/nap-boxes?per_page=20`, { headers, signal: request.signal })
       const data = await res.json()
       const boxes: ApiNapBoxSurvey[] = Array.isArray(data) ? data : data?.data ?? []
 
@@ -504,7 +560,7 @@ export default function Dashboard() {
         const batch = boxes.slice(i, i + 5)
         const results = await Promise.all(
           batch.map((b: ApiNapBoxSurvey) =>
-            fetch(`${GLOBE_API}/nap-boxes/${b.id}/ports`, { headers })
+            fetch(`${GLOBE_API}/nap-boxes/${b.id}/ports`, { headers, signal: request.signal })
               .then(r => r.json() as Promise<ApiNapPort[]>)
               .catch(() => [] as ApiNapPort[])
           )
@@ -545,6 +601,7 @@ export default function Dashboard() {
     } catch (_) {
       // silently fail — table stays empty
     } finally {
+      request.done()
       setNapSurveyLoading(false)
     }
   }

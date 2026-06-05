@@ -1,4 +1,7 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import MaintenancePage from './pages/Maintenance'
+import MaintenanceControl from './pages/MaintenanceControl'
+import { useMaintenance } from './hooks/useMaintenance'
 import Layout from './components/Layout'
 import Login from './pages/Login'
 import DashboardPage from './pages/Dashboard'
@@ -46,6 +49,7 @@ import WarehouseInventory from './pages/warehouse/WarehouseInventory'
 import DailyTeardownDelivery from './pages/delivery/DailyTeardownDelivery'
 import Warehouses from './pages/subcontractors/Warehouses'
 import Deliveries from './pages/warehouse/Deliveries'
+import NodeDeliveryLogs from './pages/warehouse/NodeDeliveryLogs'
 import RecycleBin from './pages/recycle-bin/RecycleBin'
 
 function WarehouseInventoryPage() {
@@ -156,7 +160,7 @@ function NodeDetailPage() {
 }
 
 function NodeSpansPage() {
-  return <Layout><NodeSpans /></Layout>
+  return <Layout fullWidth><NodeSpans /></Layout>
 }
 
 function NodePolesListPage() {
@@ -238,8 +242,12 @@ function SubconDashboardPage() {
 }
 
 export default function App() {
+  const { status } = useMaintenance()
+
   return (
     <BrowserRouter>
+      {/* Show full-screen maintenance page when any company is down */}
+      {status?.any_active && <MaintenancePage />}
       <Routes>
         <Route path="/login" element={<Login />} />
         <Route path="/loading" element={<ProtectedRoute><LoadingScreen /></ProtectedRoute>} />
@@ -288,6 +296,11 @@ export default function App() {
             <UsersPage />
           </RoleRoute>
         } />
+        <Route path="/maintenance" element={
+          <RoleRoute allow={['admin']}>
+            <Layout><MaintenanceControl /></Layout>
+          </RoleRoute>
+        } />
         <Route path="/recycle-bin" element={
           <RoleRoute allow={['admin', 'executive']}>
             <Layout><RecycleBin /></Layout>
@@ -302,6 +315,11 @@ export default function App() {
         } />
 
         {/* ── Admin + Executive (subcon management) ── */}
+        <Route path="/warehouses/:warehouseId/nodes/:nodeId/deliveries" element={
+          <RoleRoute allow={['admin','executive','project_manager','warehouse_incharge']}>
+            <Layout><NodeDeliveryLogs /></Layout>
+          </RoleRoute>
+        } />
         <Route path="/warehouses" element={<RoleRoute allow={['admin','executive']}><Layout><Warehouses /></Layout></RoleRoute>} />
         <Route path="/subcontractors" element={<RoleRoute allow={['admin','executive']}><SubcontractorsPage /></RoleRoute>} />
         <Route path="/subcontractors/:id" element={<RoleRoute allow={['admin','executive']}><SubcontractorDetailPage /></RoleRoute>} />

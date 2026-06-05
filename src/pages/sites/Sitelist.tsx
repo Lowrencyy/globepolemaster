@@ -84,8 +84,7 @@ function authHeaders(): Record<string, string> {
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
     Accept: 'application/json',
     'Content-Type': 'application/json',
-    'ngrok-skip-browser-warning': '1',
-  }
+    }
 }
 
 async function readJsonSafe<T>(response: Response): Promise<T | null> {
@@ -381,7 +380,7 @@ export default function Sitelist() {
     }
     if (cached) { setPolesByArea(buildMap(cached)); return }
     fetch(`${SKYCABLE_API}/poles/map`, {
-      headers: { Authorization: `Bearer ${getToken()}`, Accept: 'application/json', 'ngrok-skip-browser-warning': '1' },
+      headers: { Authorization: `Bearer ${getToken()}`, Accept: 'application/json', },
     })
       .then(r => r.json())
       .then((rows: any[]) => {

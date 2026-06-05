@@ -140,8 +140,7 @@ function authHeaders() {
   return {
     Authorization: `Bearer ${getToken()}`,
     Accept: 'application/json',
-    'ngrok-skip-browser-warning': '1',
-  }
+    }
 }
 
 function statusLabel(status?: string) {
@@ -295,8 +294,8 @@ export default function NodePolesList() {
 
     loadData(!hitPoles)
 
-    // Auto-poll every 10 seconds for live status updates from mobile teardowns
-    const id = setInterval(() => loadData(false), 10_000)
+    // Auto-poll every 30 seconds for live status updates from mobile teardowns
+    const id = setInterval(() => loadData(false), 30_000)
     return () => clearInterval(id)
   }, [nodeId])
 

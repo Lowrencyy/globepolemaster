@@ -108,7 +108,7 @@ function NodeVicinityMap({ nodeId, nodeName }: { nodeId: number; nodeName: strin
   // Fetch poles silently in background to refresh dynamic state without resetting loader
   useEffect(() => {
     fetch(`${SKYCABLE_API}/nodes/${nodeId}/poles`, {
-      headers: { Authorization: `Bearer ${getToken()}`, Accept: 'application/json', 'ngrok-skip-browser-warning': '1' },
+      headers: { Authorization: `Bearer ${getToken()}`, Accept: 'application/json', },
     })
       .then(r => r.json())
       .then((rows: any) => {
@@ -281,8 +281,7 @@ function h() {
     Authorization: `Bearer ${getToken()}`,
     Accept: 'application/json',
     'Content-Type': 'application/json',
-    'ngrok-skip-browser-warning': '1',
-  }
+    }
 }
 
 function Modal({ title, sub, onClose, maxWidth = 'max-w-lg', children }: { title: string; sub?: string; onClose: () => void; maxWidth?: string; children: React.ReactNode }) {
@@ -564,7 +563,19 @@ export default function SiteNodes() {
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.message ?? 'Failed to add node')
-      closeAll(); loadData()
+      // Optimistic update — add new node to list immediately without waiting for refetch
+      const created: Node = data?.data ?? data
+      if (created?.id) {
+        setNodes(prev => {
+          const updated = [created, ...prev]
+          if (siteId) siteNodesCache.set(siteId, updated)
+          return updated
+        })
+      }
+      closeAll()
+      // Bust cache so background refetch gets full server data (with relations)
+      if (siteId) siteNodesCache.delete(siteId)
+      loadData(true)
     } catch (err) {
       setFormErr(err instanceof Error ? err.message : 'Something went wrong')
     } finally { setSaving(false) }

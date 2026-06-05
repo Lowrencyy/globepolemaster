@@ -2,7 +2,7 @@ import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { getToken, isAdmin, isExecutive, SKYCABLE_API } from '../../lib/auth'
+import { getToken, isAdmin, isExecutive, SKYCABLE_API, API_BASE } from '../../lib/auth'
 import { cacheDel, cacheGet, cacheSet } from '../../lib/cache'
 import { slugify, idFromSlug } from '../../lib/utils'
 
@@ -54,6 +54,7 @@ interface Node {
   span_summaries_sum_expected_tsc?: number | null
   span_summaries_sum_expected_powersupply?: number | null
   span_summaries_sum_expected_ps_housing?: number | null
+  span_summaries_sum_actual_cable?: number | null
   span_summaries_sum_actual_node?: number | null
   span_summaries_sum_actual_amplifier?: number | null
   span_summaries_sum_actual_extender?: number | null
@@ -127,8 +128,7 @@ function h() {
     Authorization: `Bearer ${getToken()}`,
     Accept: 'application/json',
     'Content-Type': 'application/json',
-    'ngrok-skip-browser-warning': '1',
-  }
+    }
 }
 
 // Override status based on last ping age — don't trust stale backend status
@@ -359,6 +359,11 @@ export default function NodePolesSpans() {
   const [editPoleStatus, setEditPoleStatus] = useState<'pending' | 'in_progress' | 'cleared'>('pending')
   const [savingEditPole, setSavingEditPole] = useState(false)
   const [editPoleErr, setEditPoleErr] = useState<string | null>(null)
+  // Before photo lock state for the edit modal
+  const [beforeImageRecord, setBeforeImageRecord] = useState<{ id: number; locked: boolean; image_url: string } | null>(null)
+  const [togglingLock, setTogglingLock] = useState(false)
+  // pole_db_id → true when pole has a before photo in backend
+  const [beforePhotoMap, setBeforePhotoMap] = useState<Record<number, boolean>>({})
   const editMapRef = useRef<HTMLDivElement>(null)
   const editMapObj = useRef<L.Map | null>(null)
   const editMapMarker = useRef<L.Marker | null>(null)
@@ -438,6 +443,18 @@ export default function NodePolesSpans() {
     } finally {
       setLoading(false)
     }
+    // Fetch before photo map in background (non-blocking)
+    fetch(`${API_BASE}/api/v1/teardown/node-images/${nodeId}?inventory_type=skycable&image_type=before`, { headers: h() })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        const imgs: { pole_id: number }[] = Array.isArray(d?.data) ? d.data : []
+        if (imgs.length) {
+          const map: Record<number, boolean> = {}
+          imgs.forEach(i => { map[i.pole_id] = true })
+          setBeforePhotoMap(map)
+        }
+      })
+      .catch(() => {})
   }, [nodeId])
 
   useEffect(() => {
@@ -479,7 +496,7 @@ export default function NodePolesSpans() {
       gps,
       cleared,
       cable:      node?.expected_cable ?? 0,
-      actCable:   node?.actual_cable ?? null,
+      actCable:   node?.span_summaries_sum_actual_cable ?? node?.actual_cable ?? null,
       nodes:      node?.expected_nodes      ?? node?.span_summaries_sum_expected_node      ?? 0,
       amps:       node?.expected_amplifier  ?? node?.span_summaries_sum_expected_amplifier ?? 0,
       exts:       node?.expected_extender   ?? node?.span_summaries_sum_expected_extender  ?? 0,
@@ -841,7 +858,7 @@ export default function NodePolesSpans() {
       } catch {}
     }
     fetchLinemen()
-    const id = setInterval(fetchLinemen, 5_000)   // every 5s for live testing
+    const id = setInterval(fetchLinemen, 30_000)  // every 30s
     return () => clearInterval(id)
   }, [])
 
@@ -1625,7 +1642,14 @@ export default function NodePolesSpans() {
                           </td>
 
                           <td className="px-5 py-3">
-                            <Pill cfg={cfg} dot={cfg.dot} />
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <Pill cfg={cfg} dot={cfg.dot} />
+                              {beforePhotoMap[p.pole_db_id] && (
+                                <span className="inline-flex items-center gap-1 rounded-full bg-red-50 px-2 py-0.5 text-[10px] font-black text-red-600 border border-red-200">
+                                  📷 Before ✓
+                                </span>
+                              )}
+                            </div>
                           </td>
 
                           <td className="px-5 py-3">
@@ -1639,7 +1663,28 @@ export default function NodePolesSpans() {
                                     setEditPoleLng(p.lng ?? '')
                                     setEditPoleStatus(p.skycable_status ?? 'pending')
                                     setEditPoleErr(null)
+                                    setBeforeImageRecord(null)
                                     setEditPoleModal(true)
+                                    // Routes are at /api/v1/teardown/ (no /skycable prefix)
+                                    const TD_API = `${API_BASE}/api/v1`
+                                    fetch(`${TD_API}/teardown/node-images/${nodeId}?inventory_type=skycable&image_type=before&pole_id=${p.pole_db_id}`, { headers: h() })
+                                      .then(r => r.ok ? r.json() : null)
+                                      .then(d => {
+                                        const imgs = Array.isArray(d?.data) ? d.data : []
+                                        // Match by pole_db_id or pivot id as fallback
+                                        const toUrl = (img: any) => img.file_path ? `${API_BASE}/api/v1/files/${img.file_path}` : (img.image_url ?? '')
+                                        const before = imgs.find((i: any) => i.image_type === 'before' && (i.pole_id === p.pole_db_id || i.pole_id === p.id))
+                                        if (before) { setBeforeImageRecord({ id: before.id, locked: !!before.locked, image_url: toUrl(before) }); return }
+                                        // Fallback: all node images, match any before photo for this pole
+                                        return fetch(`${TD_API}/teardown/node-images/${nodeId}?inventory_type=skycable`, { headers: h() })
+                                          .then(r => r.ok ? r.json() : null)
+                                          .then(d2 => {
+                                            const all = Array.isArray(d2?.data) ? d2.data : []
+                                            const b2 = all.find((i: any) => i.image_type === 'before' && (i.pole_id === p.pole_db_id || i.pole_id === p.id))
+                                            if (b2) setBeforeImageRecord({ id: b2.id, locked: !!b2.locked, image_url: toUrl(b2) })
+                                          })
+                                      })
+                                      .catch(() => {})
                                   }}
                                   title="Edit pole"
                                   className="flex h-8 w-8 items-center justify-center rounded-xl text-slate-400 transition hover:bg-emerald-50 hover:text-emerald-600"
@@ -2098,6 +2143,58 @@ export default function NodePolesSpans() {
                 </p>
               )}
             </div>
+
+            {/* Before Photo Lock Control */}
+            {beforeImageRecord && (
+              <div className={`flex items-center justify-between gap-4 rounded-2xl border p-4 ${
+                beforeImageRecord.locked
+                  ? 'border-red-200 bg-red-50 dark:border-red-900/40 dark:bg-red-950/20'
+                  : 'border-emerald-200 bg-emerald-50 dark:border-emerald-900/40 dark:bg-emerald-950/20'
+              }`}>
+                <div className="flex items-center gap-3 min-w-0">
+                  {beforeImageRecord.image_url && (
+                    <img
+                      src={beforeImageRecord.image_url}
+                      alt="Before"
+                      className="h-12 w-12 rounded-xl object-cover shrink-0 border border-black/10"
+                    />
+                  )}
+                  <div className="min-w-0">
+                    <p className="text-xs font-black uppercase tracking-wider text-slate-600 dark:text-slate-300">
+                      Before Photo
+                    </p>
+                    <p className={`text-[11px] font-bold mt-0.5 ${beforeImageRecord.locked ? 'text-red-600' : 'text-emerald-600'}`}>
+                      {beforeImageRecord.locked ? '🔒 Locked — lineman cannot retake' : '🔓 Unlocked — lineman can retake'}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={async () => {
+                    if (!beforeImageRecord || togglingLock) return
+                    setTogglingLock(true)
+                    const endpoint = beforeImageRecord.locked ? 'unlock' : 'lock'
+                    try {
+                      const res = await fetch(`${API_BASE}/api/v1/teardown/images/${beforeImageRecord.id}/${endpoint}`, {
+                        method: 'PATCH',
+                        headers: h(),
+                      })
+                      if (res.ok) {
+                        setBeforeImageRecord(prev => prev ? { ...prev, locked: !prev.locked } : null)
+                      }
+                    } catch {}
+                    setTogglingLock(false)
+                  }}
+                  disabled={togglingLock}
+                  className={`shrink-0 rounded-xl px-4 py-2 text-xs font-black transition disabled:opacity-50 ${
+                    beforeImageRecord.locked
+                      ? 'bg-emerald-600 text-white hover:bg-emerald-700'
+                      : 'bg-red-600 text-white hover:bg-red-700'
+                  }`}
+                >
+                  {togglingLock ? '…' : beforeImageRecord.locked ? 'Allow Retake' : 'Lock Again'}
+                </button>
+              </div>
+            )}
           </Modal>
         )}
 

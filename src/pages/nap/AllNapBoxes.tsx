@@ -453,13 +453,12 @@ export default function AllNapBoxes() {
   const authHeaders = (token: string | null) => ({
     'Content-Type': 'application/json',
     Accept: 'application/json',
-    'ngrok-skip-browser-warning': '1',
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
   })
 
   const loadBoxes = async () => {
     const token = getToken()
-    const headers = { Accept: 'application/json', 'ngrok-skip-browser-warning': '1', ...(token ? { Authorization: `Bearer ${token}` } : {}) }
+    const headers = { Accept: 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }
     setLoading(true)
     setError(null)
     try {
@@ -469,7 +468,7 @@ export default function AllNapBoxes() {
       do {
         const qs = new URLSearchParams({ page: String(page) })
         if (filterStatus !== 'all') qs.set('status', filterStatus)
-        const res  = await fetch(`${GLOBE_API}/poles/0/nap-boxes?${qs}`, { headers })
+        const res  = await fetch(`${GLOBE_API}/nap-boxes?${qs}`, { headers })
         const data: NapBoxListResponse = await res.json()
         allBoxes = [...allBoxes, ...data.data]
         lastPage = data.meta?.last_page ?? data.last_page ?? 1

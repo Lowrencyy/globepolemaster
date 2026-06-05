@@ -72,8 +72,7 @@ async function apiFetch<T>(path: string): Promise<T> {
     headers: {
       Authorization: `Bearer ${getToken()}`,
       Accept: 'application/json',
-      'ngrok-skip-browser-warning': '1',
-    },
+      },
   })
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return res.json()

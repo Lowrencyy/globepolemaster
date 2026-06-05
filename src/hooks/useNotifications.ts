@@ -11,33 +11,53 @@ export interface AppNotification {
   created_at: string
 }
 
-const POLL_MS = 30_000 // poll every 30s
+// Poll only the lightweight count every 60s — not the full list
+const COUNT_POLL_MS = 60_000
 
 export function useNotifications() {
   const [notifications, setNotifications] = useState<AppNotification[]>([])
   const [unreadCount,   setUnreadCount]   = useState(0)
-  const [loading,       setLoading]       = useState(true)
+  const [loading,       setLoading]       = useState(false)
+  const [listLoaded,    setListLoaded]    = useState(false)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  const fetch = useCallback(async () => {
+  // Lightweight poll — only fetches unread count for the badge
+  const pollCount = useCallback(async () => {
+    try {
+      const res = await apiGet<{ unread_count: number }>(
+        '/api/v1/skycable/notifications/unread-count'
+      )
+      setUnreadCount(res.unread_count ?? 0)
+    } catch {
+      // silently fail
+    }
+  }, [])
+
+  // Full list — only called when user opens the notification panel
+  const loadList = useCallback(async () => {
+    if (loading) return
+    setLoading(true)
     try {
       const res = await apiGet<{ notifications: AppNotification[]; unread_count: number }>(
         '/api/v1/skycable/notifications'
       )
       setNotifications(res.notifications ?? [])
       setUnreadCount(res.unread_count ?? 0)
+      setListLoaded(true)
     } catch {
-      // silently fail — don't crash the navbar
+      // silently fail
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [loading])
 
   useEffect(() => {
-    fetch()
-    timerRef.current = setInterval(fetch, POLL_MS)
+    // Initial count fetch on mount
+    pollCount()
+    // Poll count only every 60s — NOT the full list
+    timerRef.current = setInterval(pollCount, COUNT_POLL_MS)
     return () => { if (timerRef.current) clearInterval(timerRef.current) }
-  }, [fetch])
+  }, [pollCount])
 
   const markRead = useCallback(async (id: number) => {
     try {
@@ -55,5 +75,5 @@ export function useNotifications() {
     } catch {}
   }, [])
 
-  return { notifications, unreadCount, loading, markRead, markAllRead, refresh: fetch }
+  return { notifications, unreadCount, loading, listLoaded, markRead, markAllRead, loadList, refresh: loadList }
 }

@@ -40,7 +40,7 @@ const TILES: Record<BaseTile, { url: string; attr: string; label: string }> = {
 }
 
 function authHeaders() {
-  return { Authorization: `Bearer ${getToken()}`, Accept: 'application/json', 'ngrok-skip-browser-warning': '1' }
+  return { Authorization: `Bearer ${getToken()}`, Accept: 'application/json', }
 }
 
 function makeIcon(color: string) {

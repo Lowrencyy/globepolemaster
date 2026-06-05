@@ -1,4 +1,4 @@
-export const API_BASE = 'https://quack-useable-thesaurus.ngrok-free.dev'
+export const API_BASE = 'https://purple-mink-495054.hostingersite.com'
 export const SKYCABLE_API = `${API_BASE}/api/v1/skycable`
 export const GLOBE_API = `${API_BASE}/api/v1/globe`
 

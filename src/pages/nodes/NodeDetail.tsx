@@ -148,8 +148,7 @@ function authHeaders() {
   return {
     Authorization: `Bearer ${getToken()}`,
     Accept: 'application/json',
-    'ngrok-skip-browser-warning': '1',
-  }
+    }
 }
 
 export default function NodeDetail() {

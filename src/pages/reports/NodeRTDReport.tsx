@@ -119,8 +119,7 @@ function authHeaders() {
   return {
     Authorization: `Bearer ${getToken()}`,
     Accept: 'application/json',
-    'ngrok-skip-browser-warning': '1',
-  }
+    }
 }
 
 function safeFileName(value: string) {

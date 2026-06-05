@@ -31,7 +31,6 @@ function buildHeaders(extra?: Record<string, string>): Record<string, string> {
   return {
     'Content-Type': 'application/json',
     Accept: 'application/json',
-    'ngrok-skip-browser-warning': '1',
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
     ...extra,
   }
@@ -67,6 +66,13 @@ export async function apiGet<T = any>(path: string): Promise<T> {
     }
 
     if (!response.ok) {
+      // 401 = token expired / invalid — clear session and redirect to login
+      if (response.status === 401) {
+        localStorage.removeItem('auth_token')
+        localStorage.removeItem('auth_user')
+        window.location.href = '/login'
+        throw new Error('Session expired. Please log in again.')
+      }
       if (stale) return stale.data
       const text = await response.text()
       let msg = 'Request failed'
@@ -99,6 +105,12 @@ async function mutate(method: string, path: string, body?: unknown): Promise<any
   let data: any = {}
   try { data = JSON.parse(text) } catch { data = { message: text } }
   if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('auth_token')
+      localStorage.removeItem('auth_user')
+      window.location.href = '/login'
+      throw new Error('Session expired.')
+    }
     const err: any = new Error(data?.message ?? 'Request failed')
     err.status = res.status
     err.data = data

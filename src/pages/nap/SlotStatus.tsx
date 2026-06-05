@@ -241,7 +241,6 @@ export default function SlotStatus() {
     const token = getToken()
     const headers: Record<string, string> = {
       Accept: 'application/json',
-      'ngrok-skip-browser-warning': '1',
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     }
 

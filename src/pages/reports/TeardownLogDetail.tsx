@@ -93,8 +93,7 @@ interface PoleReportDetail {
 const authH = () => ({
   Authorization: `Bearer ${getToken()}`,
   Accept: 'application/json',
-  'ngrok-skip-browser-warning': '1',
-})
+  })
 
 const SPAN_PHOTO_ALIASES: Record<string, string[]> = {
   from_before: ['from_before', 'from_before_photo'],
@@ -158,11 +157,32 @@ function storagePhotoCandidates(siteName: string | null | undefined, poleCode: s
   return Array.from(new Set(candidates))
 }
 
-function imageCandidates(primary: string | null, fallback: string[]) {
-  return Array.from(new Set([
-    ...(primary ? [primary] : []),
-    ...fallback,
-  ]))
+function imageCandidates(
+  primary: string | null,
+  ...fallbacks: Array<unknown>
+) {
+  const out: string[] = []
+  const seen = new Set<string>()
+
+  const push = (value: unknown) => {
+    if (typeof value !== 'string') return
+    const clean = value.trim()
+    if (!clean || seen.has(clean)) return
+    seen.add(clean)
+    out.push(clean)
+  }
+
+  push(primary)
+
+  for (const fallback of fallbacks) {
+    if (Array.isArray(fallback)) {
+      for (const item of fallback) push(item)
+      continue
+    }
+    push(fallback)
+  }
+
+  return out
 }
 
 function photoKind(type: string) {
@@ -307,7 +327,7 @@ function fetchCachedBlob(src: string): Promise<string | null> {
   if (hit) return Promise.resolve(hit)
   const inflight = _imgFlight.get(src)
   if (inflight) return inflight
-  const p = fetch(src, { headers: { 'ngrok-skip-browser-warning': '1', Authorization: `Bearer ${getToken()}` } })
+  const p = fetch(src, { headers: { Authorization: `Bearer ${getToken()}` } })
     .then(r => {
       if (!r.ok) throw new Error(`Image request failed: ${r.status}`)
       const contentType = r.headers.get('content-type')?.toLowerCase() ?? ''
@@ -556,6 +576,8 @@ function TeardownView({ log, onBack }: { log: TeardownLog; onBack: () => void })
   const [lightbox, setLightbox] = useState<string | null>(null)
   const mapRef  = useRef<HTMLDivElement>(null)
   const mapInst = useRef<L.Map | null>(null)
+  // pole_id → batch-before photo URL (from pole_teardown_images where report_id is null)
+  const [batchBeforeMap, setBatchBeforeMap] = useState<Record<number, string>>({})
 
   const span      = log.span
   const spanCode  = span?.span_code ?? `Log #${log.id}`
@@ -569,6 +591,29 @@ function TeardownView({ log, onBack }: { log: TeardownLog; onBack: () => void })
   const toCode   = toPole?.pole?.pole_code   ?? '—'
   const fromPoleId = fromPole?.pole?.id ?? fromPole?.pole_id ?? fromPole?.id ?? null
   const toPoleId = toPole?.pole?.id ?? toPole?.pole_id ?? toPole?.id ?? null
+
+  // Fetch batch-before photos for both poles as fallback
+  useEffect(() => {
+    const poleIds = [fromPoleId, toPoleId].filter(Boolean) as number[]
+    if (!poleIds.length) return
+    Promise.all(poleIds.map(pid =>
+      fetch(`${API_BASE}/api/v1/teardown/pole-images/${pid}?inventory_type=skycable&image_type=before`, {
+        headers: { Authorization: `Bearer ${getToken()}`, },
+      })
+        .then(r => r.ok ? r.json() : null)
+        .then(d => {
+          const imgs: any[] = Array.isArray(d?.data) ? d.data : []
+          const before = imgs.find((i: any) => i.image_type === 'before')
+          if (before?.file_path) return { pid, url: `${API_BASE}/api/v1/files/${before.file_path}` }
+          return null
+        })
+        .catch(() => null)
+    )).then(results => {
+      const map: Record<number, string> = {}
+      results.forEach(r => { if (r) map[r.pid] = r.url })
+      if (Object.keys(map).length) setBatchBeforeMap(map)
+    })
+  }, [fromPoleId, toPoleId])
 
   const fromLat = Number(fromPole?.pole?.lat ?? 0)
   const fromLng = Number(fromPole?.pole?.lng ?? 0)
@@ -838,7 +883,7 @@ function TeardownView({ log, onBack }: { log: TeardownLog; onBack: () => void })
               </div>
             </div>
             <div className="grid grid-cols-3 gap-2.5">
-              <PhotoSlot label="Before" src={imageCandidates(photo('from_before', fromPoleId), fallbackPhoto(fromCode, fromPoleId, 'before'))} onZoom={setLightbox} />
+              <PhotoSlot label="Before" src={imageCandidates(photo('from_before', fromPoleId), batchBeforeMap[fromPoleId as number], fallbackPhoto(fromCode, fromPoleId, 'before'))} onZoom={setLightbox} />
               <PhotoSlot label="After"  src={imageCandidates(photo('from_after', fromPoleId), fallbackPhoto(fromCode, fromPoleId, 'after'))} onZoom={setLightbox} />
               <PhotoSlot label="Tag"    src={imageCandidates(photo('from_pole_tag', fromPoleId), fallbackPhoto(fromCode, fromPoleId, 'poletag'))} onZoom={setLightbox} />
             </div>
@@ -854,7 +899,7 @@ function TeardownView({ log, onBack }: { log: TeardownLog; onBack: () => void })
               </div>
             </div>
             <div className="grid grid-cols-3 gap-2.5">
-              <PhotoSlot label="Before" src={imageCandidates(photo('to_before', toPoleId), fallbackPhoto(toCode, toPoleId, 'before'))} onZoom={setLightbox} />
+              <PhotoSlot label="Before" src={imageCandidates(photo('to_before', toPoleId), batchBeforeMap[toPoleId as number], fallbackPhoto(toCode, toPoleId, 'before'))} onZoom={setLightbox} />
               <PhotoSlot label="After"  src={imageCandidates(photo('to_after', toPoleId), fallbackPhoto(toCode, toPoleId, 'after'))} onZoom={setLightbox} />
               <PhotoSlot label="Tag"    src={imageCandidates(photo('to_pole_tag', toPoleId), fallbackPhoto(toCode, toPoleId, 'poletag'))} onZoom={setLightbox} />
             </div>

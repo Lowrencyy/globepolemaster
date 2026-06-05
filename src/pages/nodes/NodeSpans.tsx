@@ -278,8 +278,7 @@ function authHeaders() {
     Authorization: `Bearer ${getToken()}`,
     Accept: "application/json",
     "Content-Type": "application/json",
-    "ngrok-skip-browser-warning": "1",
-  };
+    };
 }
 
 function getComp(span: Span, type: string): number | null {
@@ -1426,22 +1425,31 @@ export default function NodeSpans() {
     if ((window as any).google?.maps?.StreetViewService) return Promise.resolve()
     return new Promise((resolve, reject) => {
       if (document.getElementById('__gm_script')) {
-        // Already loading — poll until ready
+        // Already loading — poll until ready with timeout
+        let waited = 0
         const poll = setInterval(() => {
+          waited += 100
           if ((window as any).google?.maps?.StreetViewService) { clearInterval(poll); resolve() }
+          else if (waited > 15000) { clearInterval(poll); reject(new Error('Google Maps load timeout')) }
         }, 100)
         return
       }
       const cbName = '__gm_init__'
       const apiKey = getGoogleMapsApiKey()
-      ;(window as any)[cbName] = resolve
+      ;(window as any)[cbName] = () => {
+        resolve()
+        delete (window as any)[cbName]
+      }
       const s = document.createElement('script')
       s.id = '__gm_script'
       s.src = apiKey
-        ? `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(apiKey)}&v=weekly&callback=${cbName}`
-        : `https://maps.googleapis.com/maps/api/js?v=weekly&callback=${cbName}`
+        ? `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(apiKey)}&v=weekly&libraries=streetview&callback=${cbName}`
+        : `https://maps.googleapis.com/maps/api/js?v=weekly&libraries=streetview&callback=${cbName}`
       s.async = true
-      s.onerror = reject
+      s.onerror = () => {
+        document.getElementById('__gm_script')?.remove()
+        reject(new Error('Failed to load Google Maps API'))
+      }
       document.head.appendChild(s)
     })
   }
@@ -1556,8 +1564,15 @@ export default function NodeSpans() {
         setPanoReady(true)
         setPanoLoading(false)
       })
-      .catch(() => {
+      .catch((err: any) => {
         if (cancelled || reqId !== svReqRef.current) return
+        // If Google Maps failed to load entirely, remove the script tag so
+        // next attempt can retry loading it fresh
+        if (err?.message?.includes('load') || err?.message?.includes('timeout')) {
+          document.getElementById('__gm_script')?.remove()
+          delete (window as any).__gm_init__
+          delete (window as any).google
+        }
         setPanoUnavailable(true)
         setPanoLoading(false)
       })
@@ -1720,19 +1735,44 @@ export default function NodeSpans() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.message ?? "Failed to add pole");
-      // Clear pick state and refresh poles list
+
+      // Clear pick marker and close modal immediately
       pickMarkerRef.current?.remove();
       pickMarkerRef.current = null;
       setAddPoleModalOpen(false);
       setAddPoleMode(false);
-      // Reload poles
-      const pr = await fetch(`${SKYCABLE_API}/nodes/${nodeId}/poles`, {
-        headers: authHeaders(),
-      });
-      const pd = await pr.json();
-      const arr = Array.isArray(pd) ? pd : (pd?.data ?? []);
-      setPoles(arr);
-      cacheSet(`nodespans_${nodeId}_poles`, arr);
+
+      // Optimistic update — build PoleOption from POST response so list updates instantly
+      const payload = data?.data ?? data;
+      const createdPole = payload?.pole ?? null;
+      const createdNodePole = payload?.node_pole ?? null;
+      if (createdPole?.id && createdNodePole?.id) {
+        const optimistic: PoleOption = {
+          id: createdNodePole.id,
+          sequence: createdNodePole.sequence ?? (poles.length + 1),
+          pole: {
+            id: createdPole.id,
+            pole_code: createdPole.pole_code ?? addPoleCode.trim().toUpperCase(),
+            lat: (createdPole.lat ?? addPoleLat) || null,
+            lng: (createdPole.lng ?? addPoleLng) || null,
+            skycable_status: createdPole.skycable_status ?? "pending",
+          },
+        };
+        setPoles(prev => {
+          const updated = [...prev, optimistic];
+          cacheSet(`nodespans_${nodeId}_poles`, updated);
+          return updated;
+        });
+      }
+
+      // Background refetch for full server data
+      fetch(`${SKYCABLE_API}/nodes/${nodeId}/poles`, { headers: authHeaders() })
+        .then(pr => pr.json())
+        .then(pd => {
+          const arr = Array.isArray(pd) ? pd : (pd?.data ?? []);
+          if (arr.length) { setPoles(arr); cacheSet(`nodespans_${nodeId}_poles`, arr); }
+        })
+        .catch(() => {});
     } catch (err) {
       setAddPoleError(
         err instanceof Error ? err.message : "Something went wrong",
@@ -1933,6 +1973,7 @@ export default function NodeSpans() {
   const poleLabel = (p: PoleOption) => p.pole?.pole_code ?? `Pole #${p.id}`;
   const dash = <span className="text-slate-300 dark:text-zinc-600">—</span>;
   const n = (v: number | null | undefined) => (v != null ? v : dash);
+  const mapPanelHeight = "clamp(520px, calc(100vh - 290px), 860px)";
 
   /* ── Map step indicator ── */
   const mapStep = !mapFrom ? 1 : !mapTo ? 2 : 3;
@@ -2192,23 +2233,23 @@ export default function NodeSpans() {
 
         {/* Map + Sidebar layout */}
         {viewMode === "map" && (
-          <div className="flex" style={{ minHeight: 420 }}>
+          <div className="flex flex-col lg:flex-row" style={{ minHeight: mapPanelHeight }}>
             {/* GPS Leaflet map */}
             <div
-              className="relative flex-1 overflow-hidden border-r border-slate-100 dark:border-zinc-700"
-              style={{ minHeight: 420 }}
+              className="relative flex-1 overflow-hidden border-b border-slate-100 lg:border-b-0 lg:border-r dark:border-zinc-700"
+              style={{ minHeight: mapPanelHeight }}
             >
               {polesLoading ? (
                 <div
                   className="flex h-full items-center justify-center"
-                  style={{ minHeight: 420 }}
+                  style={{ minHeight: mapPanelHeight }}
                 >
                   <i className="bx bx-loader-alt animate-spin text-2xl text-sky-500" />
                 </div>
               ) : polesError ? (
                 <div
                   className="flex h-full flex-col items-center justify-center gap-2 text-sm text-red-500"
-                  style={{ minHeight: 420 }}
+                  style={{ minHeight: mapPanelHeight }}
                 >
                   <i className="bx bx-error-circle text-2xl" />
                   {polesError}
@@ -2216,11 +2257,11 @@ export default function NodeSpans() {
               ) : (
                 <div
                   className="relative"
-                  style={{ width: "100%", height: "100%", minHeight: 420 }}
+                  style={{ width: "100%", height: "100%", minHeight: mapPanelHeight }}
                 >
                   <div
                     ref={gpsMapRef}
-                    style={{ width: "100%", height: "100%", minHeight: 420 }}
+                    style={{ width: "100%", height: "100%", minHeight: mapPanelHeight }}
                   />
                   {/* Area search */}
                   <div className="absolute left-3 top-3 z-[999] w-64">
@@ -2337,15 +2378,29 @@ export default function NodeSpans() {
                       {panoUnavailable && (
                         <div className="absolute inset-0 flex items-center justify-center bg-slate-950 px-6">
                           <div className="flex flex-col items-center justify-center gap-3 text-center">
-                          <i className="bx bx-street-view text-5xl text-white/10" />
-                          <p className="text-sm font-black text-white/50">No Street View here</p>
-                          <p className="text-xs text-white/30">Try clicking a different spot</p>
-                          <a href={`https://www.google.com/maps?q=${(streetViewCoords ?? streetViewTarget).lat},${(streetViewCoords ?? streetViewTarget).lng}&z=19&t=h`}
-                            target="_blank" rel="noopener noreferrer"
-                            className="mt-1 flex items-center gap-1.5 rounded-xl bg-sky-600/70 px-3 py-1.5 text-[11px] font-black text-white hover:bg-sky-500 transition">
-                            <i className="bx bx-map text-xs" /> View Satellite
-                          </a>
-                        </div>
+                            <i className="bx bx-street-view text-5xl text-white/10" />
+                            <p className="text-sm font-bold text-white/50">No Street View coverage here</p>
+                            <p className="text-xs text-white/30">This area may not have Street View imagery.<br/>Try clicking a pole along a main road.</p>
+                            <div className="mt-1 flex gap-2">
+                              <button
+                                onClick={() => {
+                                  // Retry — clears unavailable flag and tries again
+                                  setPanoUnavailable(false)
+                                  setPanoLoading(true)
+                                }}
+                                className="flex items-center gap-1.5 rounded-xl bg-white/10 px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-white/20 transition"
+                              >
+                                <i className="bx bx-refresh text-xs" /> Retry
+                              </button>
+                              {streetViewTarget && (
+                                <a href={`https://www.google.com/maps?q=${(streetViewCoords ?? streetViewTarget).lat},${(streetViewCoords ?? streetViewTarget).lng}&z=19&t=h`}
+                                  target="_blank" rel="noopener noreferrer"
+                                  className="flex items-center gap-1.5 rounded-xl bg-sky-600/70 px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-sky-500 transition">
+                                  <i className="bx bx-map text-xs" /> Open in Maps
+                                </a>
+                              )}
+                            </div>
+                          </div>
                         </div>
                       )}
                     </div>
@@ -2378,8 +2433,8 @@ export default function NodeSpans() {
 
             {/* Sidebar */}
             <div
-              className="w-[260px] shrink-0 overflow-y-auto"
-              style={{ maxHeight: 480 }}
+              className="w-full shrink-0 overflow-y-auto lg:w-[260px]"
+              style={{ height: mapPanelHeight, maxHeight: mapPanelHeight }}
             >
               {/* Legend */}
               <div className="border-b border-slate-100 px-4 py-3 dark:border-zinc-700">

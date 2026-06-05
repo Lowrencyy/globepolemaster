@@ -155,8 +155,7 @@ function authHeaders() {
     Authorization: `Bearer ${getToken()}`,
     Accept: 'application/json',
     'Content-Type': 'application/json',
-    'ngrok-skip-browser-warning': '1',
-  }
+    }
 }
 
 function Chevron() {

@@ -70,7 +70,7 @@ async function _fetchAndCache(url: string): Promise<string> {
     // ArcGIS tiles don't need auth; skip ngrok warning header for external domains
     ...(url.includes('arcgisonline') || url.includes('openstreetmap') || url.includes('carto')
       ? {}
-      : { headers: { 'ngrok-skip-browser-warning': '1' } }),
+      : { headers: { } }),
   })
 
   if (!res.ok) throw new Error(`Tile HTTP ${res.status}`)
