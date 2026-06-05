@@ -1,104 +1,117 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import logoImg from '../assets/images/logo.png'
+import { getHomeRoute } from '../lib/auth'
 
-const STEPS = [
-  'Authenticating credentials…',
-  'Loading user permissions…',
-  'Fetching pole inventory…',
-  'Syncing field data…',
-  'Preparing dashboard…',
-]
+const LINE1 = 'TELCOVANTAGE'.split('')
+const LINE2 = 'PHILIPPINES'.split('')
 
 export default function LoadingScreen() {
   const navigate = useNavigate()
-  const [progress, setProgress] = useState(0)
-  const [stepIdx, setStepIdx]   = useState(0)
-  const [fadeOut, setFadeOut]   = useState(false)
+  const [phase, setPhase] = useState<'intro' | 'explode'>('intro')
+  const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
 
   useEffect(() => {
-    const totalMs   = 2800
-    const tickMs    = 30
-    const increment = 100 / (totalMs / tickMs)
+    // After text animates in → trigger circle explosion
+    timerRef.current = setTimeout(() => setPhase('explode'), 1600)
+    return () => clearTimeout(timerRef.current)
+  }, [])
 
-    const ticker = setInterval(() => {
-      setProgress(p => {
-        const next = Math.min(p + increment, 100)
-        setStepIdx(Math.min(Math.floor((next / 100) * STEPS.length), STEPS.length - 1))
-        return next
-      })
-    }, tickMs)
-
-    const done = setTimeout(() => {
-      clearInterval(ticker)
-      setProgress(100)
-      setFadeOut(true)
-      setTimeout(() => navigate('/dashboard', { replace: true }), 500)
-    }, totalMs)
-
-    return () => { clearInterval(ticker); clearTimeout(done) }
-  }, [navigate])
+  useEffect(() => {
+    if (phase !== 'explode') return
+    timerRef.current = setTimeout(() => {
+      navigate(getHomeRoute(), { replace: true })
+    }, 950)
+    return () => clearTimeout(timerRef.current)
+  }, [phase, navigate])
 
   return (
-    <div
-      className={`fixed inset-0 flex flex-col items-center justify-center transition-opacity duration-500 ${fadeOut ? 'opacity-0' : 'opacity-100'}`}
-      style={{ background: 'linear-gradient(135deg, #1e1b4b 0%, #312e81 40%, #4c1d95 100%)' }}
-    >
-      {/* Animated background rings */}
-      <div className="absolute inset-0 overflow-hidden pointer-events-none">
-        {[1, 2, 3].map(i => (
-          <div key={i} className="absolute rounded-full border border-white/5"
-            style={{
-              width:  `${i * 300}px`,
-              height: `${i * 300}px`,
-              top:  '50%', left: '50%',
-              transform: 'translate(-50%, -50%)',
-              animation: `pulse ${2 + i * 0.8}s ease-in-out infinite`,
-            }}
-          />
-        ))}
-      </div>
+    <div className="fixed inset-0 flex flex-col items-center justify-center overflow-hidden bg-white">
 
-   
+      {/* Green circle explosion */}
+      <div
+        className="absolute rounded-full"
+        style={{
+          width: 120, height: 120,
+          background: '#0A5C3B',
+          top: '50%', left: '50%',
+          transform: 'translate(-50%, -50%)',
+          animation: phase === 'explode'
+            ? 'circleExplode 0.9s cubic-bezier(.55,.0,.1,1) forwards'
+            : 'none',
+        }}
+      />
 
-      {/* Spinner */}
-      <div className="relative z-10 mb-8">
-        <svg className="w-12 h-12 animate-spin" viewBox="0 0 48 48" fill="none">
-          <circle cx="24" cy="24" r="20" stroke="rgba(255,255,255,0.15)" strokeWidth="4" />
-          <path d="M24 4 a20 20 0 0 1 20 20" stroke="#a78bfa" strokeWidth="4" strokeLinecap="round" />
-        </svg>
-        <div className="absolute inset-0 flex items-center justify-center">
-          <div className="w-3 h-3 rounded-full bg-violet-400 animate-pulse" />
+      {/* Text content */}
+      <div
+        className="relative z-10 flex flex-col items-center"
+        style={{
+          animation: phase === 'explode'
+            ? 'contentZoom 0.9s cubic-bezier(.55,.0,.1,1) forwards'
+            : 'none',
+        }}
+      >
+        {/* TELCOVANTAGE */}
+        <div className="flex items-center justify-center gap-[1px] mb-1">
+          {LINE1.map((char, i) => (
+            <span
+              key={i}
+              className="letter-anim"
+              style={{
+                fontSize: 32,
+                fontWeight: 900,
+                color: '#0A5C3B',
+                letterSpacing: 3,
+                animationDelay: `${0.15 + i * 0.045}s`,
+              }}
+            >
+              {char}
+            </span>
+          ))}
+        </div>
+
+        {/* PHILIPPINES */}
+        <div className="flex items-center justify-center gap-[1px]">
+          {LINE2.map((char, i) => (
+            <span
+              key={i}
+              className="letter-anim"
+              style={{
+                fontSize: 20,
+                fontWeight: 700,
+                color: '#202020',
+                letterSpacing: 6,
+                animationDelay: `${0.75 + i * 0.045}s`,
+              }}
+            >
+              {char}
+            </span>
+          ))}
         </div>
       </div>
-
-      {/* Progress bar */}
-      <div className="relative z-10 w-72 mb-4">
-        <div className="h-1.5 w-full rounded-full bg-white/10 overflow-hidden">
-          <div
-            className="h-full rounded-full transition-all duration-75"
-            style={{
-              width: `${progress}%`,
-              background: 'linear-gradient(90deg, #8b5cf6, #a78bfa)',
-              boxShadow: '0 0 10px #a78bfa88',
-            }}
-          />
-        </div>
-        <div className="flex justify-between mt-1.5 text-[10px] text-white/30 font-mono">
-          <span>{Math.round(progress)}%</span>
-          <span>100%</span>
-        </div>
-      </div>
-
-      {/* Step label */}
-      <p className="relative z-10 text-sm text-white/60 font-medium tracking-wide min-h-[20px]">
-        {STEPS[stepIdx]}
-      </p>
 
       <style>{`
-        @keyframes pulse {
-          0%, 100% { opacity: 0.4; transform: translate(-50%, -50%) scale(1); }
-          50%       { opacity: 0.1; transform: translate(-50%, -50%) scale(1.05); }
+        /* Letter fade+slide up */
+        .letter-anim {
+          opacity: 0;
+          display: inline-block;
+          transform: translateY(14px) scale(0.9);
+          animation: letterIn 0.28s cubic-bezier(.22,1,.36,1) forwards;
+        }
+        @keyframes letterIn {
+          to { opacity: 1; transform: translateY(0) scale(1); }
+        }
+
+        /* Circle expands to fill screen */
+        @keyframes circleExplode {
+          0%   { transform: translate(-50%,-50%) scale(1); opacity: 1; }
+          100% { transform: translate(-50%,-50%) scale(30); opacity: 1; }
+        }
+
+        /* Text zooms + fades out as circle expands */
+        @keyframes contentZoom {
+          0%   { opacity: 1; transform: scale(1) translateY(0); }
+          40%  { opacity: 1; }
+          100% { opacity: 0; transform: scale(3.5) translateY(-20px); }
         }
       `}</style>
     </div>

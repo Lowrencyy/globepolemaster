@@ -1,7 +1,7 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import logoImg from '../assets/images/logo.png'
-import { apiLogin, saveToken, saveUser } from '../lib/auth'
+import logoImg from '../assets/images/telcovantage-logo.png'
+import { apiLogin, getToken, mustChangePassword, saveToken, saveUser } from '../lib/auth'
 
 export default function Login() {
   const navigate = useNavigate()
@@ -10,6 +10,13 @@ export default function Login() {
   const [showPassword, setShowPassword] = useState(false)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+
+  // Auto-redirect if already logged in
+  useEffect(() => {
+    if (getToken()) {
+      navigate(mustChangePassword() ? '/change-password' : '/loading', { replace: true })
+    }
+  }, [navigate])
 
   const handleSubmit = async (e: React.SyntheticEvent<HTMLFormElement>) => {
     e.preventDefault()
@@ -21,7 +28,8 @@ export default function Login() {
       if (token) saveToken(token)
       if (data.user) saveUser(data.user)
       console.log('[auth] login response:', data)
-      navigate('/loading')
+      const needsReset = !!(data.password_reset_required || data.user?.password_reset_required)
+      navigate(needsReset ? '/change-password' : '/loading')
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Invalid credentials.')
     } finally {
@@ -41,7 +49,7 @@ export default function Login() {
 
                 <div className="mx-auto mb-12">
                   <a href="/">
-                    <img src={logoImg} alt="Logo" className="h-12 w-auto object-contain" />
+                    <img src={logoImg} alt="TelcoVantage" className="h-16 w-auto object-contain" />
                   </a>
                 </div>
 
@@ -114,8 +122,12 @@ export default function Login() {
               <div className="absolute inset-0 bg-gradient-to-br from-black/70 via-black/50 to-black/70"></div>
               <div className="relative z-10 flex items-center justify-center h-full">
                 <div className="text-center px-8">
-                  <h2 className="text-6xl font-extrabold mb-6 text-white drop-shadow-lg">Welcome to the Dashboard</h2>
-                  <p className="text-2xl font-semibold text-white drop-shadow-md">Sign in to access your account and manage everything from one place.</p>
+                  <h2 className="text-5xl font-extrabold mb-4 text-white drop-shadow-lg leading-tight">
+                    Welcome to<br/>TelcoVantage Philippines<br/>Dashboard
+                  </h2>
+                  <p className="text-xl font-medium text-white/80 drop-shadow-md mt-4">
+                    Please sign in to access your account and manage field operations, teardown reports, and network spans in real time.
+                  </p>
                 </div>
               </div>
             </div>

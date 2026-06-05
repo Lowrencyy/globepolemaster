@@ -21,6 +21,7 @@ import SubcontractorDetail from './pages/subcontractors/SubcontractorDetail'
 import TeamDetail from './pages/subcontractors/TeamDetail'
 import SubcontractorTeams from './pages/subcontractors/SubcontractorTeams'
 import LoadingScreen from './pages/LoadingScreen'
+import ChangePassword from './pages/ChangePassword'
 import Sitelist from './pages/sites/Sitelist'
 import SiteNodes from './pages/sites/SiteNodes'
 import SiteDetail from './pages/sites/SiteDetail'
@@ -41,7 +42,7 @@ import VicinityReports from './pages/reports/VicinityReports'
 import NodeVicinityMap from './pages/reports/NodeVicinityMap'
 import PoleReports from './pages/reports/PoleReports'
 import NodePoleReport from './pages/reports/NodePoleReport'
-import { isAuthenticated, getAppRole, getHomeRoute } from './lib/auth'
+import { isAuthenticated, getAppRole, getHomeRoute, mustChangePassword } from './lib/auth'
 import type { AppRole } from './lib/auth'
 import ClientDashboard from './pages/client/ClientDashboard'
 import SubconDashboard from './pages/subcon/SubconDashboard'
@@ -63,6 +64,13 @@ function WarehouseInventoryPage() {
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   if (!isAuthenticated()) return <Navigate to="/login" replace />
+  if (mustChangePassword()) return <Navigate to="/change-password" replace />
+  return <>{children}</>
+}
+
+function ChangePasswordRoute({ children }: { children: React.ReactNode }) {
+  if (!isAuthenticated()) return <Navigate to="/login" replace />
+  if (!mustChangePassword()) return <Navigate to={getHomeRoute()} replace />
   return <>{children}</>
 }
 
@@ -250,6 +258,7 @@ export default function App() {
       {status?.any_active && <MaintenancePage />}
       <Routes>
         <Route path="/login" element={<Login />} />
+        <Route path="/change-password" element={<ChangePasswordRoute><ChangePassword /></ChangePasswordRoute>} />
         <Route path="/loading" element={<ProtectedRoute><LoadingScreen /></ProtectedRoute>} />
 
         {/* ── Client-only dashboard (no sidebar layout) ── */}

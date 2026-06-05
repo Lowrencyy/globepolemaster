@@ -1,16 +1,17 @@
-export const API_BASE = 'https://purple-mink-495054.hostingersite.com'
+export const API_BASE = 'https://telcovantage.com'
 export const SKYCABLE_API = `${API_BASE}/api/v1/skycable`
 export const GLOBE_API = `${API_BASE}/api/v1/globe`
 
 export interface LoginResponse {
   token?: string
   access_token?: string
+  password_reset_required?: boolean
   user?: Record<string, unknown>
   message?: string
 }
 
 export async function apiLogin(email: string, password: string): Promise<LoginResponse> {
-  const res = await fetch(`${API_BASE}/api/v1/skycable/auth/login`, {
+  const res = await fetch(`${API_BASE}/api/v1/globe/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
     body: JSON.stringify({ email, password }),
@@ -44,6 +45,43 @@ export function saveUser(user: Record<string, unknown>) {
 export function getUser(): Record<string, unknown> | null {
   const raw = localStorage.getItem('auth_user')
   return raw ? JSON.parse(raw) : null
+}
+
+export function mustChangePassword(): boolean {
+  const user = getUser()
+  return !!(user?.password_reset_required)
+}
+
+export async function apiChangePassword(password: string, passwordConfirmation: string) {
+  const res = await fetch(`${API_BASE}/api/v1/globe/auth/change-password`, {
+    method: 'POST',
+    headers: buildAuthHeaders(),
+    body: JSON.stringify({
+      password,
+      password_confirmation: passwordConfirmation,
+      password_reset_required: true,
+    }),
+  })
+
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(data.message || 'Could not change password.')
+  return data
+}
+
+export function clearPasswordResetFlag() {
+  const user = getUser()
+  if (!user) return
+  user.password_reset_required = false
+  saveUser(user)
+}
+
+function buildAuthHeaders(): Record<string, string> {
+  const token = getToken()
+  return {
+    'Content-Type': 'application/json',
+    Accept: 'application/json',
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  }
 }
 
 function checkRoleValue(val: unknown): boolean {
