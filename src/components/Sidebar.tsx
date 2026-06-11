@@ -306,6 +306,15 @@ export default function Sidebar() {
             )}
 
             {/* System users — admin only */}
+            {(admin || executive) && (
+              <li className={pathname === '/support/tickets' ? 'mm-active' : ''}>
+                <Link to="/support/tickets" className={pathname === '/support/tickets' ? activeLinkCls : linkCls}>
+                  <i data-feather="message-square" />
+                  <span>Support Tickets</span>
+                </Link>
+              </li>
+            )}
+
             {admin && (
               <>
                 <li className={labelCls}>System</li>

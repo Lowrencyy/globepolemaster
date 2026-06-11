@@ -28,6 +28,21 @@ body {
   cursor: grabbing !important;
 }
 
+.leaflet-tooltip.span-length-tooltip {
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+}
+
+.leaflet-tooltip.span-length-tooltip::before {
+  display: none !important;
+}
+
+.leaflet-tooltip.span-length-tooltip button {
+  pointer-events: auto;
+}
+
 /* Ensure map tiles and overlays receive pointer events */
 .leaflet-container .leaflet-pane,
 .leaflet-container .leaflet-pane * {

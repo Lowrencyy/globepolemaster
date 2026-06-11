@@ -4,13 +4,24 @@ import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 import { getToken, SKYCABLE_API, isAdmin } from '../../lib/auth'
 import { cacheGet, cacheSet, cacheDel, TTL } from '../../lib/cache'
+import { fetchTile } from '../../lib/tile-cache'
 import { slugify } from '../../lib/utils'
-import { fetchTile, arcgisTileUrl } from '../../lib/tile-cache'
 import telcoImg from '../../assets/images/telco.png'
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
 type SpanStatus = 'pending' | 'in_progress' | 'completed' | 'cancelled'
+
+type SpanSummary = {
+  expected_node?: number | null
+  expected_amplifier?: number | null
+  expected_extender?: number | null
+  expected_tsc?: number | null
+  expected_powersupply?: number | null
+  expected_ps_housing?: number | null
+  expected_cable?: number | null
+  actual_cable?: number | null
+}
 
 type PolePin = { lat: number; lng: number; status: string; area: string }
 
@@ -25,6 +36,7 @@ type Area = {
 
 type NodeItem = {
   id: number
+  node_id?: string | null
   name: string
   full_label?: string | null
   status: 'pending' | 'in_progress' | 'completed'
@@ -42,6 +54,7 @@ type Span = {
   number_of_runs?: number | null
   actual_cable?: number | null
   status: SpanStatus
+  summary?: SpanSummary | null
   from_pole?: { id: number; pole?: { id: number; pole_code: string } | null } | null
   to_pole?: { id: number; pole?: { id: number; pole_code: string } | null } | null
 }
@@ -59,9 +72,25 @@ type AddForm = {
   span_code: string
   strand_length: string
   number_of_runs: string
+  nodes_count: string
+  amplifier: string
+  extender: string
+  tsc: string
+  power_supply: string
+  power_supply_case: string
 }
 
-type PoleOption = { id: number; pole_code: string; lat?: string | null; lng?: string | null }
+type PoleOption = {
+  id: number
+  pole_db_id?: number | null
+  pole_index?: string | number | null
+  pole_code: string
+  lat?: string | null
+  lng?: string | null
+  skycable_status?: string | null
+}
+
+type LatLngPoint = { lat: number; lng: number }
 
 // ── Brand UI ─────────────────────────────────────────────────────────────────
 
@@ -102,6 +131,48 @@ const REGION_ORDER = [
 ]
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+const sameLatLng = (a: LatLngPoint | null, b: LatLngPoint | null, epsilon = 1e-7) =>
+  !!a &&
+  !!b &&
+  Math.abs(a.lat - b.lat) < epsilon &&
+  Math.abs(a.lng - b.lng) < epsilon
+
+const normalizeHeading = (heading: number) => ((heading % 360) + 360) % 360
+
+const headingToCardinal = (heading: number) => {
+  const directions = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW']
+  return directions[Math.round(normalizeHeading(heading) / 45) % directions.length]
+}
+
+function projectPoint(origin: LatLngPoint, heading: number, meters = 12): LatLngPoint {
+  const earthRadius = 6378137
+  const angularDistance = meters / earthRadius
+  const bearing = normalizeHeading(heading) * Math.PI / 180
+  const lat1 = origin.lat * Math.PI / 180
+  const lng1 = origin.lng * Math.PI / 180
+
+  const lat2 = Math.asin(
+    Math.sin(lat1) * Math.cos(angularDistance) +
+      Math.cos(lat1) * Math.sin(angularDistance) * Math.cos(bearing),
+  )
+  const lng2 =
+    lng1 +
+    Math.atan2(
+      Math.sin(bearing) * Math.sin(angularDistance) * Math.cos(lat1),
+      Math.cos(angularDistance) - Math.sin(lat1) * Math.sin(lat2),
+    )
+
+  return {
+    lat: lat2 * 180 / Math.PI,
+    lng: lng2 * 180 / Math.PI,
+  }
+}
+
+const getGoogleMapsApiKey = () =>
+  ((import.meta as ImportMeta & {
+    env?: Record<string, string | undefined>
+  }).env?.VITE_GOOGLE_MAPS_API_KEY ?? '').trim()
 
 const cx = (...classes: Array<string | false | null | undefined>) => classes.filter(Boolean).join(' ')
 
@@ -174,6 +245,12 @@ const emptyAdd = (): AddForm => ({
   span_code: '',
   strand_length: '',
   number_of_runs: '1',
+  nodes_count: '',
+  amplifier: '',
+  extender: '',
+  tsc: '',
+  power_supply: '',
+  power_supply_case: '',
 })
 
 function authHeaders() {
@@ -184,17 +261,35 @@ function authHeaders() {
     }
 }
 
+function toFiniteNumber(value: unknown, fallback = 0) {
+  const parsed = typeof value === 'number' ? value : Number(value)
+  return Number.isFinite(parsed) ? parsed : fallback
+}
+
 function poleCode(spanPole?: { pole?: { pole_code: string } | null } | null) {
   return spanPole?.pole?.pole_code ?? '—'
 }
 
 function expectedCable(strand?: number | null, runs?: number | null) {
   if (strand == null || runs == null) return '—'
-  return `${(strand * runs).toFixed(0)}m`
+  return `${(toFiniteNumber(strand) * toFiniteNumber(runs)).toFixed(0)}m`
+}
+
+function summaryComp(span: Span, type: 'node' | 'amplifier' | 'extender' | 'tsc' | 'powersupply' | 'powersupply_case') {
+  const keyMap = {
+    node: 'expected_node',
+    amplifier: 'expected_amplifier',
+    extender: 'expected_extender',
+    tsc: 'expected_tsc',
+    powersupply: 'expected_powersupply',
+    powersupply_case: 'expected_ps_housing',
+  } as const
+  const value = span.summary?.[keyMap[type]]
+  return value != null ? String(value) : '—'
 }
 
 function formatMeters(value?: number | null) {
-  return value != null ? `${value}m` : '—'
+  return value != null ? `${toFiniteNumber(value)}m` : '—'
 }
 
 function normalizeAreaName(name: string) {
@@ -224,11 +319,14 @@ function buildPoleAreaMap(rows: any[]) {
   const map = new Map<string, PolePin[]>()
   ;(Array.isArray(rows) ? rows : []).forEach((p: any) => {
     if (!p.lat || !p.lng || !p.area) return
+    const lat = toFiniteNumber(p.lat, Number.NaN)
+    const lng = toFiniteNumber(p.lng, Number.NaN)
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return
     const key = String(p.area).toLowerCase().trim()
     if (!map.has(key)) map.set(key, [])
     map.get(key)!.push({
-      lat: Number(p.lat),
-      lng: Number(p.lng),
+      lat,
+      lng,
       status: p.skycable_status ?? 'pending',
       area: key,
     })
@@ -237,7 +335,7 @@ function buildPoleAreaMap(rows: any[]) {
 }
 
 function fmt(n: number | string | null | undefined, dec = 0) {
-  return Number(n ?? 0)
+  return toFiniteNumber(n)
     .toFixed(dec)
     .replace(/\B(?=(\d{3})+(?!\d))/g, ',')
 }
@@ -549,6 +647,10 @@ function latLngToTileFrac(lat: number, lng: number, z: number) {
 function SiteCardMap({ poles, siteName }: { poles: PolePin[]; siteName: string }) {
   const [w, setW] = useState(300)
   const divRef = useRef<HTMLDivElement>(null)
+  const safePoles = useMemo(
+    () => poles.filter((pole) => Number.isFinite(pole.lat) && Number.isFinite(pole.lng)),
+    [poles],
+  )
 
   useEffect(() => {
     const el = divRef.current
@@ -563,7 +665,7 @@ function SiteCardMap({ poles, siteName }: { poles: PolePin[]; siteName: string }
     return () => obs.disconnect()
   }, [])
 
-  if (poles.length === 0) {
+  if (safePoles.length === 0) {
     return (
       <div className="overflow-hidden rounded-xl border border-slate-200 bg-slate-50">
         <img src={telcoImg} alt="Telcovantage" className="h-32 w-full object-contain p-4 opacity-40" />
@@ -572,8 +674,8 @@ function SiteCardMap({ poles, siteName }: { poles: PolePin[]; siteName: string }
   }
 
   const h = MAP_H
-  const lats = poles.map(p => p.lat)
-  const lngs = poles.map(p => p.lng)
+  const lats = safePoles.map(p => p.lat)
+  const lngs = safePoles.map(p => p.lng)
   const minLat = Math.min(...lats), maxLat = Math.max(...lats)
   const minLng = Math.min(...lngs), maxLng = Math.max(...lngs)
   const centerLat = lats.reduce((a, b) => a + b, 0) / lats.length
@@ -629,7 +731,7 @@ function SiteCardMap({ poles, siteName }: { poles: PolePin[]; siteName: string }
         ))
       )}
 
-      {poles.length > 1 && bxW > 2 && bxH > 2 && (
+      {safePoles.length > 1 && bxW > 2 && bxH > 2 && (
         <div
           style={{
             position: 'absolute',
@@ -645,7 +747,7 @@ function SiteCardMap({ poles, siteName }: { poles: PolePin[]; siteName: string }
         />
       )}
 
-      {poles.map((p, i) => {
+      {safePoles.map((p, i) => {
         const { xFrac: px, yFrac: py } = latLngToTileFrac(p.lat, p.lng, zoom)
         const color = STATUS_COLOR[p.status] ?? '#94a3b8'
         return (
@@ -675,7 +777,7 @@ function SiteCardMap({ poles, siteName }: { poles: PolePin[]; siteName: string }
 }
 
 function CachedTile({ z, y, x, style }: { z: number; y: number; x: number; style: CSSProperties }) {
-  const url = arcgisTileUrl(z, y, x)
+  const url = `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${y}/${x}`
   const [src, setSrc] = useState<string>(url)
 
   useEffect(() => {
@@ -707,6 +809,10 @@ function NodeVicinityMap({ nodeId, nodeName }: { nodeId: number; nodeName: strin
   const [loaded, setLoaded] = useState(() => nodePolesCache.has(nodeId))
   const [w, setW] = useState(320)
   const divRef = useRef<HTMLDivElement>(null)
+  const safePoles = useMemo(
+    () => poles.filter((pole) => Number.isFinite(pole.lat) && Number.isFinite(pole.lng)),
+    [poles],
+  )
 
   useEffect(() => {
     fetch(`${SKYCABLE_API}/nodes/${nodeId}/poles`, { headers: authHeaders() })
@@ -743,7 +849,7 @@ function NodeVicinityMap({ nodeId, nodeName }: { nodeId: number; nodeName: strin
     return <div className="h-36 w-full animate-pulse rounded-xl bg-slate-100" />
   }
 
-  if (poles.length === 0) {
+  if (safePoles.length === 0) {
     return (
       <div className="overflow-hidden rounded-xl border border-slate-100 bg-slate-50">
         <img src={telcoImg} alt="No GPS" className="h-36 w-full object-contain p-4 opacity-25" />
@@ -752,8 +858,8 @@ function NodeVicinityMap({ nodeId, nodeName }: { nodeId: number; nodeName: strin
   }
 
   const h = MAP_H
-  const lats = poles.map(p => p.lat)
-  const lngs = poles.map(p => p.lng)
+  const lats = safePoles.map(p => p.lat)
+  const lngs = safePoles.map(p => p.lng)
   const minLat = Math.min(...lats), maxLat = Math.max(...lats)
   const minLng = Math.min(...lngs), maxLng = Math.max(...lngs)
   const centerLat = (minLat + maxLat) / 2
@@ -810,7 +916,7 @@ function NodeVicinityMap({ nodeId, nodeName }: { nodeId: number; nodeName: strin
       <div className="absolute inset-x-0 top-0 h-12 bg-gradient-to-b from-slate-950/60 to-transparent pointer-events-none z-[1]" />
       <div className="absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-slate-950/80 via-slate-950/40 to-transparent pointer-events-none z-[1]" />
 
-      {poles.length > 1 && bxW > 2 && bxH > 2 && (
+      {safePoles.length > 1 && bxW > 2 && bxH > 2 && (
         <div
           style={{
             position: 'absolute',
@@ -827,7 +933,7 @@ function NodeVicinityMap({ nodeId, nodeName }: { nodeId: number; nodeName: strin
         />
       )}
 
-      {poles.map((p, i) => {
+      {safePoles.map((p, i) => {
         const { xFrac: px, yFrac: py } = latLngToTileFrac(p.lat, p.lng, zoom)
         const dotColor = NODE_STATUS_DOT[p.status] ?? '#94a3b8'
         return (
@@ -853,7 +959,7 @@ function NodeVicinityMap({ nodeId, nodeName }: { nodeId: number; nodeName: strin
       <div className="absolute bottom-2.5 left-2.5 right-2.5 flex items-center justify-between gap-2 rounded-lg border border-white/10 bg-slate-950/60 px-3 py-1.5 shadow-lg backdrop-blur-md z-[3]">
         <span className="truncate text-xs font-bold tracking-wide text-white">{nodeName}</span>
         <span className="shrink-0 rounded-md bg-white/10 px-1.5 py-0.5 text-[9px] font-black uppercase tracking-widest text-white/80">
-          {poles.length} {poles.length === 1 ? 'Pole' : 'Poles'}
+          {safePoles.length} {safePoles.length === 1 ? 'Pole' : 'Poles'}
         </span>
       </div>
     </div>
@@ -864,35 +970,92 @@ function NodeVicinityMap({ nodeId, nodeName }: { nodeId: number; nodeName: strin
 
 const SPAN_TILES = {
   satellite: {
-    url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-    attr: '© Esri',
+    url: 'https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',
+    attr: '© Google',
     label: 'Satellite',
+    maxZoom: 22,
+    maxNativeZoom: 22,
   },
   streets: {
     url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
     attr: '© OpenStreetMap contributors',
     label: 'Streets',
+    maxZoom: 19,
+    maxNativeZoom: 19,
   },
   dark: {
     url: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
     attr: '© CartoDB',
     label: 'Dark',
+    maxZoom: 20,
+    maxNativeZoom: 20,
   },
 } as const
 type SpanTile = keyof typeof SPAN_TILES
+
+const SPAN_MAP_MAX_ZOOM = 22
+
+function createSpanTileLayer(baseTile: SpanTile) {
+  const tile = SPAN_TILES[baseTile]
+  const options: L.TileLayerOptions = {
+    attribution: tile.attr,
+    maxZoom: tile.maxZoom,
+    maxNativeZoom: tile.maxNativeZoom,
+  }
+
+  if (baseTile === 'streets') options.subdomains = 'abc'
+  if (baseTile === 'dark') options.subdomains = 'abcd'
+
+  return L.tileLayer(SPAN_TILES[baseTile].url, options)
+}
 
 function makePoleIcon(color: string, size: number) {
   const html = `<div style="width:${size}px;height:${size}px;border-radius:50%;background:${color};border:3px solid #fff;box-shadow:0 2px 10px rgba(0,0,0,0.45);cursor:pointer"></div>`
   return L.divIcon({ html, className: '', iconSize: [size, size], iconAnchor: [size / 2, size / 2], popupAnchor: [0, -size / 2 - 4] })
 }
 
+function markerSizeForZoom(zoom: number, isFrom: boolean) {
+  if (zoom >= 17) return isFrom ? 36 : 30
+  if (zoom >= 16) return isFrom ? 32 : 26
+  if (zoom >= 15) return isFrom ? 30 : 24
+  return isFrom ? 26 : 20
+}
+
+function poleTooltipFontSize(zoom: number) {
+  if (zoom >= 17) return 13
+  if (zoom >= 16) return 12
+  return 11
+}
+
+function markerZoomTier(zoom: number) {
+  if (zoom >= 17) return 3
+  if (zoom >= 16) return 2
+  if (zoom >= 15) return 1
+  return 0
+}
+
+function greenGrabIcon() {
+  return L.divIcon({
+    className: '',
+    html: `<div style="width:32px;height:32px;border-radius:50%;background:#10b981;border:3px solid #fff;box-shadow:0 0 0 3px rgba(16,185,129,.35),0 4px 14px rgba(0,0,0,.45);cursor:grab;display:flex;align-items:center;justify-content:center;"><svg width="14" height="14" viewBox="0 0 24 24" fill="white"><path d="M11 5h2v14h-2zm-5 5l-2 2 2 2V10zm12 0v4l2-2-2-2z"/></svg></div>`,
+    iconSize: [32, 32],
+    iconAnchor: [16, 16],
+  })
+}
+
 function LeafletSpanMap({
-  poles, spans, onPairSelected, savedPairs,
+  poles, spans, onPairSelected, savedPairs, admin, nodeId, onPolesReload, focusedSpanId, onStreetViewOpenChange, showPoleNames,
 }: {
   poles: PoleOption[]
   spans: Span[]
   onPairSelected: (from: PoleOption, to: PoleOption) => void
   savedPairs: Array<{ from: number; to: number }>
+  admin: boolean
+  nodeId: number | null
+  onPolesReload: () => void
+  focusedSpanId: number | null
+  onStreetViewOpenChange?: (open: boolean) => void
+  showPoleNames: boolean
 }) {
   const containerRef  = useRef<HTMLDivElement>(null)
   const mapRef        = useRef<L.Map | null>(null)
@@ -902,21 +1065,205 @@ function LeafletSpanMap({
   const fromRef       = useRef<PoleOption | null>(null)
   const onSelectRef   = useRef(onPairSelected)
   const didFitRef     = useRef(false)
+  const autoFitKeyRef = useRef<string | null>(null)
+  const zoomTierRef   = useRef(markerZoomTier(6))
   useEffect(() => { onSelectRef.current = onPairSelected }, [onPairSelected])
 
   const [baseTile,    setBaseTile]    = useState<SpanTile>('satellite')
   const [fromDisplay, setFromDisplay] = useState<PoleOption | null>(null)
+  const [zoomLevel,   setZoomLevel]   = useState(6)
+  const [zoomTier,    setZoomTier]    = useState(markerZoomTier(6))
+  const [toolMode,    setToolMode]    = useState<'view' | 'addPole' | 'reassign' | 'streetView'>('view')
+  const [reassignMsg, setReassignMsg] = useState<{ code: string; ok: boolean } | null>(null)
+  const [addPoleModalOpen, setAddPoleModalOpen] = useState(false)
+  const [addPoleLat, setAddPoleLat] = useState('')
+  const [addPoleLng, setAddPoleLng] = useState('')
+  const [addPoleCode, setAddPoleCode] = useState('')
+  const [addPoleSaving, setAddPoleSaving] = useState(false)
+  const [addPoleError, setAddPoleError] = useState<string | null>(null)
+  const [streetViewOpen, setStreetViewOpen] = useState(false)
+  const [streetViewTarget, setStreetViewTarget] = useState<LatLngPoint | null>(null)
+  const [streetViewCoords, setStreetViewCoords] = useState<LatLngPoint | null>(null)
+  const streetViewCoordsRef = useRef<LatLngPoint | null>(null)
+  const [streetViewHeading, setStreetViewHeading] = useState<number | null>(null)
+  const streetViewHeadingRef = useRef<number | null>(null)
+  const [streetViewPitch, setStreetViewPitch] = useState(0)
+  const streetViewPinRef = useRef<L.Marker | null>(null)
+  const streetViewBearingRef = useRef<L.Polygon | null>(null)
+  const streetViewPanelRef = useRef<HTMLDivElement | null>(null)
+  const streetViewPanoramaRef = useRef<any>(null)
+  const streetViewListenersRef = useRef<any[]>([])
+  const [panoLoading, setPanoLoading] = useState(false)
+  const [panoReady, setPanoReady] = useState(false)
+  const [panoUnavailable, setPanoUnavailable] = useState(false)
+  const modeRef = useRef<'view' | 'addPole' | 'reassign' | 'streetView'>('view')
+  const pickMarkerRef = useRef<L.Marker | null>(null)
+  const svReqRef = useRef(0)
+  const hasGoogleApiKey = !!getGoogleMapsApiKey()
 
   const gpsPoles = useMemo(() => poles.filter(p => p.lat && p.lng), [poles])
+  const focusedSpan = useMemo(
+    () => spans.find((span) => span.id === focusedSpanId) ?? null,
+    [spans, focusedSpanId],
+  )
+  const focusedPoleIds = useMemo(() => {
+    if (!focusedSpan) return null
+    return new Set([focusedSpan.from_pole?.id, focusedSpan.to_pole?.id].filter((id): id is number => typeof id === 'number'))
+  }, [focusedSpan])
+  const visibleGpsPoles = useMemo(
+    () => !focusedPoleIds ? gpsPoles : gpsPoles.filter((pole) => focusedPoleIds.has(pole.id)),
+    [gpsPoles, focusedPoleIds],
+  )
+  const visibleSpans = useMemo(
+    () => !focusedSpan ? spans : spans.filter((span) => span.id === focusedSpan.id),
+    [spans, focusedSpan],
+  )
+
+  function upsertStreetViewPin(next: LatLngPoint) {
+    const map = mapRef.current
+    if (!map) return
+
+    const svIcon = L.divIcon({
+      className: '',
+      html: `<div style="width:22px;height:22px;border-radius:50%;background:#0ea5e9;border:3px solid #fff;box-shadow:0 0 0 4px rgba(14,165,233,.35),0 4px 14px rgba(0,0,0,.4);"></div>`,
+      iconSize: [22, 22],
+      iconAnchor: [11, 11],
+    })
+
+    if (streetViewPinRef.current) {
+      streetViewPinRef.current.setLatLng([next.lat, next.lng])
+      return
+    }
+
+    streetViewPinRef.current = L.marker([next.lat, next.lng], { icon: svIcon }).addTo(map)
+  }
+
+  function clearStreetViewBearing() {
+    streetViewBearingRef.current?.remove()
+    streetViewBearingRef.current = null
+  }
+
+  function upsertStreetViewBearing(origin: LatLngPoint, heading: number | null) {
+    const map = mapRef.current
+    if (!map || heading == null) {
+      clearStreetViewBearing()
+      return
+    }
+
+    const tip = projectPoint(origin, heading, 20)
+    const left = projectPoint(origin, heading - 28, 14)
+    const right = projectPoint(origin, heading + 28, 14)
+    const conePoints: [number, number][] = [
+      [origin.lat, origin.lng],
+      [left.lat, left.lng],
+      [tip.lat, tip.lng],
+      [right.lat, right.lng],
+    ]
+
+    if (streetViewBearingRef.current) {
+      streetViewBearingRef.current.setLatLngs(conePoints)
+    } else {
+      streetViewBearingRef.current = L.polygon(conePoints, {
+        color: '#38bdf8',
+        weight: 3,
+        opacity: 0.95,
+        fillColor: '#38bdf8',
+        fillOpacity: 0.34,
+        lineJoin: 'round',
+      }).addTo(map)
+    }
+  }
+
+  function syncStreetViewPov(heading: number | null, pitch = 0) {
+    if (heading == null) {
+      streetViewHeadingRef.current = null
+      setStreetViewHeading(null)
+      setStreetViewPitch(0)
+      clearStreetViewBearing()
+      return
+    }
+
+    const normalized = normalizeHeading(heading)
+    streetViewHeadingRef.current = normalized
+    setStreetViewHeading((prev) => (prev != null && Math.abs(prev - normalized) < 0.1 ? prev : normalized))
+    setStreetViewPitch((prev) => (Math.abs(prev - pitch) < 0.1 ? prev : pitch))
+
+    if (streetViewCoordsRef.current) {
+      upsertStreetViewBearing(streetViewCoordsRef.current, normalized)
+    }
+  }
+
+  function syncStreetViewLocation(next: LatLngPoint) {
+    streetViewCoordsRef.current = next
+    upsertStreetViewPin(next)
+    upsertStreetViewBearing(next, streetViewHeadingRef.current)
+    setStreetViewCoords((prev) => (sameLatLng(prev, next) ? prev : next))
+  }
+
+  useEffect(() => { modeRef.current = toolMode }, [toolMode])
+  useEffect(() => { onStreetViewOpenChange?.(streetViewOpen) }, [streetViewOpen, onStreetViewOpenChange])
 
   // Init map (once)
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return
-    const map = L.map(containerRef.current, { center: [12.88, 121.77], zoom: 6, zoomControl: false })
+    const map = L.map(containerRef.current, {
+      center: [12.88, 121.77],
+      zoom: 6,
+      zoomControl: false,
+      maxZoom: SPAN_MAP_MAX_ZOOM,
+      scrollWheelZoom: true,
+      zoomAnimation: true,
+      zoomAnimationThreshold: 6,
+      markerZoomAnimation: true,
+      fadeAnimation: true,
+      easeLinearity: 0.2,
+      zoomSnap: 0.25,
+      zoomDelta: 0.25,
+    })
     L.control.zoom({ position: 'bottomright' }).addTo(map)
-    tileLayRef.current = L.tileLayer(SPAN_TILES.satellite.url, { attribution: SPAN_TILES.satellite.attr, maxZoom: 21 }).addTo(map)
+    tileLayRef.current = createSpanTileLayer('satellite') as unknown as L.TileLayer
+    tileLayRef.current.addTo(map)
     spanLayRef.current   = L.layerGroup().addTo(map)
     markerLayRef.current = L.layerGroup().addTo(map)
+    setZoomLevel(map.getZoom())
+    map.on('zoomend', () => {
+      const nextZoom = map.getZoom()
+      setZoomLevel(nextZoom)
+      const nextTier = markerZoomTier(nextZoom)
+      if (zoomTierRef.current !== nextTier) {
+        zoomTierRef.current = nextTier
+        setZoomTier(nextTier)
+      }
+    })
+    map.on('click', (e: L.LeafletMouseEvent) => {
+      if (modeRef.current === 'addPole') {
+        pickMarkerRef.current?.remove()
+        const icon = L.divIcon({
+          className: '',
+          html: `<div style="width:22px;height:22px;border-radius:50%;background:#10b981;border:3px solid #fff;box-shadow:0 0 0 4px rgba(16,185,129,.35),0 4px 14px rgba(0,0,0,.4);"></div>`,
+          iconSize: [22, 22],
+          iconAnchor: [11, 11],
+        })
+        pickMarkerRef.current = L.marker([e.latlng.lat, e.latlng.lng], { icon }).addTo(map)
+        setAddPoleLat(e.latlng.lat.toFixed(7))
+        setAddPoleLng(e.latlng.lng.toFixed(7))
+        setAddPoleCode('')
+        setAddPoleError(null)
+        setAddPoleModalOpen(true)
+        return
+      }
+
+      if (modeRef.current === 'streetView') {
+        const next = {
+          lat: Number(e.latlng.lat.toFixed(7)),
+          lng: Number(e.latlng.lng.toFixed(7)),
+        }
+        setStreetViewOpen(true)
+        setStreetViewTarget(next)
+        syncStreetViewLocation(next)
+        syncStreetViewPov(null)
+      }
+    })
     mapRef.current = map
     return () => { map.remove(); mapRef.current = null; didFitRef.current = false }
   }, [])
@@ -925,7 +1272,7 @@ function LeafletSpanMap({
   useEffect(() => {
     const map = mapRef.current; if (!map) return
     tileLayRef.current?.remove()
-    tileLayRef.current = L.tileLayer(SPAN_TILES[baseTile].url, { attribution: SPAN_TILES[baseTile].attr, maxZoom: 21 })
+    tileLayRef.current = createSpanTileLayer(baseTile) as unknown as L.TileLayer
     tileLayRef.current.addTo(map)
     tileLayRef.current.setZIndex(0)
   }, [baseTile])
@@ -935,35 +1282,84 @@ function LeafletSpanMap({
     const lay = spanLayRef.current; if (!lay) return
     lay.clearLayers()
 
-    spans.forEach(s => {
-      const fp = gpsPoles.find(p => p.id === s.from_pole?.id)
-      const tp = gpsPoles.find(p => p.id === s.to_pole?.id)
+    visibleSpans.forEach(s => {
+      const fp = visibleGpsPoles.find(p => p.id === s.from_pole?.id)
+      const tp = visibleGpsPoles.find(p => p.id === s.to_pole?.id)
       if (!fp || !tp) return
+      const popupComponents = [
+        ['Node', s.summary?.expected_node],
+        ['Amplifier', s.summary?.expected_amplifier],
+        ['Extender', s.summary?.expected_extender],
+        ['TSC', s.summary?.expected_tsc],
+        ['Power Supply', s.summary?.expected_powersupply],
+        ['PSU Case', s.summary?.expected_ps_housing],
+      ]
       const line = L.polyline(
         [[Number(fp.lat), Number(fp.lng)], [Number(tp.lat), Number(tp.lng)]],
-        { color: '#ffffff', weight: 2.5, dashArray: '6 5', opacity: 0.85 },
+        {
+          color: focusedSpan?.id === s.id ? '#22c55e' : '#ffffff',
+          weight: focusedSpan?.id === s.id ? 4 : 2.5,
+          dashArray: focusedSpan?.id === s.id ? undefined : '6 5',
+          opacity: 0.92,
+        },
       ).addTo(lay)
       line.bindPopup(`
         <div style="font-family:ui-sans-serif,sans-serif;min-width:190px">
           <div style="background:linear-gradient(135deg,#2E3791,#4450C4);color:#fff;padding:8px 12px;border-radius:8px 8px 0 0;margin:-8px -12px 10px">
             <div style="font-size:9px;opacity:.65;text-transform:uppercase;letter-spacing:.12em">Span</div>
             <div style="font-size:13px;font-weight:900;font-family:ui-monospace,monospace">${s.span_code ?? `#${s.id}`}</div>
+            <div style="margin-top:6px;display:flex;align-items:center;gap:6px;font-size:11px;font-weight:700;color:rgba(255,255,255,.82)">
+              <span style="padding:2px 6px;border-radius:999px;background:rgba(255,255,255,.12);font-family:ui-monospace,monospace">${poleCode(s.from_pole)}</span>
+              <span style="opacity:.7">to</span>
+              <span style="padding:2px 6px;border-radius:999px;background:rgba(255,255,255,.12);font-family:ui-monospace,monospace">${poleCode(s.to_pole)}</span>
+            </div>
           </div>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
             ${[['From', poleCode(s.from_pole)], ['To', poleCode(s.to_pole)], ['Length', formatMeters(s.strand_length)], ['Runs', String(s.number_of_runs ?? '—')], ['Cable', expectedCable(s.strand_length, s.number_of_runs)], ['Status', STATUS_CFG[s.status]?.label ?? s.status]]
               .map(([k, v]) => `<div><div style="font-size:9px;font-weight:900;text-transform:uppercase;letter-spacing:.1em;color:#8E96C5">${k}</div><div style="font-weight:700;color:#0D123F;font-size:12px">${v}</div></div>`).join('')}
           </div>
+          <div style="margin-top:10px">
+            <div style="font-size:9px;font-weight:900;text-transform:uppercase;letter-spacing:.12em;color:#8E96C5;margin-bottom:6px">Collectable Components</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px">
+              ${popupComponents
+                .map(([label, value]) => `<div style="border:1px solid #e2e8f0;border-radius:10px;background:#f8fafc;padding:7px 6px"><div style="font-size:15px;font-weight:900;line-height:1;color:#0f172a">${value ?? 0}</div><div style="margin-top:4px;font-size:9px;font-weight:800;line-height:1.2;text-transform:uppercase;letter-spacing:.06em;color:#64748b">${label}</div></div>`)
+                .join('')}
+            </div>
+          </div>
         </div>
-      `, { maxWidth: 260 })
+      `, { maxWidth: 320 })
+
+      if (s.strand_length != null) {
+        line.bindTooltip(
+          `<button type="button" style="display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:4px 10px;border:none;border-radius:999px;background:rgba(15,23,42,0.92);color:#fff;font-size:10px;font-weight:800;font-family:ui-monospace,monospace;white-space:nowrap;cursor:pointer"><span>${formatMeters(s.strand_length)}</span><span style="font-family:ui-sans-serif,sans-serif;font-size:9px;font-weight:700;opacity:.7">details</span></button>`,
+          {
+            permanent: true,
+            direction: 'center',
+            className: 'span-length-tooltip',
+            opacity: 1,
+            interactive: true,
+          },
+        )
+
+        line.getTooltip()?.on('click', () => {
+          line.openPopup()
+        })
+      }
+
+      line.on('click', () => {
+        line.openPopup()
+      })
     })
 
+    if (focusedSpan) return
+
     savedPairs.forEach(s => {
-      const fp = gpsPoles.find(p => p.id === s.from)
-      const tp = gpsPoles.find(p => p.id === s.to)
+      const fp = visibleGpsPoles.find(p => p.id === s.from)
+      const tp = visibleGpsPoles.find(p => p.id === s.to)
       if (!fp || !tp) return
       L.polyline([[Number(fp.lat), Number(fp.lng)], [Number(tp.lat), Number(tp.lng)]], { color: '#34d399', weight: 4 }).addTo(lay)
     })
-  }, [gpsPoles, spans, savedPairs])
+  }, [visibleGpsPoles, visibleSpans, savedPairs, focusedSpan])
 
   // Draw markers (re-runs when fromDisplay changes to update colors)
   useEffect(() => {
@@ -971,41 +1367,391 @@ function LeafletSpanMap({
     lay.clearLayers()
 
     const currentFrom = fromRef.current
-    gpsPoles.forEach(p => {
+    visibleGpsPoles.forEach(p => {
       const isFrom = currentFrom?.id === p.id
+      const isFocusedPole = !!focusedPoleIds?.has(p.id)
+      const iconSize = markerSizeForZoom(zoomLevel, isFrom)
       const marker = L.marker(
         [Number(p.lat), Number(p.lng)],
-        { icon: makePoleIcon(isFrom ? '#2563eb' : '#f59e0b', isFrom ? 26 : 20) },
+        {
+          icon: toolMode === 'reassign'
+            ? greenGrabIcon()
+            : makePoleIcon(isFrom ? '#2563eb' : isFocusedPole ? '#22c55e' : '#f59e0b', isFocusedPole ? iconSize + 4 : iconSize),
+          draggable: toolMode === 'reassign',
+        },
       ).addTo(lay)
-      marker.bindTooltip(`<b style="font-family:ui-monospace,monospace;font-size:11px">${p.pole_code}</b>`, { direction: 'top', className: 'pole-tooltip' })
-      marker.on('click', () => {
-        const cf = fromRef.current
-        if (!cf) {
-          fromRef.current = p; setFromDisplay(p)
-        } else if (cf.id !== p.id) {
-          fromRef.current = null; setFromDisplay(null)
-          onSelectRef.current(cf, p)
-        }
-      })
+      const poleLabel = showPoleNames
+        ? `<div style="display:flex;flex-direction:column;gap:2px;min-width:88px;padding:7px 9px;border-radius:14px;background:rgba(15,23,42,0.94);border:1px solid rgba(255,255,255,0.18);color:#fff;font-family:ui-monospace,monospace;box-shadow:0 8px 22px rgba(15,23,42,0.35)"><span style="font-size:9px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;opacity:.62">Pole Data</span><span style="font-size:${poleTooltipFontSize(zoomLevel)}px;font-weight:800;line-height:1.1">Index: ${p.pole_index ?? '—'}</span><span style="font-size:${poleTooltipFontSize(zoomLevel)}px;font-weight:800;line-height:1.1">ID: ${p.id}</span><span style="font-size:${poleTooltipFontSize(zoomLevel)}px;font-weight:800;line-height:1.1">Code: ${p.pole_code}</span></div>`
+        : `<span style="display:inline-flex;align-items:center;justify-content:center;padding:4px 8px;border-radius:999px;background:rgba(15,23,42,0.92);border:1px solid rgba(255,255,255,0.18);color:#fff;font-family:ui-monospace,monospace;font-size:${poleTooltipFontSize(zoomLevel)}px;font-weight:800;white-space:nowrap">${p.pole_code}</span>${toolMode === 'reassign' ? "<br/><span style='font-size:10px;opacity:.8'>Drag to move</span>" : ''}`
+      marker.bindTooltip(
+        poleLabel,
+        {
+          direction: 'top',
+          className: 'pole-tooltip',
+          permanent: showPoleNames,
+          opacity: 1,
+        },
+      )
+
+      if (toolMode === 'reassign') {
+        marker.on('dragend', async () => {
+          const poleDbId = p.pole_db_id
+          if (!poleDbId) return
+
+          const originalLat = Number(p.lat)
+          const originalLng = Number(p.lng)
+          const next = marker.getLatLng()
+          try {
+            const res = await fetch(`${SKYCABLE_API}/poles/${poleDbId}/gps`, {
+              method: 'POST',
+              headers: authHeaders(),
+              body: JSON.stringify({ lat: next.lat, lng: next.lng }),
+            })
+            if (!res.ok) throw new Error('Failed')
+            setReassignMsg({ code: p.pole_code, ok: true })
+          } catch {
+            setReassignMsg({ code: p.pole_code, ok: false })
+            marker.setLatLng([originalLat, originalLng])
+          }
+          setTimeout(() => setReassignMsg(null), 2500)
+        })
+      } else {
+        marker.on('click', () => {
+          if (toolMode === 'streetView') {
+            if (!p.lat || !p.lng) return
+            const next = {
+              lat: Number(p.lat),
+              lng: Number(p.lng),
+            }
+            setStreetViewOpen(true)
+            setStreetViewTarget(next)
+            syncStreetViewLocation(next)
+            syncStreetViewPov(null)
+            return
+          }
+
+          const cf = fromRef.current
+          if (!cf) {
+            fromRef.current = p; setFromDisplay(p)
+          } else if (cf.id !== p.id) {
+            fromRef.current = null; setFromDisplay(null)
+            onSelectRef.current(cf, p)
+          }
+        })
+      }
     })
 
-    if (!didFitRef.current && mapRef.current && gpsPoles.length > 0) {
+    if (!didFitRef.current && mapRef.current && visibleGpsPoles.length > 0) {
       mapRef.current.fitBounds(
-        L.latLngBounds(gpsPoles.map(p => [Number(p.lat), Number(p.lng)] as [number, number])),
-        { padding: [50, 50], maxZoom: 17 },
+        L.latLngBounds(visibleGpsPoles.map(p => [Number(p.lat), Number(p.lng)] as [number, number])),
+        { padding: [40, 40], maxZoom: 19 },
       )
       didFitRef.current = true
     }
-  }, [gpsPoles, fromDisplay])
+  }, [visibleGpsPoles, fromDisplay, zoomLevel, zoomTier, toolMode, focusedPoleIds, showPoleNames])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !visibleGpsPoles.length) return
+
+    const nextFitKey = focusedSpan ? `span:${focusedSpan.id}` : `all:${visibleGpsPoles.length}`
+    if (autoFitKeyRef.current === nextFitKey) return
+    autoFitKeyRef.current = nextFitKey
+
+    map.invalidateSize()
+    map.fitBounds(
+      L.latLngBounds(visibleGpsPoles.map((pole) => [Number(pole.lat), Number(pole.lng)] as [number, number])),
+      { padding: [50, 50], maxZoom: focusedSpan ? 20 : 19 },
+    )
+  }, [visibleGpsPoles, focusedSpan])
+
+  useEffect(() => {
+    const map = mapRef.current
+    const container = containerRef.current
+    if (!map || !container) return
+
+    const syncSize = () => map.invalidateSize()
+    const timeoutId = window.setTimeout(syncSize, 120)
+    const frameId = window.requestAnimationFrame(syncSize)
+    const observer = new ResizeObserver(() => {
+      map.invalidateSize()
+    })
+
+    observer.observe(container)
+    window.addEventListener('resize', syncSize)
+
+    return () => {
+      window.clearTimeout(timeoutId)
+      window.cancelAnimationFrame(frameId)
+      observer.disconnect()
+      window.removeEventListener('resize', syncSize)
+    }
+  }, [])
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => mapRef.current?.invalidateSize(), 150)
+    return () => window.clearTimeout(timeoutId)
+  }, [streetViewOpen, !!streetViewTarget, panoLoading, panoReady, panoUnavailable])
+
+  useEffect(() => {
+    if (!streetViewOpen) {
+      streetViewPinRef.current?.remove()
+      streetViewPinRef.current = null
+      streetViewCoordsRef.current = null
+      streetViewHeadingRef.current = null
+      setStreetViewTarget(null)
+      setStreetViewCoords(null)
+      setStreetViewHeading(null)
+      setStreetViewPitch(0)
+      clearStreetViewBearing()
+      setPanoLoading(false)
+      setPanoReady(false)
+      setPanoUnavailable(false)
+      streetViewPanoramaRef.current?.setVisible?.(false)
+      streetViewListenersRef.current.forEach((listener) => listener?.remove?.())
+      streetViewListenersRef.current = []
+      streetViewPanoramaRef.current = null
+    }
+  }, [streetViewOpen])
+
+  function loadGoogleMapsApi(): Promise<void> {
+    if ((window as any).google?.maps?.StreetViewService) return Promise.resolve()
+    return new Promise((resolve, reject) => {
+      if (document.getElementById('__gm_script')) {
+        let waited = 0
+        const poll = window.setInterval(() => {
+          waited += 100
+          if ((window as any).google?.maps?.StreetViewService) {
+            window.clearInterval(poll)
+            resolve()
+          } else if (waited > 15_000) {
+            window.clearInterval(poll)
+            reject(new Error('Google Maps load timeout'))
+          }
+        }, 100)
+        return
+      }
+
+      const cbName = '__gm_init__'
+      const apiKey = getGoogleMapsApiKey()
+      ;(window as any)[cbName] = () => {
+        resolve()
+        delete (window as any)[cbName]
+      }
+
+      const script = document.createElement('script')
+      script.id = '__gm_script'
+      script.src = apiKey
+        ? `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(apiKey)}&v=weekly&libraries=streetview&callback=${cbName}`
+        : `https://maps.googleapis.com/maps/api/js?v=weekly&libraries=streetview&callback=${cbName}`
+      script.async = true
+      script.onerror = () => {
+        document.getElementById('__gm_script')?.remove()
+        reject(new Error('Failed to load Google Maps API'))
+      }
+      document.head.appendChild(script)
+    })
+  }
+
+  useEffect(() => {
+    if (!streetViewOpen || !streetViewTarget) {
+      setPanoLoading(false)
+      setPanoReady(false)
+      setPanoUnavailable(false)
+      return
+    }
+
+    if (!hasGoogleApiKey) {
+      syncStreetViewLocation(streetViewTarget)
+      syncStreetViewPov(null)
+      setPanoLoading(false)
+      setPanoReady(false)
+      setPanoUnavailable(false)
+      return
+    }
+
+    if (!streetViewPanelRef.current) return
+
+    const { lat, lng } = streetViewTarget
+    const reqId = ++svReqRef.current
+    setPanoLoading(true)
+    setPanoReady(false)
+    setPanoUnavailable(false)
+
+    let cancelled = false
+
+    loadGoogleMapsApi()
+      .then(async () => {
+        if (cancelled || reqId !== svReqRef.current || !streetViewPanelRef.current) return
+
+        const google = (window as any).google
+        const svc = new google.maps.StreetViewService()
+        const requestPanorama = (request: any) =>
+          new Promise<{ data: any; status: any }>((resolve) => {
+            svc.getPanorama(request, (data: any, status: any) => resolve({ data, status }))
+          })
+
+        const attempts = [
+          { location: { lat, lng }, radius: 100, source: google.maps.StreetViewSource.OUTDOOR },
+          { location: { lat, lng }, radius: 250 },
+          { location: { lat, lng }, radius: 500 },
+        ]
+
+        let panoResult: { data: any; status: any } | null = null
+        for (const attempt of attempts) {
+          const result = await requestPanorama(attempt)
+          if (cancelled || reqId !== svReqRef.current) return
+          if (result.status === 'OK' && result.data?.location?.pano) {
+            panoResult = result
+            break
+          }
+        }
+
+        if (!panoResult) {
+          streetViewPanoramaRef.current?.setVisible?.(false)
+          syncStreetViewPov(null)
+          setPanoUnavailable(true)
+          setPanoLoading(false)
+          return
+        }
+
+        let panorama = streetViewPanoramaRef.current
+
+        if (!panorama) {
+          panorama = new google.maps.StreetViewPanorama(streetViewPanelRef.current, {
+            addressControl: false,
+            enableCloseButton: false,
+            fullscreenControl: true,
+            linksControl: true,
+            motionTracking: false,
+            panControl: false,
+            showRoadLabels: true,
+            zoomControl: true,
+          })
+
+          streetViewListenersRef.current.forEach((listener) => listener?.remove?.())
+          streetViewListenersRef.current = [
+            google.maps.event.addListener(panorama, 'position_changed', () => {
+              const pos = panorama.getPosition?.()
+              if (!pos) return
+              syncStreetViewLocation({ lat: pos.lat(), lng: pos.lng() })
+            }),
+            google.maps.event.addListener(panorama, 'pov_changed', () => {
+              const pov = panorama.getPov?.()
+              if (!pov) return
+              syncStreetViewPov(pov.heading ?? 0, pov.pitch ?? 0)
+            }),
+            google.maps.event.addListener(panorama, 'visible_changed', () => {
+              if (!panorama.getVisible?.()) return
+              const pos = panorama.getPosition?.()
+              if (!pos) return
+              syncStreetViewLocation({ lat: pos.lat(), lng: pos.lng() })
+              const pov = panorama.getPov?.()
+              if (pov) syncStreetViewPov(pov.heading ?? 0, pov.pitch ?? 0)
+            }),
+          ]
+          streetViewPanoramaRef.current = panorama
+        }
+
+        const resolvedLatLng = panoResult.data.location.latLng ?? new google.maps.LatLng(lat, lng)
+        panorama.setPano(panoResult.data.location.pano)
+        panorama.setPosition(resolvedLatLng)
+        panorama.setVisible(true)
+        syncStreetViewLocation({ lat: resolvedLatLng.lat(), lng: resolvedLatLng.lng() })
+        const pov = panorama.getPov?.()
+        if (pov) syncStreetViewPov(pov.heading ?? 0, pov.pitch ?? 0)
+        google.maps.event.trigger(panorama, 'resize')
+        setPanoReady(true)
+        setPanoLoading(false)
+      })
+      .catch((err: any) => {
+        if (cancelled || reqId !== svReqRef.current) return
+        if (err?.message?.includes('load') || err?.message?.includes('timeout')) {
+          document.getElementById('__gm_script')?.remove()
+          delete (window as any).__gm_init__
+          delete (window as any).google
+        }
+        setPanoUnavailable(true)
+        setPanoLoading(false)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [streetViewOpen, streetViewTarget, hasGoogleApiKey])
+
+  useEffect(() => {
+    const container = mapRef.current?.getContainer()
+    if (!container) return
+    container.style.cursor = toolMode === 'addPole' || toolMode === 'streetView'
+      ? 'crosshair'
+      : toolMode === 'reassign'
+        ? 'grab'
+        : ''
+  }, [toolMode])
 
   const clearFrom = () => { fromRef.current = null; setFromDisplay(null) }
 
+  const cancelAddPole = () => {
+    pickMarkerRef.current?.remove()
+    pickMarkerRef.current = null
+    setAddPoleModalOpen(false)
+    setAddPoleError(null)
+    setAddPoleCode('')
+    setAddPoleLat('')
+    setAddPoleLng('')
+  }
+
+  async function handleAddPole(e: SyntheticEvent<HTMLFormElement>) {
+    e.preventDefault()
+    if (!nodeId) return
+    if (!addPoleCode.trim()) {
+      setAddPoleError('Pole code is required')
+      return
+    }
+    setAddPoleSaving(true)
+    setAddPoleError(null)
+    try {
+      const res = await fetch(`${SKYCABLE_API}/poles`, {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({
+          pole_code: addPoleCode.trim().toUpperCase(),
+          node_id: nodeId,
+          lat: addPoleLat || null,
+          lng: addPoleLng || null,
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.message ?? 'Failed to add pole')
+
+      cancelAddPole()
+      setToolMode('view')
+      onPolesReload()
+    } catch (err: any) {
+      setAddPoleError(err.message ?? 'Failed to add pole')
+    } finally {
+      setAddPoleSaving(false)
+    }
+  }
+
   return (
-    <div className="relative flex h-full w-full overflow-hidden">
-      <div ref={containerRef} className="flex-1 h-full" />
+    <div className="relative z-0 isolate flex h-full w-full overflow-hidden">
+      <div ref={containerRef} className="z-0 h-full flex-1" />
+
+      {gpsPoles.length === 0 && (
+        <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center bg-slate-950/35">
+          <div className="rounded-2xl border border-white/20 bg-slate-950/75 px-5 py-4 text-center text-white shadow-2xl backdrop-blur-md">
+            <p className="text-sm font-black">No GPS poles available</p>
+            <p className="mt-1 text-xs font-medium text-white/70">
+              Add or reassign pole GPS to render the map for this node.
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Tile buttons */}
-      <div className="absolute left-3 top-3 z-[1000] flex overflow-hidden rounded-xl shadow-xl" style={{ border: '1px solid rgba(255,255,255,0.18)' }}>
+      <div className="absolute left-3 top-3 z-10 flex overflow-hidden rounded-xl shadow-xl" style={{ border: '1px solid rgba(255,255,255,0.18)' }}>
         {(Object.keys(SPAN_TILES) as SpanTile[]).map(t => (
           <button
             key={t}
@@ -1023,9 +1769,109 @@ function LeafletSpanMap({
         ))}
       </div>
 
+      <div className="absolute right-3 top-3 z-10 flex flex-wrap items-center justify-end gap-2">
+        {admin && (
+          <>
+            <button
+              type="button"
+              onClick={() => {
+                const next = toolMode !== 'addPole'
+                setToolMode(next ? 'addPole' : 'view')
+                setStreetViewOpen(false)
+                clearFrom()
+                if (!next) cancelAddPole()
+              }}
+              className="inline-flex h-9 items-center gap-2 rounded-xl px-4 text-xs font-semibold text-white shadow-lg transition"
+              style={{
+                background: toolMode === 'addPole' ? '#059669' : 'rgba(5,150,105,0.92)',
+                boxShadow: toolMode === 'addPole' ? '0 0 0 2px rgba(167,243,208,0.75), 0 10px 30px rgba(5,150,105,0.28)' : '0 10px 24px rgba(5,150,105,0.26)',
+                backdropFilter: 'blur(12px)',
+              }}
+            >
+              <i className={`bx ${toolMode === 'addPole' ? 'bx-x' : 'bx-map-pin'} text-sm`} />
+              {toolMode === 'addPole' ? 'Cancel Pick' : 'Add Pole'}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                const wasReassign = toolMode === 'reassign'
+                setToolMode(wasReassign ? 'view' : 'reassign')
+                setStreetViewOpen(false)
+                clearFrom()
+                cancelAddPole()
+                if (wasReassign) onPolesReload()
+              }}
+              className="inline-flex h-9 items-center gap-2 rounded-xl px-4 text-xs font-semibold text-white shadow-lg transition"
+              style={{
+                background: toolMode === 'reassign' ? '#d97706' : 'rgba(217,119,6,0.92)',
+                boxShadow: toolMode === 'reassign' ? '0 0 0 2px rgba(253,230,138,0.75), 0 10px 30px rgba(217,119,6,0.28)' : '0 10px 24px rgba(217,119,6,0.26)',
+                backdropFilter: 'blur(12px)',
+              }}
+            >
+              <i className={`bx ${toolMode === 'reassign' ? 'bx-x' : 'bx-move'} text-sm`} />
+              {toolMode === 'reassign' ? 'Done Dragging' : 'Reassign GPS'}
+            </button>
+          </>
+        )}
+
+        <button
+          type="button"
+          onClick={() => {
+            const next = toolMode !== 'streetView'
+            setToolMode(next ? 'streetView' : 'view')
+            setStreetViewOpen(next)
+            clearFrom()
+            cancelAddPole()
+          }}
+          className="inline-flex h-9 items-center gap-2 rounded-xl px-4 text-xs font-semibold text-white shadow-lg transition"
+          style={{
+            background: toolMode === 'streetView' ? '#0284c7' : 'rgba(2,132,199,0.92)',
+            boxShadow: toolMode === 'streetView' ? '0 0 0 2px rgba(186,230,253,0.75), 0 10px 30px rgba(2,132,199,0.28)' : '0 10px 24px rgba(2,132,199,0.26)',
+            backdropFilter: 'blur(12px)',
+          }}
+        >
+          <i className={`bx ${toolMode === 'streetView' ? 'bx-x' : 'bx-street-view'} text-sm`} />
+          {toolMode === 'streetView' ? 'Exit StreetView' : 'StreetView 360'}
+        </button>
+      </div>
+
+      {toolMode === 'addPole' && (
+        <div className="pointer-events-none absolute left-1/2 top-16 z-10 -translate-x-1/2">
+          <div className="flex items-center gap-2 rounded-2xl bg-emerald-600/95 px-4 py-2 text-xs font-bold text-white shadow-xl backdrop-blur-sm">
+            <i className="bx bx-map-pin text-base" />
+            Click anywhere on the map to place the new pole
+          </div>
+        </div>
+      )}
+
+      {toolMode === 'streetView' && !streetViewTarget && (
+        <div className="pointer-events-none absolute left-1/2 top-16 z-10 -translate-x-1/2">
+          <div className="flex items-center gap-2 rounded-2xl bg-sky-600/95 px-4 py-2 text-xs font-bold text-white shadow-xl backdrop-blur-sm">
+            <i className="bx bx-street-view text-base" />
+            Click anywhere on the map or any pole to open split-screen Street View
+          </div>
+        </div>
+      )}
+
+      {toolMode === 'reassign' && (
+        <div className="pointer-events-none absolute left-1/2 top-16 z-10 -translate-x-1/2">
+          <div className="flex items-center gap-2 rounded-2xl bg-amber-500/95 px-4 py-2 text-xs font-bold text-white shadow-xl backdrop-blur-sm">
+            <i className="bx bx-move text-base" />
+            Drag any pole marker to update its GPS location
+          </div>
+        </div>
+      )}
+
       {/* From pole indicator */}
-      {fromDisplay && (
-        <div className="absolute bottom-10 left-1/2 z-[1000] -translate-x-1/2 flex items-center gap-2 rounded-full bg-white px-4 py-2 shadow-2xl" style={{ border: '2px solid #2563eb' }}>
+      {focusedSpan && (
+        <div className="absolute bottom-24 left-1/2 z-10 -translate-x-1/2 rounded-full bg-emerald-50 px-4 py-2 text-xs font-black text-emerald-700 shadow-2xl" style={{ border: '2px solid #22c55e' }}>
+          Showing paired poles for <span className="mx-1 font-mono">{focusedSpan.span_code ?? `Span #${focusedSpan.id}`}</span>
+        </div>
+      )}
+
+      {fromDisplay && !focusedSpan && (
+        <div className="absolute bottom-10 left-1/2 z-10 -translate-x-1/2 flex items-center gap-2 rounded-full bg-white px-4 py-2 shadow-2xl" style={{ border: '2px solid #2563eb' }}>
           <span className="h-2.5 w-2.5 rounded-full bg-blue-600" />
           <span className="text-xs font-black text-slate-800">
             From: <span className="text-blue-600">{fromDisplay.pole_code}</span>
@@ -1037,18 +1883,290 @@ function LeafletSpanMap({
         </div>
       )}
 
+      {streetViewOpen && streetViewTarget && (
+        <div
+          className="absolute inset-y-0 right-0 z-30 flex flex-col border-l border-sky-400/30 bg-slate-950 shadow-2xl"
+          style={{ width: '40%' }}
+        >
+          <div className="flex items-start justify-between gap-3 border-b border-white/10 bg-slate-950/96 px-4 py-3 text-white backdrop-blur-md">
+            <div>
+              <p className="text-[10px] font-black uppercase tracking-[0.2em] text-sky-300/85">
+                StreetView 360
+              </p>
+              <p className="mt-1 text-sm font-black">
+                {!hasGoogleApiKey ? 'Developer Mode Preview' : !panoReady && !panoLoading ? 'Preparing View' : 'Live Split View'}
+              </p>
+              <p className="mt-1 text-[11px] font-medium text-white/55">
+                {(streetViewCoords ?? streetViewTarget).lat.toFixed(6)}, {(streetViewCoords ?? streetViewTarget).lng.toFixed(6)}
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <a
+                href={`https://www.google.com/maps?q=${(streetViewCoords ?? streetViewTarget).lat},${(streetViewCoords ?? streetViewTarget).lng}&layer=c&cbll=${(streetViewCoords ?? streetViewTarget).lat},${(streetViewCoords ?? streetViewTarget).lng}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex h-9 items-center gap-2 rounded-xl bg-sky-600/75 px-3 text-xs font-semibold text-white transition hover:bg-sky-500"
+              >
+                <i className="bx bx-map text-sm" />
+                Open in Maps
+              </a>
+              <button
+                type="button"
+                onClick={() => {
+                  setStreetViewOpen(false)
+                  setToolMode('view')
+                }}
+                className="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-white/10 text-white transition hover:bg-white/20"
+              >
+                <i className="bx bx-x text-lg" />
+              </button>
+            </div>
+          </div>
+
+          <div className="relative flex-1 overflow-hidden bg-slate-950">
+            {!hasGoogleApiKey && streetViewTarget && (
+              <div className="absolute inset-0 overflow-hidden">
+                <iframe
+                  title="Street View Developer Mode Map"
+                  src={`https://www.google.com/maps?q=${(streetViewCoords ?? streetViewTarget).lat},${(streetViewCoords ?? streetViewTarget).lng}&z=19&output=embed`}
+                  className="absolute inset-0 h-full w-full border-0"
+                  loading="lazy"
+                  referrerPolicy="no-referrer-when-downgrade"
+                  style={{ filter: 'grayscale(1) contrast(1.05) brightness(0.9)' }}
+                />
+                <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,transparent_0%,rgba(2,6,23,0.16)_62%,rgba(2,6,23,0.56)_100%)]" />
+                <div
+                  className="absolute inset-0 opacity-[0.14]"
+                  style={{
+                    backgroundImage:
+                      'linear-gradient(rgba(255,255,255,0.08) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.08) 1px, transparent 1px)',
+                    backgroundSize: '64px 64px',
+                  }}
+                />
+                <div className="absolute left-4 top-4 rounded-2xl border border-white/15 bg-slate-950/72 px-3 py-2 text-white shadow-xl backdrop-blur-md">
+                  <p className="text-[10px] font-black uppercase tracking-[0.2em] text-sky-300/85">
+                    Developer Mode
+                  </p>
+                  <p className="mt-1 text-xs font-semibold text-white/70">
+                    Grayscale map preview while live Google 360 key is unavailable
+                  </p>
+                </div>
+              </div>
+            )}
+
+            <div
+              ref={streetViewPanelRef}
+              className={`absolute inset-0 ${panoReady && !panoUnavailable ? 'opacity-100' : 'opacity-0'}`}
+            />
+
+            {streetViewHeading != null && !panoLoading && !panoUnavailable && (
+              <div className="pointer-events-none absolute left-4 top-4 z-10">
+                <div className="rounded-[22px] border border-white/12 bg-slate-950/74 px-3.5 py-3 text-white shadow-2xl backdrop-blur-xl">
+                  <p className="text-[10px] font-black uppercase tracking-[0.22em] text-sky-300/85">
+                    Gyro Tracker
+                  </p>
+                  <div className="mt-2 flex items-center gap-3">
+                    <div className="relative flex h-12 w-12 items-center justify-center rounded-full border border-white/15 bg-white/5">
+                      <span className="absolute top-1 text-[9px] font-black text-white/70">N</span>
+                      <span className="absolute bottom-1 text-[9px] font-black text-white/45">S</span>
+                      <span className="absolute left-1.5 text-[9px] font-black text-white/45">W</span>
+                      <span className="absolute right-1.5 text-[9px] font-black text-white/45">E</span>
+                      <div
+                        className="h-0 w-0 border-l-[6px] border-r-[6px] border-b-[16px] border-l-transparent border-r-transparent border-b-sky-400 drop-shadow-[0_0_8px_rgba(56,189,248,.65)] transition-transform duration-150"
+                        style={{ transform: `rotate(${streetViewHeading}deg)` }}
+                      />
+                    </div>
+                    <div>
+                      <p className="text-sm font-black text-white">
+                        Facing {headingToCardinal(streetViewHeading)}
+                      </p>
+                      <p className="text-[11px] font-semibold text-white/60">
+                        {streetViewHeading.toFixed(0)}deg | Pitch {streetViewPitch.toFixed(0)}deg
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {panoLoading && (
+              <div className="absolute inset-0 flex items-center justify-center bg-slate-950">
+                <div className="flex flex-col items-center justify-center gap-3">
+                  <div className="h-8 w-8 animate-spin rounded-full border-[3px] border-sky-400 border-t-transparent" />
+                  <p className="text-xs font-bold text-white/60">Finding Street View...</p>
+                </div>
+              </div>
+            )}
+
+            {panoUnavailable && hasGoogleApiKey && (
+              <div className="absolute inset-0 flex items-center justify-center bg-slate-950 px-6">
+                <div className="flex flex-col items-center justify-center gap-3 text-center">
+                  <i className="bx bx-street-view text-5xl text-white/10" />
+                  <p className="text-sm font-bold text-white/50">
+                    No Street View coverage here
+                  </p>
+                  <p className="text-xs text-white/30">
+                    This area may not have Street View imagery.
+                    <br />
+                    Try clicking a pole along a main road.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!streetViewTarget) return
+                      setPanoUnavailable(false)
+                      setPanoLoading(true)
+                      setStreetViewTarget({ ...streetViewTarget })
+                    }}
+                    className="flex items-center gap-1.5 rounded-xl bg-white/10 px-3 py-1.5 text-[11px] font-semibold text-white transition hover:bg-white/20"
+                  >
+                    <i className="bx bx-refresh text-xs" />
+                    Retry
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Legend */}
       <div
-        className="absolute bottom-3 right-3 z-[1000] flex flex-wrap items-center gap-3 rounded-xl px-3 py-2 text-[11px] font-semibold shadow-xl"
+        className="absolute bottom-3 right-3 z-10 flex flex-wrap items-center gap-3 rounded-xl px-3 py-2 text-[11px] font-semibold shadow-xl"
         style={{ background: 'rgba(0,0,0,0.6)', color: 'rgba(255,255,255,0.8)', backdropFilter: 'blur(10px)' }}
       >
-        {[{ color: '#f59e0b', label: 'Pole' }, { color: '#2563eb', label: 'From' }, { color: '#ffffff', label: 'Span (click for details)' }, { color: '#34d399', label: 'Newly added' }].map(l => (
+        {[{ color: '#f59e0b', label: 'Pole' }, { color: '#2563eb', label: 'From' }, { color: '#22c55e', label: 'Selected span pair' }, { color: '#ffffff', label: 'Span (click for details)' }, { color: '#34d399', label: 'Newly added' }].map(l => (
           <span key={l.label} className="flex items-center gap-1.5">
             <span className="h-2 w-2 rounded-full" style={{ background: l.color }} />
             {l.label}
           </span>
         ))}
       </div>
+
+      {reassignMsg && (
+        <div
+          className="pointer-events-none absolute bottom-16 left-1/2 z-10 -translate-x-1/2 rounded-2xl px-4 py-2.5 text-xs font-bold text-white shadow-xl backdrop-blur-sm"
+          style={{ background: reassignMsg.ok ? 'rgba(5,150,105,0.95)' : 'rgba(220,38,38,0.95)' }}
+        >
+          <span className="inline-flex items-center gap-2">
+            <i className={`bx ${reassignMsg.ok ? 'bx-check-circle' : 'bx-x-circle'} text-base`} />
+            {reassignMsg.ok
+              ? `GPS updated for ${reassignMsg.code}`
+              : `Failed to update GPS for ${reassignMsg.code}`}
+          </span>
+        </div>
+      )}
+
+      {addPoleModalOpen && (
+        <div className="absolute inset-0 z-20 flex items-center justify-center p-4">
+          <div
+            className="absolute inset-0 bg-slate-950/55 backdrop-blur-sm"
+            onClick={cancelAddPole}
+          />
+          <div className="relative w-full max-w-sm overflow-hidden rounded-[28px] bg-white shadow-2xl">
+            <div className="bg-gradient-to-r from-emerald-800 to-emerald-600 px-6 py-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-white/20">
+                    <i className="bx bx-map-pin text-lg text-white" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-black text-white">Add Pole</p>
+                    <p className="mt-0.5 text-[11px] text-white/70">
+                      {addPoleLat && addPoleLng
+                        ? `${parseFloat(addPoleLat).toFixed(6)}, ${parseFloat(addPoleLng).toFixed(6)}`
+                        : 'No coordinates'}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={cancelAddPole}
+                  className="flex h-8 w-8 items-center justify-center rounded-xl bg-white/15 text-white hover:bg-white/25"
+                >
+                  <i className="bx bx-x text-lg" />
+                </button>
+              </div>
+            </div>
+
+            <form onSubmit={handleAddPole} className="space-y-4 p-6">
+              <div>
+                <label className="mb-1.5 block text-[11px] font-black uppercase tracking-[0.14em]" style={{ color: '#64748b' }}>
+                  Pole Code <span className="text-red-500">*</span>
+                </label>
+                <input
+                  autoFocus
+                  value={addPoleCode}
+                  onChange={(e) => setAddPoleCode(e.target.value.toUpperCase())}
+                  placeholder="e.g. POLE-001"
+                  className="h-11 w-full rounded-xl bg-white px-4 text-sm font-semibold outline-none"
+                  style={{ border: '1px solid #dbe3f3', color: '#0f172a' }}
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="mb-1.5 block text-[11px] font-black uppercase tracking-[0.14em]" style={{ color: '#64748b' }}>
+                    Latitude
+                  </label>
+                  <input
+                    value={addPoleLat}
+                    onChange={(e) => setAddPoleLat(e.target.value)}
+                    className="h-11 w-full rounded-xl bg-white px-4 text-sm font-semibold outline-none"
+                    style={{ border: '1px solid #dbe3f3', color: '#0f172a' }}
+                    placeholder="14.5995"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1.5 block text-[11px] font-black uppercase tracking-[0.14em]" style={{ color: '#64748b' }}>
+                    Longitude
+                  </label>
+                  <input
+                    value={addPoleLng}
+                    onChange={(e) => setAddPoleLng(e.target.value)}
+                    className="h-11 w-full rounded-xl bg-white px-4 text-sm font-semibold outline-none"
+                    style={{ border: '1px solid #dbe3f3', color: '#0f172a' }}
+                    placeholder="120.9842"
+                  />
+                </div>
+              </div>
+
+              {addPoleError && (
+                <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-2.5 text-sm text-red-600">
+                  {addPoleError}
+                </div>
+              )}
+
+              <div className="flex gap-3 pt-1">
+                <button
+                  type="button"
+                  onClick={cancelAddPole}
+                  className="flex-1 rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-600 transition hover:bg-slate-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={addPoleSaving}
+                  className="flex-1 rounded-xl bg-emerald-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-emerald-700 disabled:opacity-60"
+                >
+                  {addPoleSaving ? (
+                    <span className="flex items-center justify-center gap-2">
+                      <i className="bx bx-loader-alt animate-spin" />
+                      Saving...
+                    </span>
+                  ) : (
+                    <span className="flex items-center justify-center gap-2">
+                      <i className="bx bx-plus" />
+                      Add Pole
+                    </span>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -1060,6 +2178,41 @@ function idFromSlug(slug: string): number | null {
   const parts = slug.split('-')
   const id = Number(parts[parts.length - 1])
   return isNaN(id) ? null : id
+}
+
+function matchAreaFromSlug(areas: Area[], slug?: string) {
+  if (!slug) return null
+  const areaId = idFromSlug(slug)
+  if (areaId != null) {
+    const byId = areas.find((area) => area.id === areaId)
+    if (byId) return byId
+  }
+  return areas.find((area) => slugify(area.name) === slug) ?? null
+}
+
+function matchNodeFromSlug(nodes: NodeItem[], slug?: string) {
+  if (!slug) return null
+  const normalizedSlug = slug.trim().toLowerCase()
+  const byNodeId = nodes.find((node) => (node.node_id ?? '').trim().toLowerCase() === normalizedSlug)
+  if (byNodeId) return byNodeId
+  const nodeIdMatch = slug.match(/^node_id-(\d+)$/)
+  if (nodeIdMatch) {
+    const numericId = Number(nodeIdMatch[1])
+    return nodes.find((node) => node.id === numericId) ?? null
+  }
+  if (/^\d+$/.test(slug)) {
+    const numericId = Number(slug)
+    return nodes.find((node) => node.id === numericId) ?? null
+  }
+  return nodes.find((node) => {
+    const candidates = [
+      slugify(node.full_label ?? node.name),
+      slugify(node.name),
+      `${slugify(node.full_label ?? node.name)}-${node.id}`,
+      `${slugify(node.name)}-${node.id}`,
+    ]
+    return candidates.includes(normalizedSlug)
+  }) ?? null
 }
 
 export default function SpanList() {
@@ -1140,7 +2293,12 @@ export default function SpanList() {
   const [spansLoading, setSpansLoading] = useState(false)
 
   const [search, setSearch] = useState('')
+  const [directorySearch, setDirectorySearch] = useState('')
   const [statusFilter, setStatusFilter] = useState<SpanStatus | ''>('')
+  const [focusedSpanId, setFocusedSpanId] = useState<number | null>(null)
+  const [isDirectoryOpen, setIsDirectoryOpen] = useState(false)
+  const [isStreetViewOpen, setIsStreetViewOpen] = useState(false)
+  const [showPoleNames, setShowPoleNames] = useState(false)
 
   const [addOpen, setAddOpen] = useState(false)
   const [editOpen, setEditOpen] = useState(false)
@@ -1155,8 +2313,12 @@ export default function SpanList() {
   const [overviewLoading, setOverviewLoading] = useState(false)
   const [overviewStats, setOverviewStats] = useState({ total: 0, completed: 0, pending: 0 })
 
-  const [spanView, setSpanView] = useState<'list' | 'map'>('list')
+  const [spanView, setSpanView] = useState<'list' | 'map'>(() => (spanNodeSlug ? 'map' : 'list'))
   const [savedPairs, setSavedPairs] = useState<Array<{ from: number; to: number }>>([])
+
+  useEffect(() => {
+    setSpanView(spanNodeSlug ? 'map' : 'list')
+  }, [spanNodeSlug])
 
 
   useEffect(() => {
@@ -1175,9 +2337,7 @@ export default function SpanList() {
           setLastSynced(Date.now())
         }).catch(() => {})
       if (spanSiteSlug) {
-        const areaId = idFromSlug(spanSiteSlug)
-        const area = hit.find(a => a.id === areaId) ?? null
-        setSelectedArea(area)
+        setSelectedArea(matchAreaFromSlug(hit, spanSiteSlug))
       }
       return
     }
@@ -1191,9 +2351,7 @@ export default function SpanList() {
         cacheSet('spanlist_areas', sorted)
         setLastSynced(Date.now())
         if (spanSiteSlug) {
-          const areaId = idFromSlug(spanSiteSlug)
-          const area = sorted.find(a => a.id === areaId) ?? null
-          setSelectedArea(area)
+          setSelectedArea(matchAreaFromSlug(sorted, spanSiteSlug))
         }
       })
       .catch(() => {})
@@ -1355,9 +2513,7 @@ export default function SpanList() {
           setLastSynced(Date.now())
         }).catch(() => {})
       if (spanNodeSlug) {
-        const nodeId = idFromSlug(spanNodeSlug)
-        const node = hit.find(n => n.id === nodeId) ?? null
-        setSelectedNode(node)
+        setSelectedNode(matchNodeFromSlug(hit, spanNodeSlug))
       }
       return
     }
@@ -1372,9 +2528,7 @@ export default function SpanList() {
         cacheSet(cacheKey, list)
         setLastSynced(Date.now())
         if (spanNodeSlug) {
-          const nodeId = idFromSlug(spanNodeSlug)
-          const node = list.find(n => n.id === nodeId) ?? null
-          setSelectedNode(node)
+          setSelectedNode(matchNodeFromSlug(list, spanNodeSlug))
         }
       })
       .catch(() => setNodes([]))
@@ -1428,9 +2582,12 @@ export default function SpanList() {
           const list = Array.isArray(data) ? data : data?.data ?? []
           const parsed = list.map((p: any) => ({
             id:        p.id,
+            pole_db_id: p.pole?.id ?? p.pole_id ?? null,
+            pole_index: p.pole_index ?? p.sequence ?? p.pole?.pole_index ?? p.pole?.sequence ?? null,
             pole_code: p.pole?.pole_code ?? p.pole_code ?? `#${p.id}`,
             lat:       p.pole?.lat  ?? null,
             lng:       p.pole?.lng  ?? null,
+            skycable_status: p.pole?.skycable_status ?? p.skycable_status ?? 'pending',
           }))
           setPoles(parsed)
           cacheSet(pck, parsed, LIVE_NODE_DATA_TTL)
@@ -1445,9 +2602,12 @@ export default function SpanList() {
         const list = Array.isArray(data) ? data : data?.data ?? []
         const parsed = list.map((p: any) => ({
           id:        p.id,
+          pole_db_id: p.pole?.id ?? p.pole_id ?? null,
+          pole_index: p.pole_index ?? p.sequence ?? p.pole?.pole_index ?? p.pole?.sequence ?? null,
           pole_code: p.pole?.pole_code ?? p.pole_code ?? `#${p.id}`,
           lat:       p.pole?.lat  ?? null,
           lng:       p.pole?.lng  ?? null,
+          skycable_status: p.pole?.skycable_status ?? p.skycable_status ?? 'pending',
         }))
         setPoles(parsed)
         cacheSet(pck, parsed, LIVE_NODE_DATA_TTL)
@@ -1461,13 +2621,16 @@ export default function SpanList() {
       setSpans([])
       setPoles([])
       setSavedPairs([])
-      setSpanView('list')
+      setFocusedSpanId(null)
+      setSpanView(spanNodeSlug ? 'map' : 'list')
       return
     }
 
+    if (spanNodeSlug) setSpanView('map')
+
     loadSpans({ forceFresh: true })
     loadPoles({ forceFresh: true })
-  }, [selectedNode])
+  }, [selectedNode, spanNodeSlug])
 
   useEffect(() => {
     if (!selectedNode || !isOnline) return
@@ -1577,9 +2740,12 @@ export default function SpanList() {
               const list = Array.isArray(data) ? data : data?.data ?? []
               const parsed = list.map((p: any) => ({
                 id:        p.id,
+                pole_index: p.pole_index ?? p.sequence ?? p.pole?.pole_index ?? p.pole?.sequence ?? null,
+                pole_db_id: p.pole?.id ?? p.pole_id ?? null,
                 pole_code: p.pole?.pole_code ?? p.pole_code ?? `#${p.id}`,
                 lat:       p.pole?.lat  ?? null,
                 lng:       p.pole?.lng  ?? null,
+                skycable_status: p.pole?.skycable_status ?? p.skycable_status ?? 'pending',
               }))
               setPoles(parsed)
               cacheSet(`spanlist_poles_${selectedNode.id}`, parsed, LIVE_NODE_DATA_TTL)
@@ -1659,8 +2825,20 @@ export default function SpanList() {
     })
   }, [spans, search, statusFilter])
 
+  const directorySpans = useMemo(() => {
+    const q = directorySearch.trim().toLowerCase()
+    return filtered.filter((span) => {
+      if (!q) return true
+      const code = (span.span_code ?? '').toLowerCase()
+      const id = String(span.id)
+      const from = poleCode(span.from_pole).toLowerCase()
+      const to = poleCode(span.to_pole).toLowerCase()
+      return code.includes(q) || id.includes(q) || from.includes(q) || to.includes(q)
+    })
+  }, [filtered, directorySearch])
+
   const areaStats = useMemo(() => {
-    const nodeTotal = areas.reduce((sum, area) => sum + (area.nodes_count ?? 0), 0)
+    const nodeTotal = areas.reduce((sum, area) => sum + toFiniteNumber(area.nodes_count), 0)
     return { sites: areas.length, nodes: nodeTotal }
   }, [areas])
 
@@ -1680,10 +2858,28 @@ export default function SpanList() {
       pending: spans.filter(s => s.status === 'pending').length,
       ongoing: spans.filter(s => s.status === 'in_progress').length,
       done: spans.filter(s => s.status === 'completed').length,
-      cable: spans.reduce((sum, s) => sum + (s.strand_length ?? 0) * (s.number_of_runs ?? 0), 0),
+      cable: spans.reduce((sum, s) => sum + toFiniteNumber(s.strand_length) * toFiniteNumber(s.number_of_runs), 0),
     }),
     [spans],
   )
+
+  useEffect(() => {
+    if (!focusedSpanId) return
+    if (!filtered.some((span) => span.id === focusedSpanId)) {
+      setFocusedSpanId(null)
+    }
+  }, [filtered, focusedSpanId])
+
+  useEffect(() => {
+    if (spanView !== 'map') return
+    setIsDirectoryOpen(false)
+  }, [spanView, selectedNode?.id])
+
+  useEffect(() => {
+    if (isStreetViewOpen) {
+      setIsDirectoryOpen(false)
+    }
+  }, [isStreetViewOpen])
 
   const closeModal = () => {
     setAddOpen(false)
@@ -1714,6 +2910,12 @@ export default function SpanList() {
           span_code: addForm.span_code || null,
           strand_length: addForm.strand_length ? Number(addForm.strand_length) : null,
           number_of_runs: Number(addForm.number_of_runs) || 1,
+          nodes_count: addForm.nodes_count ? Number(addForm.nodes_count) : null,
+          amplifier: addForm.amplifier ? Number(addForm.amplifier) : null,
+          extender: addForm.extender ? Number(addForm.extender) : null,
+          tsc: addForm.tsc ? Number(addForm.tsc) : null,
+          power_supply: addForm.power_supply ? Number(addForm.power_supply) : null,
+          power_supply_case: addForm.power_supply_case ? Number(addForm.power_supply_case) : null,
         }),
       })
 
@@ -1868,7 +3070,7 @@ export default function SpanList() {
                     <article
                       key={area.id}
                       onClick={() => {
-                        navigate(`/spans/${slugify(area.name)}-${area.id}`)
+                        navigate(`/spans/${slugify(area.name)}`)
                         setSelectedArea(area)
                         setSelectedNode(null)
                         setSearch('')
@@ -2001,6 +3203,7 @@ export default function SpanList() {
             {nodes.map((node) => {
               const cfg = NODE_STATUS_CFG[node.status] ?? NODE_STATUS_CFG.pending
               const nodeCode = node.full_label ?? `Node #${node.id}`
+              const nodeRouteSegment = (node.node_id ?? '').trim() || slugify(node.name)
               const contractor = node.subcontractor?.name ?? 'No contractor'
               const team = node.team?.name ?? 'No team assigned'
               const spansCount = Number(node.spans_count ?? 0)
@@ -2010,7 +3213,7 @@ export default function SpanList() {
                 <article
                   key={node.id}
                   onClick={() => {
-                    navigate(`/spans/${slugify(selectedArea!.name)}-${selectedArea!.id}/${slugify(node.full_label ?? node.name)}-${node.id}`)
+                    navigate(`/spans/${slugify(selectedArea!.name)}/${encodeURIComponent(nodeRouteSegment)}`)
                     setSelectedNode(node)
                     setSearch('')
                     setStatusFilter('')
@@ -2111,7 +3314,7 @@ export default function SpanList() {
           },
           {
             label: selectedArea?.name,
-            onClick: () => { navigate(`/spans/${slugify(selectedArea?.name ?? '')}-${selectedArea?.id}`); setSelectedNode(null) },
+            onClick: () => { navigate(`/spans/${slugify(selectedArea?.name ?? '')}`); setSelectedNode(null) },
           },
           { label: selectedNode?.name },
         ]}
@@ -2165,7 +3368,7 @@ export default function SpanList() {
 
             <button
               type="button"
-              onClick={() => { navigate(`/spans/${slugify(selectedArea?.name ?? '')}-${selectedArea?.id}`); setSelectedNode(null) }}
+              onClick={() => { navigate(`/spans/${slugify(selectedArea?.name ?? '')}`); setSelectedNode(null) }}
               className={secondaryBtnCls}
               className="inline-flex h-10 items-center justify-center gap-2 rounded-xl border border-blue-100 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-blue-50"
             >
@@ -2243,19 +3446,180 @@ export default function SpanList() {
 
       {spanView === 'map' ? (
         <div
-          className="overflow-hidden rounded-[20px]"
+          className="relative overflow-hidden rounded-[20px]"
           style={{ height: 640, border: `1px solid #e2e8f0`, boxShadow: '0 20px 40px -30px rgba(15,23,42,0.28)' }}
         >
-          <LeafletSpanMap
-            poles={poles}
-            spans={spans}
-            savedPairs={savedPairs}
-            onPairSelected={(from, to) => {
-              setAddForm(f => ({ ...f, from_pole_id: String(from.id), to_pole_id: String(to.id) }))
-              setFormErr(null)
-              setAddOpen(true)
-            }}
-          />
+          <div className="relative z-0 h-full min-h-[420px]">
+            <LeafletSpanMap
+              poles={poles}
+              spans={filtered}
+              savedPairs={savedPairs}
+              admin={admin}
+              nodeId={selectedNode?.id ?? null}
+              onPolesReload={() => loadPoles({ forceFresh: true })}
+              focusedSpanId={focusedSpanId}
+              onStreetViewOpenChange={setIsStreetViewOpen}
+              showPoleNames={showPoleNames}
+              onPairSelected={(from, to) => {
+                setAddForm(f => ({ ...f, from_pole_id: String(from.id), to_pole_id: String(to.id) }))
+                setFormErr(null)
+                setAddOpen(true)
+              }}
+            />
+          </div>
+
+          <div className="absolute right-3 top-[58px] z-20 flex items-start gap-2">
+            <button
+              type="button"
+              onClick={() => setShowPoleNames((value) => !value)}
+              className="inline-flex h-9 items-center gap-2 rounded-xl px-3.5 text-xs font-semibold text-white shadow-lg transition"
+              style={{
+                background: showPoleNames ? 'rgba(37,99,235,0.92)' : 'rgba(30,41,59,0.92)',
+                boxShadow: showPoleNames
+                  ? '0 0 0 2px rgba(191,219,254,0.4), 0 10px 24px rgba(37,99,235,0.24)'
+                  : '0 10px 24px rgba(15,23,42,0.24)',
+                backdropFilter: 'blur(12px)',
+              }}
+            >
+              <i className={`bx ${showPoleNames ? 'bx-hide' : 'bx-show'} text-sm`} />
+              {showPoleNames ? 'Hide Pole Names' : 'Show Pole Names'}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                if (isStreetViewOpen) return
+                setIsDirectoryOpen(v => !v)
+              }}
+              disabled={isStreetViewOpen}
+              className="inline-flex h-9 items-center gap-2 rounded-xl px-3.5 text-xs font-semibold text-white shadow-lg transition"
+              style={{
+                background: isStreetViewOpen
+                  ? 'rgba(100,116,139,0.72)'
+                  : isDirectoryOpen
+                    ? 'rgba(15,23,42,0.92)'
+                    : 'rgba(30,41,59,0.92)',
+                boxShadow: isStreetViewOpen
+                  ? 'none'
+                  : isDirectoryOpen
+                    ? '0 0 0 2px rgba(191,219,254,0.35), 0 10px 24px rgba(15,23,42,0.24)'
+                    : '0 10px 24px rgba(15,23,42,0.24)',
+                backdropFilter: 'blur(12px)',
+                cursor: isStreetViewOpen ? 'not-allowed' : 'pointer',
+                opacity: isStreetViewOpen ? 0.65 : 1,
+              }}
+            >
+              <i className={`bx ${isDirectoryOpen ? 'bx-panel-right' : 'bx-menu-alt-right'} text-sm`} />
+              {isStreetViewOpen ? 'Spans Hidden' : 'Spans'}
+            </button>
+
+            <aside
+              className={`overflow-hidden rounded-2xl border bg-white/96 shadow-2xl backdrop-blur-md transition-all duration-300 ${
+                isDirectoryOpen && !isStreetViewOpen
+                  ? 'pointer-events-auto w-[290px] opacity-100'
+                  : 'pointer-events-none w-0 opacity-0'
+              }`}
+              style={{ borderColor: '#dbeafe', maxHeight: 'calc(100% - 72px)' }}
+            >
+              <div className="border-b px-4 py-3" style={{ borderColor: '#e2e8f0', background: 'linear-gradient(180deg, #ffffff 0%, #f8fbff 100%)' }}>
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-[10px] font-black uppercase tracking-[0.18em]" style={{ color: '#64748b' }}>
+                      Span Directory
+                    </p>
+                    <p className="mt-1 text-xs font-medium text-slate-500">
+                      Pick a span to isolate its pole pair
+                    </p>
+                  </div>
+                  {focusedSpanId && (
+                    <button
+                      type="button"
+                      onClick={() => setFocusedSpanId(null)}
+                      className="inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-[10px] font-semibold text-slate-600 transition hover:bg-slate-50"
+                      style={{ borderColor: '#e2e8f0' }}
+                    >
+                      <i className="bx bx-reset text-xs" />
+                      All
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              <div className="border-b px-4 py-3" style={{ borderColor: '#e2e8f0' }}>
+                <div className="relative">
+                  <i className="bx bx-search absolute left-3 top-1/2 -translate-y-1/2 text-sm text-slate-400" />
+                  <input
+                    value={directorySearch}
+                    onChange={(e) => setDirectorySearch(e.target.value)}
+                    placeholder="Search span or pole..."
+                    className="h-9 w-full rounded-xl bg-slate-50 pl-9 pr-3 text-sm font-medium text-slate-700 outline-none focus:bg-white"
+                    style={{ border: '1px solid #e2e8f0' }}
+                  />
+                </div>
+
+                <p className="mt-2 text-[11px] font-semibold text-slate-500">
+                  {directorySpans.length} {directorySpans.length === 1 ? 'span' : 'spans'}
+                </p>
+              </div>
+
+              <div className="overflow-y-auto p-2" style={{ maxHeight: 'calc(100% - 110px)' }}>
+                <div className="space-y-2">
+                  {directorySpans.map((span) => {
+                    const active = focusedSpanId === span.id
+                    const cfg = STATUS_CFG[span.status] ?? STATUS_CFG.pending
+                    return (
+                      <button
+                        key={span.id}
+                        type="button"
+                        onClick={() => setFocusedSpanId(active ? null : span.id)}
+                        className="w-full rounded-2xl border px-3 py-3 text-left transition"
+                        style={{
+                          borderColor: active ? '#86efac' : '#e2e8f0',
+                          background: active ? '#f0fdf4' : '#ffffff',
+                          boxShadow: active ? '0 18px 30px -24px rgba(34,197,94,0.4)' : 'none',
+                        }}
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="font-mono text-sm font-black" style={{ color: active ? '#15803d' : '#2563eb' }}>
+                              {span.span_code ?? `SPAN #${span.id}`}
+                            </p>
+                            <p className="mt-0.5 text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">
+                              Span #{span.id}
+                            </p>
+                          </div>
+                          <span
+                            className="inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em]"
+                            style={{ background: cfg.soft, color: cfg.text, border: `1px solid ${cfg.border}` }}
+                          >
+                            <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: cfg.dot }} />
+                            {cfg.label}
+                          </span>
+                        </div>
+
+                        <div className="mt-3 grid grid-cols-2 gap-2">
+                          <div className="rounded-xl bg-slate-50 px-3 py-2">
+                            <p className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">From</p>
+                            <p className="mt-1 font-mono text-xs font-bold text-slate-700">{poleCode(span.from_pole)}</p>
+                          </div>
+                          <div className="rounded-xl bg-slate-50 px-3 py-2">
+                            <p className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">To</p>
+                            <p className="mt-1 font-mono text-xs font-bold text-slate-700">{poleCode(span.to_pole)}</p>
+                          </div>
+                        </div>
+                      </button>
+                    )
+                  })}
+
+                  {directorySpans.length === 0 && (
+                    <div className="rounded-2xl border border-dashed px-4 py-8 text-center text-sm text-slate-500" style={{ borderColor: '#cbd5e1' }}>
+                      No spans matched your search.
+                    </div>
+                  )}
+                </div>
+              </div>
+            </aside>
+          </div>
         </div>
       ) : spansLoading ? (
         <div className="flex items-center justify-center py-20">
@@ -2289,21 +3653,57 @@ export default function SpanList() {
         />
       ) : (
         <div className="overflow-hidden rounded-2xl bg-white shadow-sm" style={{ border: `1px solid #e2e8f0` }}>
-          <div className="flex items-center justify-between gap-3 border-b px-5 py-4" className="border-slate-200 dark:border-slate-700">
-            <div>
-              <p className="text-[10px] font-semibold uppercase tracking-[0.16em]" style={{ color: '#64748b' }}>Span Inventory</p>
-              <h3 className="mt-1 text-base font-semibold" style={{ color: '#0f172a' }}>{selectedNode?.name}</h3>
+          <div
+            className="flex flex-wrap items-start justify-between gap-4 border-b px-5 py-4"
+            style={{
+              borderColor: '#e2e8f0',
+              background: 'linear-gradient(135deg, #ffffff 0%, #f8fbff 45%, #eef6ff 100%)',
+            }}
+          >
+            <div className="flex min-w-0 items-start gap-3">
+              <div
+                className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl text-white shadow-sm"
+                style={{ background: 'linear-gradient(135deg, #0f172a 0%, #2563eb 100%)' }}
+              >
+                <i className="bx bx-git-branch text-lg" />
+              </div>
+
+              <div className="min-w-0">
+                <p className="text-[10px] font-black uppercase tracking-[0.18em]" style={{ color: '#64748b' }}>
+                  Span Inventory
+                </p>
+                <h3 className="mt-1 truncate text-lg font-semibold tracking-tight" style={{ color: '#0f172a' }}>
+                  {selectedNode?.name}
+                </h3>
+                <p className="mt-1 text-xs font-medium text-slate-500">
+                  Active span records, pole pairing, cable length, and component visibility for this node.
+                </p>
+              </div>
             </div>
-            <span className="rounded-xl border bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-600" className="border-slate-200 dark:border-slate-700">
-              Showing {filtered.length} {filtered.length === 1 ? 'span' : 'spans'}
-            </span>
+
+            <div className="flex items-center gap-2">
+              <span
+                className="inline-flex items-center gap-2 rounded-2xl border px-3 py-2"
+                style={{ borderColor: '#bfdbfe', background: '#ffffff', boxShadow: '0 12px 24px -20px rgba(37,99,235,0.45)' }}
+              >
+                <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-blue-50 text-blue-600">
+                  <i className="bx bx-bar-chart-alt-2 text-base" />
+                </span>
+                <span>
+                  <span className="block text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">Visible</span>
+                  <span className="block text-sm font-semibold text-slate-700">
+                    {filtered.length} {filtered.length === 1 ? 'span' : 'spans'}
+                  </span>
+                </span>
+              </span>
+            </div>
           </div>
 
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[980px] text-sm">
+            <table className="w-full min-w-[1380px] text-sm">
               <thead>
                 <tr className="bg-slate-900">
-                  {['Span Code', 'From Pole', 'To Pole', 'Length', 'Runs', 'Exp. Cable', 'Status', ...(admin ? ['Actions'] : [])].map(h => (
+                  {['Span Code', 'From Pole', 'To Pole', 'Length', 'Runs', 'Exp. Cable', 'Node', 'Amp', 'Ext', 'TSC', 'PS', 'PS Case', 'Status', ...(admin ? ['Actions'] : [])].map(h => (
                     <th key={h} className="px-4 py-3 text-center text-[10px] font-black uppercase tracking-[0.16em] text-white/80 first:text-left">
                       {h}
                     </th>
@@ -2355,6 +3755,30 @@ export default function SpanList() {
                         <p className="font-mono text-sm font-black" style={{ color: '#0f172a' }}>{expectedCable(span.strand_length, span.number_of_runs)}</p>
                       </td>
 
+                      <td className="border-b px-3 py-3 text-center align-middle" style={{ borderColor: '#ECEEFF' }}>
+                        <p className="font-mono text-xs font-black" style={{ color: '#0f172a' }}>{summaryComp(span, 'node')}</p>
+                      </td>
+
+                      <td className="border-b px-3 py-3 text-center align-middle" style={{ borderColor: '#ECEEFF' }}>
+                        <p className="font-mono text-xs font-black" style={{ color: '#0f172a' }}>{summaryComp(span, 'amplifier')}</p>
+                      </td>
+
+                      <td className="border-b px-3 py-3 text-center align-middle" style={{ borderColor: '#ECEEFF' }}>
+                        <p className="font-mono text-xs font-black" style={{ color: '#0f172a' }}>{summaryComp(span, 'extender')}</p>
+                      </td>
+
+                      <td className="border-b px-3 py-3 text-center align-middle" style={{ borderColor: '#ECEEFF' }}>
+                        <p className="font-mono text-xs font-black" style={{ color: '#0f172a' }}>{summaryComp(span, 'tsc')}</p>
+                      </td>
+
+                      <td className="border-b px-3 py-3 text-center align-middle" style={{ borderColor: '#ECEEFF' }}>
+                        <p className="font-mono text-xs font-black" style={{ color: '#0f172a' }}>{summaryComp(span, 'powersupply')}</p>
+                      </td>
+
+                      <td className="border-b px-3 py-3 text-center align-middle" style={{ borderColor: '#ECEEFF' }}>
+                        <p className="font-mono text-xs font-black" style={{ color: '#0f172a' }}>{summaryComp(span, 'powersupply_case')}</p>
+                      </td>
+
                       <td className="border-b px-4 py-3 text-center align-middle" style={{ borderColor: '#ECEEFF' }}>
                         <StatusChip status={span.status} />
                       </td>
@@ -2393,7 +3817,7 @@ export default function SpanList() {
 
               <tfoot>
                 <tr className="bg-slate-50 dark:bg-slate-800/50">
-                  <td colSpan={admin ? 8 : 7} className="px-4 py-3 text-center text-[10px] font-black uppercase tracking-[0.16em]" style={{ color: '#64748b' }}>
+                  <td colSpan={admin ? 14 : 13} className="px-4 py-3 text-center text-[10px] font-black uppercase tracking-[0.16em]" style={{ color: '#64748b' }}>
                     Live filter active — {filtered.length} displayed
                   </td>
                 </tr>
@@ -2491,6 +3915,42 @@ export default function SpanList() {
               </span>
             </div>
           )}
+
+          <div className="rounded-2xl border bg-slate-50 p-4" style={{ borderColor: '#e2e8f0' }}>
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <div>
+                <p className="text-[10px] font-black uppercase tracking-[0.18em]" style={{ color: '#64748b' }}>Collectable Components</p>
+                <p className="mt-1 text-xs font-semibold text-slate-500">Complete these before declaring the selected pole pair.</p>
+              </div>
+              <span className="rounded-full border px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.14em]" style={{ borderColor: '#bfdbfe', background: '#eff6ff', color: '#2563eb' }}>
+                Map Pair Ready
+              </span>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+              {[
+                ['Nodes', 'nodes_count'],
+                ['Amplifier', 'amplifier'],
+                ['Extender', 'extender'],
+                ['TSC', 'tsc'],
+                ['Power Supply', 'power_supply'],
+                ['PS Case', 'power_supply_case'],
+              ].map(([label, key]) => (
+                <div key={key}>
+                  <label className={labelCls}>{label}</label>
+                  <input
+                    type="number"
+                    min="0"
+                    value={addForm[key as keyof AddForm]}
+                    onChange={e => setAddForm(f => ({ ...f, [key]: e.target.value }))}
+                    placeholder="0"
+                    className={inputCls}
+                    style={{ border: `1px solid #e2e8f0`, color: '#0f172a' }}
+                  />
+                </div>
+              ))}
+            </div>
+          </div>
 
           {formErr && <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-bold text-red-600">{formErr}</div>}
 

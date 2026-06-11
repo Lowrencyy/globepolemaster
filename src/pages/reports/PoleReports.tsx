@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { getToken, SKYCABLE_API } from '../../lib/auth'
 import { cacheGet, cacheSet } from '../../lib/cache'
+import telcovantageLogo from '../../assets/images/telcovantage-logo.png'
 
 interface Area {
   id: number
@@ -98,32 +99,39 @@ function StatCard({
   accent: string
 }) {
   return (
-    <div className="relative overflow-hidden rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
-      <div className="absolute inset-x-0 top-0 h-1" style={{ background: accent }} />
-
+    <div className="group relative min-w-0 overflow-hidden rounded-[24px] border border-slate-200/90 bg-[linear-gradient(180deg,#ffffff_0%,#f8fbff_100%)] px-4 py-4 shadow-[0_18px_40px_-28px_rgba(15,23,42,0.32)] transition duration-300 hover:-translate-y-1 hover:shadow-[0_28px_60px_-30px_rgba(37,99,235,0.28)]">
+      <div className="absolute inset-x-0 top-0 h-1.5" style={{ background: accent }} />
       <div
-        className="absolute right-0 top-0 h-14 w-14 rounded-bl-[22px] opacity-15"
-        style={{ background: accent }}
+        className="pointer-events-none absolute -right-8 -top-10 h-28 w-28 rounded-full blur-2xl"
+        style={{ background: accent, opacity: 0.16 }}
+      />
+      <div
+        className="pointer-events-none absolute inset-0 opacity-[0.08]"
+        style={{
+          backgroundImage:
+            'linear-gradient(rgba(37,99,235,0.18) 1px, transparent 1px), linear-gradient(90deg, rgba(37,99,235,0.18) 1px, transparent 1px)',
+          backgroundSize: '34px 34px',
+        }}
       />
 
-      <div className="relative flex items-start justify-between gap-3">
-        <div>
-          <p className="text-[10px] font-black uppercase tracking-[0.22em] text-slate-400">
+      <div className="relative flex items-center justify-between gap-4">
+        <div className="min-w-0">
+          <p className="text-[10px] font-black uppercase tracking-[0.24em] text-slate-400">
             {label}
           </p>
 
-          <p className="mt-4 font-mono text-3xl font-black leading-none text-slate-950">
+          <p className="mt-3 font-mono text-[2rem] font-black leading-none tracking-[-0.06em] text-slate-950">
             {value}
           </p>
 
-          <p className="mt-3 text-xs font-medium text-slate-500">
+          <p className="mt-2 max-w-[12rem] text-xs font-semibold leading-5 text-slate-500">
             {helper}
           </p>
         </div>
 
         <div
-          className="flex h-10 w-10 items-center justify-center rounded-2xl text-white shadow-sm"
-          style={{ background: accent }}
+          className="relative flex h-12 w-12 shrink-0 items-center justify-center rounded-[18px] text-white shadow-lg"
+          style={{ background: accent, boxShadow: '0 16px 26px -18px rgba(15,23,42,0.55)' }}
         >
           <i className={`bx ${icon} text-xl`} />
         </div>
@@ -293,46 +301,46 @@ export default function PoleReports() {
 
       {!selectedArea && (
         <>
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5">
-            <StatCard
-              label="Total Sites"
-              value={siteStats.totalSites}
-              helper="Registered coverage areas"
-              icon="bx-map"
-              accent={SITE_GRADIENTS[0]}
-            />
+          <div className="grid w-full grid-cols-5 gap-4">
+              <StatCard
+                label="Total Sites"
+                value={siteStats.totalSites}
+                helper="Registered coverage areas"
+                icon="bx-map"
+                accent={SITE_GRADIENTS[0]}
+              />
 
-            <StatCard
-              label="Total Nodes"
-              value={siteStats.totalNodes}
-              helper="Across all areas"
-              icon="bx-menu"
-              accent={SITE_GRADIENTS[1]}
-            />
+              <StatCard
+                label="Total Nodes"
+                value={siteStats.totalNodes}
+                helper="Across all areas"
+                icon="bx-menu"
+                accent={SITE_GRADIENTS[1]}
+              />
 
-            <StatCard
-              label="Pending"
-              value={siteStats.pending}
-              helper="Awaiting action"
-              icon="bx-time-five"
-              accent={SITE_GRADIENTS[2]}
-            />
+              <StatCard
+                label="Pending"
+                value={siteStats.pending}
+                helper="Awaiting action"
+                icon="bx-time-five"
+                accent={SITE_GRADIENTS[2]}
+              />
 
-            <StatCard
-              label="Ongoing"
-              value={siteStats.ongoing}
-              helper="Currently in progress"
-              icon="bx-loader-circle"
-              accent={SITE_GRADIENTS[3]}
-            />
+              <StatCard
+                label="Ongoing"
+                value={siteStats.ongoing}
+                helper="Currently in progress"
+                icon="bx-loader-circle"
+                accent={SITE_GRADIENTS[3]}
+              />
 
-            <StatCard
-              label="Completed"
-              value={siteStats.completed}
-              helper="Finished nodes"
-              icon="bx-check-circle"
-              accent={SITE_GRADIENTS[4]}
-            />
+              <StatCard
+                label="Completed"
+                value={siteStats.completed}
+                helper="Finished nodes"
+                icon="bx-check-circle"
+                accent={SITE_GRADIENTS[4]}
+              />
           </div>
 
           {areasLoading && areas.length === 0 ? (
@@ -361,62 +369,79 @@ export default function PoleReports() {
                     key={area.id}
                     type="button"
                     onClick={() => selectArea(area)}
-                    className="group relative overflow-hidden rounded-[26px] bg-white text-left shadow-sm ring-1 ring-slate-200 transition duration-300 hover:-translate-y-1 hover:shadow-xl"
+                    className="group relative overflow-hidden rounded-[30px] border border-slate-200/90 bg-[linear-gradient(180deg,#ffffff_0%,#f8fbff_100%)] text-left shadow-[0_18px_42px_-28px_rgba(15,23,42,0.34)] transition duration-300 hover:-translate-y-1.5 hover:border-blue-200 hover:shadow-[0_28px_60px_-30px_rgba(37,99,235,0.28)]"
                   >
                     <div className="absolute inset-x-0 top-0 z-10 h-1.5" style={{ background: gradient }} />
+                    <div
+                      className="pointer-events-none absolute -right-10 top-24 h-32 w-32 rounded-full blur-3xl transition duration-500 group-hover:scale-110"
+                      style={{ background: gradient, opacity: 0.14 }}
+                    />
 
-                    <div className="relative h-40 overflow-hidden bg-slate-100">
+                    <div className="relative h-44 overflow-hidden bg-slate-100">
                       {imageSrc ? (
                         <img
                           src={imageSrc}
                           alt={area.name}
-                          className="h-full w-full object-cover transition duration-500 group-hover:scale-105"
+                          className="h-full w-full object-cover transition duration-700 group-hover:scale-110"
                         />
                       ) : (
-                        <div className="flex h-full w-full items-center justify-center bg-gradient-to-br from-blue-50 via-white to-cyan-50">
+                        <div className="flex h-full w-full items-center justify-center bg-[radial-gradient(circle_at_top_left,#dbeafe_0%,#ffffff_42%,#cffafe_100%)]">
                           <img
-                            src="/logo.png"
-                            alt="Skycable"
-                            className="h-20 w-20 object-contain opacity-80"
+                            src={telcovantageLogo}
+                            alt="Telcovantage"
+                            className="w-[240px] max-w-[78%] object-contain opacity-95"
                           />
                         </div>
                       )}
 
-                      <div className="absolute inset-0 bg-gradient-to-t from-black/45 via-black/5 to-transparent" />
+                      <div className="absolute inset-0 bg-gradient-to-t from-slate-950/60 via-slate-950/10 to-transparent" />
 
-                      <span className="absolute left-4 top-4 rounded-full bg-white/95 px-3 py-1 text-[10px] font-black uppercase tracking-[0.18em] text-blue-700 shadow-sm">
-                        Site {index + 1}
+                      <span className="absolute left-4 top-4 rounded-full border border-white/70 bg-white/90 px-3 py-1 text-[10px] font-black uppercase tracking-[0.2em] text-blue-700 shadow-sm backdrop-blur-md">
+                        Coverage {index + 1}
                       </span>
 
+                      <div className="absolute left-4 bottom-4 right-16">
+                        <p className="line-clamp-2 text-xl font-black leading-tight tracking-[-0.05em] text-white drop-shadow-[0_10px_20px_rgba(15,23,42,0.4)]">
+                          {area.name}
+                        </p>
+                        <p className="mt-1 text-xs font-semibold text-white/75">
+                          Pole photo monitoring and node activity
+                        </p>
+                      </div>
+
                       <div
-                        className="absolute bottom-4 right-4 flex h-11 w-11 items-center justify-center rounded-2xl text-white shadow-lg"
-                        style={{ background: gradient }}
+                        className="absolute bottom-4 right-4 flex h-12 w-12 items-center justify-center rounded-[18px] text-white shadow-xl"
+                        style={{ background: gradient, boxShadow: '0 18px 30px -18px rgba(15,23,42,0.55)' }}
                       >
                         <i className="bx bx-map-alt text-[22px]" />
                       </div>
                     </div>
 
                     <div className="p-5">
-                      <h3 className="line-clamp-2 text-xl font-black leading-tight tracking-[-0.04em] text-slate-950">
-                        {area.name}
-                      </h3>
-
-                      <p className="mt-2 text-sm font-medium leading-6 text-slate-500">
-                        Regional coverage, nodes, and pole report monitoring.
-                      </p>
-
-                      <div className="mt-5 flex items-end justify-between border-t border-slate-100 pt-4">
-                        <div>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="rounded-2xl border border-slate-200 bg-white/80 px-3 py-3">
                           <p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">
                             Nodes
                           </p>
-
                           <p className="mt-1 font-mono text-3xl font-black leading-none text-slate-950">
                             {nodeCount}
                           </p>
                         </div>
+                        <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3">
+                          <p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">
+                            Scope
+                          </p>
+                          <p className="mt-1 text-sm font-black text-slate-900">
+                            Pole Reports
+                          </p>
+                        </div>
+                      </div>
 
-                        <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-3 py-2 text-xs font-black text-blue-700">
+                      <div className="mt-4 flex items-center justify-between border-t border-slate-100 pt-4">
+                        <p className="text-xs font-semibold text-slate-500">
+                          Open area dashboard
+                        </p>
+                        <span className="inline-flex items-center gap-1.5 rounded-full bg-slate-950 px-3.5 py-2 text-xs font-black text-white shadow-sm transition group-hover:bg-blue-700">
                           Open Site
                           <i className="bx bx-right-arrow-alt text-base" />
                         </span>
@@ -432,38 +457,38 @@ export default function PoleReports() {
 
       {selectedArea && (
         <>
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-            <StatCard
-              label="Total Nodes"
-              value={nodeStats.total}
-              helper="Selected site nodes"
-              icon="bx-git-branch"
-              accent={SITE_GRADIENTS[0]}
-            />
+          <div className="grid w-full grid-cols-4 gap-4">
+              <StatCard
+                label="Total Nodes"
+                value={nodeStats.total}
+                helper="Selected site nodes"
+                icon="bx-git-branch"
+                accent={SITE_GRADIENTS[0]}
+              />
 
-            <StatCard
-              label="Pending"
-              value={nodeStats.pending}
-              helper="Awaiting action"
-              icon="bx-time-five"
-              accent={SITE_GRADIENTS[2]}
-            />
+              <StatCard
+                label="Pending"
+                value={nodeStats.pending}
+                helper="Awaiting action"
+                icon="bx-time-five"
+                accent={SITE_GRADIENTS[2]}
+              />
 
-            <StatCard
-              label="Ongoing"
-              value={nodeStats.ongoing}
-              helper="Currently in progress"
-              icon="bx-loader-circle"
-              accent={SITE_GRADIENTS[3]}
-            />
+              <StatCard
+                label="Ongoing"
+                value={nodeStats.ongoing}
+                helper="Currently in progress"
+                icon="bx-loader-circle"
+                accent={SITE_GRADIENTS[3]}
+              />
 
-            <StatCard
-              label="Completed"
-              value={nodeStats.completed}
-              helper="Finished nodes"
-              icon="bx-check-circle"
-              accent={SITE_GRADIENTS[4]}
-            />
+              <StatCard
+                label="Completed"
+                value={nodeStats.completed}
+                helper="Finished nodes"
+                icon="bx-check-circle"
+                accent={SITE_GRADIENTS[4]}
+              />
           </div>
 
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-[22px] border border-slate-200 bg-white p-3 shadow-sm">
@@ -512,9 +537,13 @@ export default function PoleReports() {
                     key={node.id}
                     type="button"
                     onClick={() => navigate(`/reports/pole-reports/${node.id}`)}
-                    className="group relative overflow-hidden rounded-[26px] bg-white p-5 text-left shadow-sm ring-1 ring-slate-200 transition duration-300 hover:-translate-y-1 hover:shadow-xl"
+                    className="group relative overflow-hidden rounded-[30px] border border-slate-200/90 bg-[linear-gradient(180deg,#ffffff_0%,#f8fbff_100%)] p-5 text-left shadow-[0_18px_42px_-28px_rgba(15,23,42,0.34)] transition duration-300 hover:-translate-y-1.5 hover:border-blue-200 hover:shadow-[0_28px_60px_-30px_rgba(37,99,235,0.28)]"
                   >
                     <div className="absolute inset-x-0 top-0 h-1.5" style={{ background: gradient }} />
+                    <div
+                      className="pointer-events-none absolute -right-8 -top-10 h-28 w-28 rounded-full blur-3xl transition duration-500 group-hover:scale-110"
+                      style={{ background: gradient, opacity: 0.15 }}
+                    />
 
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
@@ -534,8 +563,8 @@ export default function PoleReports() {
                       </div>
 
                       <div
-                        className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl text-white"
-                        style={{ background: gradient }}
+                        className="flex h-12 w-12 shrink-0 items-center justify-center rounded-[18px] text-white shadow-lg"
+                        style={{ background: gradient, boxShadow: '0 16px 28px -18px rgba(15,23,42,0.5)' }}
                       >
                         <i className="bx bx-camera text-[22px]" />
                       </div>
@@ -585,7 +614,7 @@ export default function PoleReports() {
                     </div>
 
                     <div className="mt-5 grid grid-cols-2 gap-3">
-                      <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3">
+                      <div className="rounded-2xl border border-slate-200 bg-white px-3 py-3 shadow-sm">
                         <p className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">
                           Report Type
                         </p>
@@ -609,7 +638,7 @@ export default function PoleReports() {
                         Open pole photo report
                       </span>
 
-                      <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-3 py-2 text-xs font-black text-blue-700">
+                      <span className="inline-flex items-center gap-1.5 rounded-full bg-slate-950 px-3.5 py-2 text-xs font-black text-white shadow-sm transition group-hover:bg-blue-700">
                         View Photos
                         <i className="bx bx-right-arrow-alt text-base" />
                       </span>

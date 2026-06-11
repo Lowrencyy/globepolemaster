@@ -87,6 +87,11 @@ function authHeaders(): Record<string, string> {
     }
 }
 
+function toFiniteNumber(value: unknown, fallback = 0) {
+  const parsed = typeof value === 'number' ? value : Number(value)
+  return Number.isFinite(parsed) ? parsed : fallback
+}
+
 async function readJsonSafe<T>(response: Response): Promise<T | null> {
   const text = await response.text()
 
@@ -118,6 +123,10 @@ function SiteCardMap({ poles, siteName }: { poles: PolePin[]; siteName: string }
   // Start with a reasonable default; update once the container is measured
   const [w, setW] = useState(300)
   const divRef = useRef<HTMLDivElement>(null)
+  const safePoles = useMemo(
+    () => poles.filter((pole) => Number.isFinite(pole.lat) && Number.isFinite(pole.lng)),
+    [poles],
+  )
 
   useEffect(() => {
     const el = divRef.current
@@ -134,7 +143,7 @@ function SiteCardMap({ poles, siteName }: { poles: PolePin[]; siteName: string }
     return () => obs.disconnect()
   }, [])
 
-  if (poles.length === 0) {
+  if (safePoles.length === 0) {
     return (
       <div className="overflow-hidden rounded-xl border border-slate-100 bg-slate-50 dark:border-slate-700 dark:bg-slate-800">
         <img src={telcoImg} alt="Telcovantage" className="h-36 w-full object-contain p-4 opacity-40" />
@@ -143,8 +152,8 @@ function SiteCardMap({ poles, siteName }: { poles: PolePin[]; siteName: string }
   }
 
   const h = MAP_H
-  const lats = poles.map(p => p.lat)
-  const lngs = poles.map(p => p.lng)
+  const lats = safePoles.map(p => p.lat)
+  const lngs = safePoles.map(p => p.lng)
   const minLat = Math.min(...lats), maxLat = Math.max(...lats)
   const minLng = Math.min(...lngs), maxLng = Math.max(...lngs)
   // Use centroid (average) so the view centers on where most poles cluster,
@@ -206,7 +215,7 @@ function SiteCardMap({ poles, siteName }: { poles: PolePin[]; siteName: string }
       )}
 
       {/* Orange bounding box (only when multiple poles have spread) */}
-      {poles.length > 1 && bxW > 2 && bxH > 2 && (
+      {safePoles.length > 1 && bxW > 2 && bxH > 2 && (
         <div
           style={{
             position: 'absolute',
@@ -221,7 +230,7 @@ function SiteCardMap({ poles, siteName }: { poles: PolePin[]; siteName: string }
       )}
 
       {/* Pole dots */}
-      {poles.map((p, i) => {
+      {safePoles.map((p, i) => {
         const { xFrac: px, yFrac: py } = latLngToTileFrac(p.lat, p.lng, zoom)
         const color = STATUS_COLOR[p.status] ?? '#94a3b8'
         return (
@@ -367,14 +376,17 @@ export default function Sitelist() {
   // Fetch all skycable poles with GPS and group by area name (2-min cache)
   useEffect(() => {
     const POLE_MAP_KEY = 'sitelist_pole_map'
-    const cached = cacheGet<any[]>(POLE_MAP_KEY, TTL.MAP)
+      const cached = cacheGet<any[]>(POLE_MAP_KEY, TTL.MAP)
     const buildMap = (rows: any[]) => {
       const map = new Map<string, PolePin[]>()
       ;(Array.isArray(rows) ? rows : []).forEach((p: any) => {
         if (!p.lat || !p.lng || !p.area) return
+        const lat = toFiniteNumber(p.lat, Number.NaN)
+        const lng = toFiniteNumber(p.lng, Number.NaN)
+        if (!Number.isFinite(lat) || !Number.isFinite(lng)) return
         const key = (p.area as string).toLowerCase().trim()
         if (!map.has(key)) map.set(key, [])
-        map.get(key)!.push({ lat: Number(p.lat), lng: Number(p.lng), status: p.skycable_status ?? 'pending', area: key })
+        map.get(key)!.push({ lat, lng, status: p.skycable_status ?? 'pending', area: key })
       })
       return map
     }
@@ -393,10 +405,10 @@ export default function Sitelist() {
   const totals = useMemo(() => {
     return {
       sites: sites.length,
-      nodes: sites.reduce((sum, site) => sum + (site.nodes_count ?? 0), 0),
-      pending: sites.reduce((sum, site) => sum + (site.pending_count ?? 0), 0),
-      ongoing: sites.reduce((sum, site) => sum + (site.in_progress_count ?? 0), 0),
-      completed: sites.reduce((sum, site) => sum + (site.completed_count ?? 0), 0),
+      nodes: sites.reduce((sum, site) => sum + toFiniteNumber(site.nodes_count), 0),
+      pending: sites.reduce((sum, site) => sum + toFiniteNumber(site.pending_count), 0),
+      ongoing: sites.reduce((sum, site) => sum + toFiniteNumber(site.in_progress_count), 0),
+      completed: sites.reduce((sum, site) => sum + toFiniteNumber(site.completed_count), 0),
     }
   }, [sites])
 

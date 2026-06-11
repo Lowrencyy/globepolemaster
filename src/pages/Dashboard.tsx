@@ -73,85 +73,59 @@ function initCharts() {
   mini('#mini-chart3', [47, 15, 2, 67, 22, 20, 36, 60, 60, 30, 50, 11, 12, 3, 8])
   mini('#mini-chart4', [12, 14, 2, 47, 42, 15, 47, 75, 65, 19, 14, 2, 47, 42, 15])
 
-  const napEl = document.querySelector('#nap-slot-chart')
-  if (napEl) {
-    ;(napEl as any)._apexChart?.destroy()
-    const c = new AC(napEl, {
-      series: [342, 187, 95],
-      chart: { width: 227, height: 227, type: 'pie' },
-      labels: ['Active', 'Inactive', 'Free'],
-      colors: ['#5156be', '#f46a6a', '#f1b44c'],
-      stroke: { width: 0 },
-      legend: { show: false },
-    })
-    c.render()
-    ;(napEl as any)._apexChart = rememberChart(c)
-  }
+}
 
-  const spanEl = document.querySelector('#span-teardown-chart')
-  if (spanEl) {
-    ;(spanEl as any)._apexChart?.destroy()
-    const c = new AC(spanEl, {
-      series: [
-        { name: 'Completed', data: [14, 22, 18, 30, 25, 40, 35, 28, 42, 38, 50, 44] },
-        { name: 'Pending', data: [8, 12, 9, 15, 18, 10, 20, 14, 16, 22, 12, 18] },
-      ],
-      chart: { type: 'bar', height: 250, stacked: true, toolbar: { show: false } },
-      plotOptions: { bar: { columnWidth: '45%', borderRadius: 2 } },
-      colors: ['#5156be', '#f46a6a'],
-      fill: { opacity: 1 },
-      dataLabels: { enabled: false },
-      legend: { show: true, position: 'bottom' },
-      yaxis: { labels: { formatter: (y: number) => y.toFixed(0) } },
-      xaxis: {
-        categories: ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'],
-      },
-    })
-    c.render()
-    ;(spanEl as any)._apexChart = rememberChart(c)
-  }
+const REGION_COLORS = ['#5156be', '#50a5f1', '#34c38f', '#f1b44c', '#f46a6a', '#8b5cf6', '#ec4899']
 
+const MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December']
+const MONTH_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+
+type ChartLevel = 'month' | 'week' | 'day'
+
+function initAuditChart(pct: number) {
+  const w = window as any
+  const AC = w.ApexCharts ?? (typeof ApexCharts !== 'undefined' ? ApexCharts : null)
+  if (!AC) return
   const valEl = document.querySelector('#validation-progress-chart')
-  if (valEl) {
-    ;(valEl as any)._apexChart?.destroy()
-    const c = new AC(valEl, {
-      chart: { height: 270, type: 'radialBar', offsetY: -10 },
-      plotOptions: {
-        radialBar: {
-          startAngle: -130,
-          endAngle: 130,
-          dataLabels: {
-            name: { show: false },
-            value: {
-              offsetY: 10,
-              fontSize: '18px',
-              formatter: (v: number) => v + '%',
-            },
+  if (!valEl) return
+  ;(valEl as any)._apexChart?.destroy()
+  const c = new AC(valEl, {
+    chart: { height: 270, type: 'radialBar', offsetY: -10 },
+    plotOptions: {
+      radialBar: {
+        startAngle: -130,
+        endAngle: 130,
+        dataLabels: {
+          name: { show: false },
+          value: {
+            offsetY: 10,
+            fontSize: '18px',
+            formatter: (v: number) => v + '%',
           },
         },
       },
-      colors: ['#5156be'],
-      fill: {
-        type: 'gradient',
-        gradient: {
-          shade: 'dark',
-          type: 'horizontal',
-          gradientToColors: ['#34c38f'],
-          shadeIntensity: 0.15,
-          inverseColors: false,
-          opacityFrom: 1,
-          opacityTo: 1,
-          stops: [20, 60],
-        },
+    },
+    colors: ['#5156be'],
+    fill: {
+      type: 'gradient',
+      gradient: {
+        shade: 'dark',
+        type: 'horizontal',
+        gradientToColors: ['#34c38f'],
+        shadeIntensity: 0.15,
+        inverseColors: false,
+        opacityFrom: 1,
+        opacityTo: 1,
+        stops: [20, 60],
       },
-      stroke: { dashArray: 4 },
-      legend: { show: false },
-      series: [72],
-      labels: ['Approved'],
-    })
-    c.render()
-    ;(valEl as any)._apexChart = rememberChart(c)
-  }
+    },
+    stroke: { dashArray: 4 },
+    legend: { show: false },
+    series: [pct],
+    labels: ['Completed'],
+  })
+  c.render()
+  ;(valEl as any)._apexChart = rememberChart(c)
 }
 
 // ── NAP survey API types ──────────────────────────────────────────────────────
@@ -391,12 +365,16 @@ export default function Dashboard() {
   const abortControllersRef = useRef<Set<AbortController>>(new Set())
   const [mapView, setMapView] = useState<MapView>('satellite')
   const [surveyTab, setSurveyTab] = useState<'all' | 'active' | 'inactive' | 'for_removal'>('all')
+  const [regionTab, setRegionTab] = useState<'all' | 'completed' | 'in_progress' | 'pending'>('all')
+  const [mapPins, setMapPins] = useState<any[]>(() => cacheGet<any[]>('dashboard_map_pins') ?? [])
   const [nodes, setNodes] = useState<NodeStat[]>(() => cacheGet<NodeStat[]>('dashboard_nodes') ?? [])
   const [teardowns, setTeardowns] = useState<TeardownLog[]>(() => cacheGet<TeardownLog[]>('dashboard_tdlogs') ?? [])
   const [poleReports, setPoleReports] = useState<PoleReportLog[]>(() => cacheGet<PoleReportLog[]>('dashboard_pole_reports') ?? [])
   const [tdLoading, setTdLoading] = useState(() => !cacheGet<TeardownLog[]>('dashboard_tdlogs'))
   const [pulse, setPulse] = useState(false)
   const [dailyDate, setDailyDate] = useState(() => new Date().toISOString().slice(0, 10))
+  const [dailyTeardowns, setDailyTeardowns] = useState<TeardownLog[]>([])
+  const [dailyLoading, setDailyLoading] = useState(false)
   const [napSurveys, setNapSurveys] = useState<NapSurveyRow[]>(() => cacheGet<NapSurveyRow[]>('dashboard_nap_surveys') ?? [])
   const [napSurveyLoading, setNapSurveyLoading] = useState(() => !cacheGet<NapSurveyRow[]>('dashboard_nap_surveys'))
 
@@ -416,6 +394,14 @@ export default function Dashboard() {
   })
   const [syncText, setSyncText] = useState('Never')
   const lastManualSyncRef = useRef<number>(0)
+
+  // ── Span Teardown drill-down chart ──────────────────────────────────────────
+  const [chartYear, setChartYear] = useState(() => new Date().getFullYear())
+  const [chartTeardowns, setChartTeardowns] = useState<TeardownLog[]>([])
+  const [chartLevel, setChartLevel] = useState<ChartLevel>('month')
+  const [chartMonth, setChartMonth] = useState<number | null>(null)
+  const [chartWeek, setChartWeek] = useState<number | null>(null)
+  const [chartLoading, setChartLoading] = useState(false)
 
   function createSignal() {
     const controller = new AbortController()
@@ -676,20 +662,220 @@ export default function Dashboard() {
     fetchNodes()
     fetchTeardowns()
     fetchNapSurveys()
+    fetchMapPinsForRegion()
 
     const iv = setInterval(() => fetchTeardowns(true), 30_000)
     return () => clearInterval(iv)
   }, [])
 
+  async function fetchMapPinsForRegion() {
+    const cached = cacheGet<any[]>('dashboard_map_pins')
+    if (cached) { setMapPins(cached); return }
+    try {
+      const res = await fetch(`${SKYCABLE_API}/nodes/map-pins`, { headers: h() })
+      const data = await res.json()
+      if (Array.isArray(data)) {
+        setMapPins(data)
+        cacheSet('dashboard_map_pins', data)
+      }
+    } catch {}
+  }
+
+  async function fetchDailyTeardowns(date: string) {
+    setDailyLoading(true)
+    try {
+      const res = await fetch(`${SKYCABLE_API}/teardowns?per_page=500&date=${date}`, { headers: h() })
+      const data = await res.json()
+      const list: TeardownLog[] = Array.isArray(data) ? data : data?.data ?? []
+      // PHT (UTC+8) client-side safety filter
+      const filtered = list.filter(t => {
+        const ts = t.created_at
+        if (!ts) return true
+        const pht = new Date(new Date(ts).getTime() + 8 * 3600 * 1000)
+        return pht.toISOString().slice(0, 10) === date
+      })
+      setDailyTeardowns(filtered)
+    } catch {
+      setDailyTeardowns([])
+    } finally {
+      setDailyLoading(false)
+    }
+  }
+
+  useEffect(() => { fetchDailyTeardowns(dailyDate) }, [dailyDate])
+
+  async function fetchChartTeardowns(_year: number) {
+    const cacheKey = `dashboard_span_chart_all`
+    const cached = cacheGet<TeardownLog[]>(cacheKey)
+    if (cached) { setChartTeardowns(cached); return }
+    setChartLoading(true)
+    try {
+      const res = await fetch(`${SKYCABLE_API}/teardowns?per_page=500`, { headers: h() })
+      const data = await res.json()
+      const list: TeardownLog[] = Array.isArray(data) ? data : data?.data ?? []
+      setChartTeardowns(list)
+      cacheSet(cacheKey, list)
+    } catch {}
+    finally { setChartLoading(false) }
+  }
+
+  useEffect(() => { fetchChartTeardowns(chartYear) }, [chartYear])
+
+  useEffect(() => {
+    const AC = (window as any).ApexCharts ?? (typeof ApexCharts !== 'undefined' ? ApexCharts : null)
+    if (!AC || chartLoading) return
+
+    const isCompleted = (t: TeardownLog) => ['backend_approved', 'cleared'].includes(t.status)
+    const yearData = chartTeardowns.filter(t => new Date(t.created_at).getFullYear() === chartYear)
+
+    let categories: string[]
+    const comp: number[] = []
+    const pend: number[] = []
+
+    if (chartLevel === 'month') {
+      categories = MONTH_SHORT
+      for (let m = 0; m < 12; m++) {
+        const mt = yearData.filter(t => new Date(t.created_at).getMonth() === m)
+        comp.push(mt.filter(isCompleted).length)
+        pend.push(mt.filter(t => !isCompleted(t)).length)
+      }
+    } else if (chartLevel === 'week' && chartMonth !== null) {
+      categories = ['Week 1', 'Week 2', 'Week 3', 'Week 4', 'Week 5']
+      const monthTd = yearData.filter(t => new Date(t.created_at).getMonth() === chartMonth)
+      for (let w = 0; w < 5; w++) {
+        const wt = monthTd.filter(t => Math.min(Math.floor((new Date(t.created_at).getDate() - 1) / 7), 4) === w)
+        comp.push(wt.filter(isCompleted).length)
+        pend.push(wt.filter(t => !isCompleted(t)).length)
+      }
+    } else if (chartLevel === 'day' && chartMonth !== null && chartWeek !== null) {
+      categories = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+      const weekTd = yearData.filter(t => {
+        const d = new Date(t.created_at)
+        return d.getMonth() === chartMonth && Math.min(Math.floor((d.getDate() - 1) / 7), 4) === chartWeek
+      })
+      for (let d = 0; d < 7; d++) {
+        const dt = weekTd.filter(t => (new Date(t.created_at).getDay() + 6) % 7 === d)
+        comp.push(dt.filter(isCompleted).length)
+        pend.push(dt.filter(t => !isCompleted(t)).length)
+      }
+    } else {
+      return
+    }
+
+    const el = document.querySelector('#span-teardown-chart')
+    if (!el) return
+
+    const timer = setTimeout(() => {
+      ;(el as any)._apexChart?.destroy()
+      const lvl = chartLevel
+      const c = new AC(el, {
+        series: [
+          { name: 'Completed', data: comp },
+          { name: 'Pending', data: pend },
+        ],
+        chart: {
+          type: 'bar',
+          height: 250,
+          stacked: true,
+          toolbar: { show: false },
+          events: {
+            dataPointSelection: (_: any, __: any, cfg: any) => {
+              const idx = cfg.dataPointIndex
+              if (lvl === 'month') {
+                setChartMonth(idx)
+                setChartLevel('week')
+              } else if (lvl === 'week') {
+                setChartWeek(idx)
+                setChartLevel('day')
+              }
+            },
+          },
+        },
+        plotOptions: { bar: { columnWidth: '45%', borderRadius: 2 } },
+        colors: ['#5156be', '#f46a6a'],
+        fill: { opacity: 1 },
+        dataLabels: { enabled: false },
+        legend: { show: true, position: 'bottom' },
+        yaxis: { labels: { formatter: (y: number) => y.toFixed(0) } },
+        xaxis: {
+          categories,
+          labels: { style: { cursor: lvl !== 'day' ? 'pointer' : 'default' } },
+        },
+        tooltip: { y: { formatter: (v: number) => `${v} span(s)` } },
+      })
+      c.render()
+      ;(el as any)._apexChart = rememberChart(c)
+    }, 50)
+    return () => clearTimeout(timer)
+  }, [chartTeardowns, chartLevel, chartMonth, chartWeek, chartLoading])
+
+  function handleChartBack() {
+    if (chartLevel === 'day') {
+      setChartLevel('week')
+      setChartWeek(null)
+    } else if (chartLevel === 'week') {
+      setChartLevel('month')
+      setChartMonth(null)
+    }
+  }
+
   const dashStats = useMemo(() => {
     const total = nodes.length
     const completed = nodes.filter(n => n.status === 'completed').length
     const inProgress = nodes.filter(n => n.status === 'in_progress').length
+    const pending = total - completed - inProgress
     const pct = total > 0 ? Math.round((completed / total) * 100) : 0
     const pendingTd = teardowns.filter(l => !['backend_approved'].includes(l.status)).length
 
-    return { total, completed, inProgress, pct, pendingTd }
+    return { total, completed, inProgress, pending, pct, pendingTd }
   }, [nodes, teardowns])
+
+  useEffect(() => {
+    const timer = setTimeout(() => initAuditChart(dashStats.pct), 50)
+    return () => clearTimeout(timer)
+  }, [dashStats.pct])
+
+  const regionStats = useMemo(() => {
+    const filtered = regionTab === 'all'
+      ? mapPins
+      : mapPins.filter(p => (p.status ?? '').toUpperCase() === regionTab.toUpperCase())
+    const counts: Record<string, number> = {}
+    for (const pin of filtered) {
+      const site = (pin.sites ?? pin.province ?? 'Unknown').trim() || 'Unknown'
+      counts[site] = (counts[site] ?? 0) + 1
+    }
+    return Object.entries(counts)
+      .sort((a, b) => b[1] - a[1])
+      .map(([label, count], i) => ({
+        label,
+        count,
+        color: REGION_COLORS[i % REGION_COLORS.length],
+        pct: filtered.length > 0 ? Math.round((count / filtered.length) * 100) : 0,
+      }))
+  }, [mapPins, regionTab])
+
+  useEffect(() => {
+    const AC = (window as any).ApexCharts ?? (typeof ApexCharts !== 'undefined' ? ApexCharts : null)
+    if (!AC) return
+    const el = document.querySelector('#nap-slot-chart')
+    if (!el) return
+    const timer = setTimeout(() => {
+      ;(el as any)._apexChart?.destroy()
+      if (regionStats.length === 0) return
+      const c = new AC(el, {
+        series: regionStats.map(r => r.count),
+        chart: { width: 227, height: 227, type: 'pie' },
+        labels: regionStats.map(r => r.label),
+        colors: regionStats.map(r => r.color),
+        stroke: { width: 0 },
+        legend: { show: false },
+        dataLabels: { formatter: (val: number) => `${val.toFixed(1)}%` },
+      })
+      c.render()
+      ;(el as any)._apexChart = rememberChart(c)
+    }, 50)
+    return () => clearTimeout(timer)
+  }, [regionStats])
 
   const recentTeardowns = useMemo<FeedRow[]>(() => {
     const rows: FeedRow[] = [
@@ -706,10 +892,7 @@ export default function Dashboard() {
     [napSurveys, surveyTab]
   )
 
-  const dailyApproved = useMemo(
-    () => teardowns.filter(l => l.status === 'backend_approved' && l.created_at.slice(0, 10) === dailyDate),
-    [teardowns, dailyDate]
-  )
+  const dailyApproved = dailyTeardowns
 
   return (
     <>
@@ -793,30 +976,35 @@ export default function Dashboard() {
             value: dashStats.total,
             badge: `${dashStats.pct}% done`,
             badgeColor: 'bg-green-500/40 text-green-500 dark:bg-green-500/30',
+            sub: `${dashStats.completed} completed, ${dashStats.inProgress} ongoing`,
             chartId: 'mini-chart1',
           },
           {
             label: 'Completed Nodes',
             value: dashStats.completed,
-            badge: `${dashStats.pct}% of total`,
+            badge: dashStats.total > 0 ? `${dashStats.pct}% of total` : '—',
             badgeColor: 'bg-green-500/40 text-green-500 dark:bg-green-500/30',
+            sub: `out of ${dashStats.total} total nodes`,
             chartId: 'mini-chart2',
           },
           {
             label: 'In Progress',
             value: dashStats.inProgress,
-            badge: 'Ongoing',
-            badgeColor: 'bg-violet-500/40 text-violet-500 dark:bg-violet-500/30',
+            badge: dashStats.inProgress > 0 ? 'Ongoing' : 'None active',
+            badgeColor: dashStats.inProgress > 0
+              ? 'bg-violet-500/40 text-violet-500 dark:bg-violet-500/30'
+              : 'bg-gray-400/40 text-gray-500 dark:bg-gray-500/30',
+            sub: `${dashStats.pending} pending to start`,
             chartId: 'mini-chart3',
           },
           {
-            label: 'Pending Teardowns',
-            value: dashStats.pendingTd,
-            badge: dashStats.pendingTd > 0 ? 'Needs review' : 'Clear',
-            badgeColor:
-              dashStats.pendingTd > 0
-                ? 'bg-yellow-500/40 text-yellow-500 dark:bg-yellow-500/30'
-                : 'bg-green-500/40 text-green-500 dark:bg-green-500/30',
+            label: 'Pending Nodes',
+            value: dashStats.pending,
+            badge: dashStats.pending > 0 ? 'Not started' : 'All active',
+            badgeColor: dashStats.pending > 0
+              ? 'bg-yellow-500/40 text-yellow-500 dark:bg-yellow-500/30'
+              : 'bg-green-500/40 text-green-500 dark:bg-green-500/30',
+            sub: `${dashStats.pendingTd} teardown(s) need review`,
             chartId: 'mini-chart4',
           },
         ].map(card => (
@@ -839,7 +1027,7 @@ export default function Dashboard() {
                   {card.badge}
                 </span>
                 <span className="ltr:ml-1.5 rtl:mr-1.5 text-gray-700 text-13 dark:text-zinc-100 truncate">
-                  Since last week
+                  {card.sub}
                 </span>
               </div>
             </div>
@@ -853,21 +1041,27 @@ export default function Dashboard() {
           <div className={`card-h-100 min-w-0 ${prettyCard}`}>
             <div className="card-body h-full flex flex-col justify-center min-w-0">
               <div className="flex flex-wrap items-center mb-3 gap-2 min-w-0">
-                <h5 className="mr-2 font-medium text-gray-800 text-15 dark:text-gray-100 truncate">
-                  NAP Slot Distribution
-                </h5>
+                <div className="grow min-w-0">
+                  <h5 className="font-medium text-gray-800 text-15 dark:text-gray-100 truncate">
+                    Node Distribution by Site
+                  </h5>
+                  <p className="text-xs text-slate-400 dark:text-zinc-500 mt-0.5">
+                    {mapPins.length} nodes across {regionStats.length} site{regionStats.length !== 1 ? 's' : ''}
+                  </p>
+                </div>
                 <div className="flex gap-1 ltr:ml-auto rtl:mr-auto shrink-0 rounded-2xl bg-slate-100 p-1 dark:bg-zinc-900">
-                  {['ALL', '1M', '6M', '1Y'].map((t, i) => (
+                  {([['all', 'All'], ['completed', 'Done'], ['in_progress', 'Active'], ['pending', 'Pending']] as const).map(([val, lbl]) => (
                     <button
-                      key={t}
+                      key={val}
                       type="button"
+                      onClick={() => setRegionTab(val)}
                       className={`rounded-xl px-3 py-1.5 text-[12px] font-semibold transition-colors ${
-                        i === 1
+                        regionTab === val
                           ? 'bg-violet-600 text-white shadow-sm'
                           : 'text-slate-500 hover:bg-white hover:text-violet-600 dark:text-zinc-300 dark:hover:bg-zinc-800'
                       }`}
                     >
-                      {t}
+                      {lbl}
                     </button>
                   ))}
                 </div>
@@ -875,33 +1069,34 @@ export default function Dashboard() {
 
               <div className="grid grid-cols-12 2xl:gap-6 justify-items-stretch min-w-0">
                 <div className="flex items-center justify-center col-span-12 md:col-span-6 min-w-0">
-                  <div id="nap-slot-chart" className="apex-charts min-w-0" />
+                  {regionStats.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center h-[227px] text-slate-400 dark:text-zinc-500 text-xs gap-2">
+                      <i className="bx bx-map-alt text-3xl" />
+                      <span>No node location data</span>
+                    </div>
+                  ) : (
+                    <div id="nap-slot-chart" className="apex-charts min-w-0" />
+                  )}
                 </div>
 
                 <div className="col-span-12 md:col-span-6 flex items-center min-w-0">
-                  <div className="w-full space-y-4 md:text-left min-w-0">
-                    {[
-                      { label: 'Active', val: '342 slots', sub: 'In use', dot: 'text-violet-500' },
-                      { label: 'Inactive', val: '187 slots', sub: 'Disconnected', dot: 'text-red-400' },
-                      { label: 'Free', val: '95 slots', sub: 'Available', dot: 'text-yellow-500' },
-                    ].map(item => (
-                      <div
-                        key={item.label}
-                        className="grid grid-cols-[105px_minmax(0,1fr)] items-center gap-x-3 min-w-0"
-                      >
-                        <div className="flex items-center text-gray-800 dark:text-zinc-100 min-w-0">
-                          <i className={`mr-2 mdi mdi-circle text-10 ${item.dot}`} />
-                          <span className="truncate">{item.label}</span>
-                        </div>
-
-                        <div className="text-gray-800 dark:text-gray-100 min-w-0">
-                          <span className="font-semibold whitespace-nowrap">{item.val}</span>
-                          <span className="ml-1 font-normal text-gray-700 dark:text-zinc-100 text-14 break-words">
-                            — {item.sub}
-                          </span>
-                        </div>
+                  <div className="w-full space-y-3 md:text-left min-w-0">
+                    {regionStats.map(item => (
+                      <div key={item.label} className="flex items-center gap-2 min-w-0">
+                        <span
+                          className="inline-block h-2.5 w-2.5 shrink-0 rounded-full"
+                          style={{ background: item.color }}
+                        />
+                        <span className="grow text-gray-800 dark:text-zinc-100 text-13 truncate">{item.label}</span>
+                        <span className="shrink-0 font-semibold text-gray-700 dark:text-gray-100 text-13">
+                          {item.count}
+                          <span className="ml-1 text-[10px] font-normal text-slate-400 dark:text-zinc-500">({item.pct}%)</span>
+                        </span>
                       </div>
                     ))}
+                    {regionStats.length === 0 && (
+                      <p className="text-xs text-slate-400 dark:text-zinc-500">No data available</p>
+                    )}
                   </div>
                 </div>
               </div>
@@ -915,19 +1110,53 @@ export default function Dashboard() {
             <div className="col-span-12 2xl:col-span-8 min-w-0">
               <div className={`card-h-100 min-w-0 ${prettyCard}`}>
                 <div className="card-body min-w-0">
-                  <div className="flex flex-wrap items-center mb-6 gap-2 min-w-0">
-                    <h5 className="mr-2 text-gray-800 text-15 dark:text-gray-100 truncate">
-                      Span Teardown Overview
-                    </h5>
-                    <div className="ltr:ml-auto rtl:mr-auto shrink-0">
-                      <select className="rounded-xl border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 outline-none dark:border-zinc-600 dark:bg-zinc-700 dark:text-gray-100">
-                        {['2026', '2025', '2024'].map(y => (
-                          <option key={y}>{y}</option>
+                  <div className="flex flex-wrap items-center mb-4 gap-2 min-w-0">
+                    <div className="grow min-w-0">
+                      <h5 className="text-gray-800 text-15 dark:text-gray-100 truncate">
+                        Span Teardown Overview
+                      </h5>
+                      <div className="flex items-center gap-1.5 mt-0.5 min-w-0">
+                        {chartLevel !== 'month' && (
+                          <button
+                            onClick={handleChartBack}
+                            className="flex items-center gap-1 text-[11px] font-semibold text-violet-500 hover:text-violet-700 shrink-0"
+                          >
+                            ← Back
+                          </button>
+                        )}
+                        <span className="text-[11px] text-slate-400 dark:text-zinc-500 truncate">
+                          {chartYear}
+                          {chartLevel !== 'month' && chartMonth !== null && ` › ${MONTH_NAMES[chartMonth]}`}
+                          {chartLevel === 'day' && chartWeek !== null && ` › Week ${chartWeek + 1}`}
+                          {chartLevel !== 'day' && chartLevel !== 'month' && ' — click a bar to drill into weeks'}
+                          {chartLevel === 'month' && ' — click a month to see weekly breakdown'}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="shrink-0">
+                      <select
+                        value={chartYear}
+                        onChange={e => {
+                          setChartYear(Number(e.target.value))
+                          setChartLevel('month')
+                          setChartMonth(null)
+                          setChartWeek(null)
+                        }}
+                        className="rounded-xl border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 outline-none dark:border-zinc-600 dark:bg-zinc-700 dark:text-gray-100"
+                      >
+                        {[new Date().getFullYear(), new Date().getFullYear() - 1, new Date().getFullYear() - 2].map(y => (
+                          <option key={y} value={y}>{y}</option>
                         ))}
                       </select>
                     </div>
                   </div>
-                  <div id="span-teardown-chart" className="apex-charts flex justify-center min-w-0" />
+                  {chartLoading ? (
+                    <div className="flex items-center justify-center" style={{ height: 250 }}>
+                      <div className="w-6 h-6 border-2 border-violet-500 border-t-transparent rounded-full animate-spin" />
+                    </div>
+                  ) : (
+                    <div id="span-teardown-chart" className="apex-charts flex justify-center min-w-0" />
+                  )}
                 </div>
               </div>
             </div>
@@ -942,13 +1171,31 @@ export default function Dashboard() {
 
                   <div className="mt-4 space-y-3 min-w-0">
                     {[
-                      { label: 'Approved', val: '72%', dot: 'text-violet-500' },
-                      { label: 'Pending', val: '18%', dot: 'text-yellow-500' },
-                      { label: 'Rejected', val: '10%', dot: 'text-red-500' },
+                      {
+                        label: 'Completed',
+                        val: dashStats.total > 0 ? `${Math.round((dashStats.completed / dashStats.total) * 100)}%` : '0%',
+                        sub: `${dashStats.completed} nodes`,
+                        dot: 'text-violet-500',
+                      },
+                      {
+                        label: 'Ongoing',
+                        val: dashStats.total > 0 ? `${Math.round((dashStats.inProgress / dashStats.total) * 100)}%` : '0%',
+                        sub: `${dashStats.inProgress} nodes`,
+                        dot: 'text-yellow-500',
+                      },
+                      {
+                        label: 'Pending',
+                        val: dashStats.total > 0 ? `${Math.round(((dashStats.total - dashStats.completed - dashStats.inProgress) / dashStats.total) * 100)}%` : '0%',
+                        sub: `${dashStats.total - dashStats.completed - dashStats.inProgress} nodes`,
+                        dot: 'text-red-500',
+                      },
                     ].map(s => (
                       <div key={s.label} className="flex items-center min-w-0">
                         <i className={`mr-2 align-middle mdi mdi-circle text-10 ${s.dot}`} />
-                        <span className="grow text-gray-700 dark:text-zinc-100 text-13 truncate">{s.label}</span>
+                        <span className="grow text-gray-700 dark:text-zinc-100 text-13 truncate">
+                          {s.label}
+                          <span className="ml-1 text-[10px] text-gray-400 dark:text-zinc-500">{s.sub}</span>
+                        </span>
                         <span className="shrink-0 font-medium text-gray-700 dark:text-gray-100 text-13">
                           {s.val}
                         </span>
@@ -1474,25 +1721,35 @@ export default function Dashboard() {
                 onChange={e => setDailyDate(e.target.value)}
                 className="text-xs border border-slate-300 dark:border-zinc-600 rounded-xl px-3 py-1.5 bg-white dark:bg-zinc-700 text-gray-700 dark:text-zinc-100 outline-none focus:border-violet-400"
               />
-              <span
-                className={`text-[10px] font-semibold px-2.5 py-1 rounded-lg ${
-                  dailyApproved.length > 0
-                    ? 'bg-green-500/15 text-green-600 dark:text-green-400'
-                    : 'bg-gray-100 text-gray-500 dark:bg-zinc-700 dark:text-zinc-400'
-                }`}
-              >
-                {dailyApproved.length} approved
-              </span>
+              {dailyLoading ? (
+                <span className="text-[10px] font-semibold px-2.5 py-1 rounded-lg bg-gray-100 text-gray-500 dark:bg-zinc-700 dark:text-zinc-400">
+                  Loading…
+                </span>
+              ) : (
+                <span
+                  className={`text-[10px] font-semibold px-2.5 py-1 rounded-lg ${
+                    dailyApproved.length > 0
+                      ? 'bg-violet-500/15 text-violet-600 dark:text-violet-400'
+                      : 'bg-gray-100 text-gray-500 dark:bg-zinc-700 dark:text-zinc-400'
+                  }`}
+                >
+                  {dailyApproved.length} teardown{dailyApproved.length !== 1 ? 's' : ''}
+                </span>
+              )}
             </div>
           </div>
 
           <div className="p-4 min-w-0">
-            {dailyApproved.length === 0 ? (
+            {dailyLoading ? (
+              <div className="flex items-center justify-center h-[220px]">
+                <div className="h-7 w-7 rounded-full border-2 border-violet-500 border-t-transparent animate-spin" />
+              </div>
+            ) : dailyApproved.length === 0 ? (
               <div className="h-[220px]">
                 <PrettyEmptyState
                   compact
-                  icon="bx bx-check-shield"
-                  title={`No backend-approved teardowns for ${dailyDate}`}
+                  icon="bx bx-broadcast"
+                  title={`No teardowns found for ${dailyDate}`}
                   subtitle="Try a different date or check back later."
                 />
               </div>
@@ -1515,8 +1772,9 @@ export default function Dashboard() {
                           'Expected Cable',
                           'Actual Cable',
                           'Collection',
+                          'Status',
                           'Offline',
-                          'Approved At',
+                          'Submitted',
                         ].map(th => (
                           <th
                             key={th}
@@ -1604,6 +1862,12 @@ export default function Dashboard() {
                               ) : (
                                 <span className="text-xs text-gray-400">—</span>
                               )}
+                            </td>
+
+                            <td className="p-3 whitespace-nowrap">
+                              <span className={`inline-flex text-[10px] font-semibold px-2 py-0.5 rounded-full ${statusColor(log.status)}`}>
+                                {statusLabel(log.status)}
+                              </span>
                             </td>
 
                             <td className="p-3 text-center whitespace-nowrap">

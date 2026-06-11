@@ -1,117 +1,121 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { getHomeRoute } from '../lib/auth'
-
-const LINE1 = 'TELCOVANTAGE'.split('')
-const LINE2 = 'PHILIPPINES'.split('')
+import logoImg from '../assets/images/telco-mainlogo.png'
 
 export default function LoadingScreen() {
   const navigate = useNavigate()
-  const [phase, setPhase] = useState<'intro' | 'explode'>('intro')
+  const [phase, setPhase] = useState<'intro' | 'outro'>('intro')
   const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
 
   useEffect(() => {
-    // After text animates in → trigger circle explosion
-    timerRef.current = setTimeout(() => setPhase('explode'), 1600)
+    timerRef.current = setTimeout(() => setPhase('outro'), 2350)
     return () => clearTimeout(timerRef.current)
   }, [])
 
   useEffect(() => {
-    if (phase !== 'explode') return
+    if (phase !== 'outro') return
     timerRef.current = setTimeout(() => {
       navigate(getHomeRoute(), { replace: true })
-    }, 950)
+    }, 1320)
     return () => clearTimeout(timerRef.current)
   }, [phase, navigate])
 
   return (
-    <div className="fixed inset-0 flex flex-col items-center justify-center overflow-hidden bg-white">
+    <div className="fixed inset-0 overflow-hidden bg-[#fbfffd]">
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,_rgba(219,242,235,0.42),_transparent_46%),radial-gradient(circle_at_bottom,_rgba(233,244,239,0.82),_transparent_55%)]" />
 
-      {/* Green circle explosion */}
-      <div
-        className="absolute rounded-full"
-        style={{
-          width: 120, height: 120,
-          background: '#0A5C3B',
-          top: '50%', left: '50%',
-          transform: 'translate(-50%, -50%)',
-          animation: phase === 'explode'
-            ? 'circleExplode 0.9s cubic-bezier(.55,.0,.1,1) forwards'
-            : 'none',
-        }}
-      />
+      <div className="relative flex h-full items-center justify-center px-6">
+        <div
+          className="relative z-10 flex flex-col items-center"
+          style={{
+            animation: phase === 'outro'
+              ? 'contentOutro 1.32s cubic-bezier(.32,.72,0,1) forwards'
+              : 'none',
+          }}
+        >
+          <div className="relative mb-[-8px] flex h-[290px] w-[290px] items-center justify-center overflow-hidden sm:h-[340px] sm:w-[340px]">
+            <div className="absolute inset-0 rounded-full bg-[radial-gradient(circle,_rgba(255,255,255,0.36),_rgba(255,255,255,0)_72%)]" />
+            <div className="logo-shine-mask absolute inset-0">
+              <div className="logo-shine" />
+            </div>
+            <img
+              src={logoImg}
+              alt="TelcoVantage"
+              className="logo-enter relative z-10 h-[235px] w-[235px] object-contain sm:h-[270px] sm:w-[270px]"
+            />
+          </div>
 
-      {/* Text content */}
-      <div
-        className="relative z-10 flex flex-col items-center"
-        style={{
-          animation: phase === 'explode'
-            ? 'contentZoom 0.9s cubic-bezier(.55,.0,.1,1) forwards'
-            : 'none',
-        }}
-      >
-        {/* TELCOVANTAGE */}
-        <div className="flex items-center justify-center gap-[1px] mb-1">
-          {LINE1.map((char, i) => (
-            <span
-              key={i}
-              className="letter-anim"
-              style={{
-                fontSize: 32,
-                fontWeight: 900,
-                color: '#0A5C3B',
-                letterSpacing: 3,
-                animationDelay: `${0.15 + i * 0.045}s`,
-              }}
-            >
-              {char}
-            </span>
-          ))}
-        </div>
-
-        {/* PHILIPPINES */}
-        <div className="flex items-center justify-center gap-[1px]">
-          {LINE2.map((char, i) => (
-            <span
-              key={i}
-              className="letter-anim"
-              style={{
-                fontSize: 20,
-                fontWeight: 700,
-                color: '#202020',
-                letterSpacing: 6,
-                animationDelay: `${0.75 + i * 0.045}s`,
-              }}
-            >
-              {char}
-            </span>
-          ))}
+          <div className="title-enter text-center text-[32px] font-black tracking-[-0.04em] text-[#18392f] sm:text-[40px]">
+            TELCOVANTAGE POLE MASTER V2.0
+          </div>
+          <div className="subtitle-enter mt-1 text-center text-[18px] font-extrabold tracking-[-0.02em] text-[#72867f] sm:text-[21px]">
+            Powered By : Telcovantage Developers
+          </div>
         </div>
       </div>
 
       <style>{`
-        /* Letter fade+slide up */
-        .letter-anim {
+        .logo-enter {
           opacity: 0;
-          display: inline-block;
-          transform: translateY(14px) scale(0.9);
-          animation: letterIn 0.28s cubic-bezier(.22,1,.36,1) forwards;
-        }
-        @keyframes letterIn {
-          to { opacity: 1; transform: translateY(0) scale(1); }
+          transform: scale(0.82);
+          animation: logoEnter 0.95s cubic-bezier(.16,1,.3,1) 0.08s forwards;
         }
 
-        /* Circle expands to fill screen */
-        @keyframes circleExplode {
-          0%   { transform: translate(-50%,-50%) scale(1); opacity: 1; }
-          100% { transform: translate(-50%,-50%) scale(30); opacity: 1; }
+        .title-enter {
+          opacity: 0;
+          transform: scale(0.94);
+          animation: textEnter 0.62s cubic-bezier(.16,1,.3,1) 0.48s forwards;
         }
 
-        /* Text zooms + fades out as circle expands */
-        @keyframes contentZoom {
-          0%   { opacity: 1; transform: scale(1) translateY(0); }
-          40%  { opacity: 1; }
-          100% { opacity: 0; transform: scale(3.5) translateY(-20px); }
+        .subtitle-enter {
+          opacity: 0;
+          transform: scale(0.96);
+          animation: textEnter 0.54s cubic-bezier(.16,1,.3,1) 0.72s forwards;
+        }
+
+        .logo-shine-mask {
+          overflow: hidden;
+        }
+
+        .logo-shine {
+          position: absolute;
+          top: 36px;
+          left: 58px;
+          right: 58px;
+          height: 150px;
+          border-radius: 999px;
+          background: radial-gradient(circle, rgba(255,255,255,0.28), rgba(255,255,255,0.06) 68%, rgba(255,255,255,0) 100%);
+          animation: shinePulse 1.8s ease-in-out infinite;
+        }
+
+        @keyframes logoEnter {
+          0% { opacity: 0; transform: scale(0.82); }
+          100% { opacity: 1; transform: scale(1); }
+        }
+
+        @keyframes textEnter {
+          0% { opacity: 0; transform: scale(0.94); }
+          100% { opacity: 1; transform: scale(1); }
+        }
+
+        @keyframes shinePulse {
+          0% { opacity: 0.14; transform: scale(0.94); }
+          50% { opacity: 0.3; transform: scale(1.02); }
+          100% { opacity: 0.14; transform: scale(0.94); }
+        }
+
+        @keyframes contentOutro {
+          0% {
+            opacity: 1;
+            transform: scale(1);
+            filter: blur(0px);
+          }
+          100% {
+            opacity: 0;
+            transform: scale(2.92);
+            filter: blur(2px);
+          }
         }
       `}</style>
     </div>

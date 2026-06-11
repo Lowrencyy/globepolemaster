@@ -52,6 +52,8 @@ import Warehouses from './pages/subcontractors/Warehouses'
 import Deliveries from './pages/warehouse/Deliveries'
 import NodeDeliveryLogs from './pages/warehouse/NodeDeliveryLogs'
 import RecycleBin from './pages/recycle-bin/RecycleBin'
+import SupportTickets from './pages/support/SupportTickets'
+import SupportTicketDetail from './pages/support/SupportTicketDetail'
 
 function WarehouseInventoryPage() {
   return (
@@ -249,6 +251,14 @@ function SubconDashboardPage() {
   )
 }
 
+function SupportTicketsPage() {
+  return <Layout fullWidth><SupportTickets /></Layout>
+}
+
+function SupportTicketDetailPage() {
+  return <Layout><SupportTicketDetail /></Layout>
+}
+
 export default function App() {
   const { status } = useMaintenance()
 
@@ -313,6 +323,16 @@ export default function App() {
         <Route path="/recycle-bin" element={
           <RoleRoute allow={['admin', 'executive']}>
             <Layout><RecycleBin /></Layout>
+          </RoleRoute>
+        } />
+        <Route path="/support/tickets" element={
+          <RoleRoute allow={['admin', 'executive']}>
+            <SupportTicketsPage />
+          </RoleRoute>
+        } />
+        <Route path="/support/tickets/:ticketId" element={
+          <RoleRoute allow={['admin', 'executive']}>
+            <SupportTicketDetailPage />
           </RoleRoute>
         } />
 

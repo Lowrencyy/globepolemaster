@@ -125,9 +125,6 @@ const primaryBtnCls =
 const secondaryBtnCls =
   'h-10 rounded-2xl border border-slate-200 bg-white px-4 text-sm font-medium text-slate-600 shadow-sm transition hover:bg-slate-50 dark:border-zinc-600 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700'
 
-const dangerBtnCls =
-  'h-10 rounded-2xl bg-red-600 px-5 text-sm font-semibold text-white shadow-lg shadow-red-500/30 transition hover:bg-red-700 active:scale-[0.99]'
-
 const fiCls =
   'h-9 w-full rounded-full border border-slate-200 bg-white px-4 text-xs font-medium text-slate-600 outline-none transition hover:border-violet-300 focus:border-violet-400 focus:ring-2 focus:ring-violet-500/10 dark:border-zinc-600 dark:bg-zinc-800 dark:text-slate-200 dark:hover:border-zinc-500 dark:focus:border-violet-500'
 const fsCls = `${fiCls} appearance-none pr-8 cursor-pointer`
@@ -279,7 +276,6 @@ export default function AllPoles({
 
   const [isAddOpen, setIsAddOpen] = useState(false)
   const [isEditOpen, setIsEditOpen] = useState(false)
-  const [isDelOpen, setIsDelOpen] = useState(false)
   const [isStatusOpen, setIsStatusOpen] = useState(false)
 
   const [formData, setFormData] = useState<FormState>(emptyForm(areaId))
@@ -393,7 +389,6 @@ export default function AllPoles({
   const close = () => {
     setIsAddOpen(false)
     setIsEditOpen(false)
-    setIsDelOpen(false)
     setIsStatusOpen(false)
     setSelected(null)
     setFormData(emptyForm(areaId))
@@ -500,16 +495,6 @@ export default function AllPoles({
     } finally {
       setAddLoading(false)
     }
-  }
-
-  const handleDelete = () => {
-    if (!selected) return
-    setNodes(prev => {
-      const next = prev.filter(n => n.id !== selected.id)
-      cacheSet(nodesCacheKey, next)
-      return next
-    })
-    close()
   }
 
   const handleStatusSave = (status: NodeStatus) => {
@@ -869,15 +854,6 @@ export default function AllPoles({
                           >
                             <i className="bx bx-edit text-base" />
                           </button>
-                          {admin && (
-                            <button
-                              onClick={() => { setSelected(n); setIsDelOpen(true) }}
-                              title="Delete"
-                              className="rounded-xl p-1.5 text-slate-400 transition hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-500/10 dark:hover:text-red-400"
-                            >
-                              <i className="bx bx-trash text-base" />
-                            </button>
-                          )}
                         </div>
                       </td>
                     </tr>
@@ -925,30 +901,6 @@ export default function AllPoles({
 
       <Modal open={isEditOpen} title="Edit Node" subtitle={`Editing: ${selected?.full_label ?? selected?.name ?? ''}`} onClose={close}>
         {renderNodeForm('edit')}
-      </Modal>
-
-      <Modal open={isDelOpen} title="Delete Node?" subtitle="This action cannot be undone." onClose={close} widthClass="max-w-md" danger>
-        <div className="space-y-5">
-          <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4 dark:border-white/10 dark:bg-white/5">
-            <dl className="grid grid-cols-2 gap-3 text-sm">
-              {([
-                ['Node', selected?.full_label ?? selected?.name],
-                ['Area', selected?.area?.name],
-                ['City', selected?.city],
-                ['Barangay', selected?.barangay_name],
-              ] as [string, string | undefined][]).map(([k, v]) => (
-                <div key={k}>
-                  <dt className="text-[11px] font-black uppercase tracking-wider text-slate-400 dark:text-slate-500">{k}</dt>
-                  <dd className="mt-1 font-bold text-slate-800 dark:text-slate-200">{v ?? '—'}</dd>
-                </div>
-              ))}
-            </dl>
-          </div>
-          <div className="flex gap-3">
-            <button onClick={handleDelete} className={`${dangerBtnCls} flex-1`}>Yes, Delete</button>
-            <button onClick={close} className={`${secondaryBtnCls} flex-1`}>Cancel</button>
-          </div>
-        </div>
       </Modal>
 
       {isStatusOpen && selected && (

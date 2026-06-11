@@ -250,7 +250,7 @@ export default function FieldCoverageMap({ mapView: mapViewProp = 'satellite', s
 
     try {
       const bounds = L.latLngBounds(mappablePins.map(pin => [pin.lat, pin.lng]))
-      map.fitBounds(bounds, { padding: [40, 40], maxZoom: 14 })
+      map.fitBounds(bounds, { padding: [40, 40], maxZoom: 6 })
     } catch {
       // Ignore invalid bounds from incomplete GPS data.
     }

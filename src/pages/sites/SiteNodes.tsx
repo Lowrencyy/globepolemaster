@@ -104,6 +104,10 @@ function NodeVicinityMap({ nodeId, nodeName }: { nodeId: number; nodeName: strin
   const [loaded, setLoaded] = useState(() => nodePolesCache.has(nodeId))
   const [w, setW] = useState(320)
   const divRef = useRef<HTMLDivElement>(null)
+  const safePoles = useMemo(
+    () => poles.filter((pole) => Number.isFinite(pole.lat) && Number.isFinite(pole.lng)),
+    [poles],
+  )
 
   // Fetch poles silently in background to refresh dynamic state without resetting loader
   useEffect(() => {
@@ -114,9 +118,9 @@ function NodeVicinityMap({ nodeId, nodeName }: { nodeId: number; nodeName: strin
       .then((rows: any) => {
         const list: any[] = Array.isArray(rows) ? rows : (rows?.data ?? [])
         const pins = list.flatMap((sp: any) => {
-          const lat = sp.pole?.lat ? Number(sp.pole.lat) : null
-          const lng = sp.pole?.lng ? Number(sp.pole.lng) : null
-          if (!lat || !lng) return []
+          const lat = sp.pole?.lat != null ? toFiniteNumber(sp.pole.lat, Number.NaN) : Number.NaN
+          const lng = sp.pole?.lng != null ? toFiniteNumber(sp.pole.lng, Number.NaN) : Number.NaN
+          if (!Number.isFinite(lat) || !Number.isFinite(lng)) return []
           return [{ lat, lng, status: sp.pole?.skycable_status ?? 'pending' }]
         })
         nodePolesCache.set(nodeId, pins)
@@ -144,7 +148,7 @@ function NodeVicinityMap({ nodeId, nodeName }: { nodeId: number; nodeName: strin
     return <div className="h-36 w-full animate-pulse rounded-xl bg-slate-100 dark:bg-slate-800" />
   }
 
-  if (poles.length === 0) {
+  if (safePoles.length === 0) {
     return (
       <div className="overflow-hidden rounded-xl border border-slate-100 bg-slate-50 dark:border-slate-800/60 dark:bg-slate-900/40">
         <img src={telcoImg} alt="No GPS" className="h-36 w-full object-contain p-4 opacity-25 dark:opacity-10" />
@@ -153,8 +157,8 @@ function NodeVicinityMap({ nodeId, nodeName }: { nodeId: number; nodeName: strin
   }
 
   const h = MAP_H
-  const lats = poles.map(p => p.lat)
-  const lngs = poles.map(p => p.lng)
+  const lats = safePoles.map(p => p.lat)
+  const lngs = safePoles.map(p => p.lng)
   const minLat = Math.min(...lats), maxLat = Math.max(...lats)
   const minLng = Math.min(...lngs), maxLng = Math.max(...lngs)
 
@@ -210,7 +214,7 @@ function NodeVicinityMap({ nodeId, nodeName }: { nodeId: number; nodeName: strin
       <div className="absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-slate-950/80 via-slate-950/40 to-transparent pointer-events-none z-1" />
 
       {/* Orange bounding box */}
-      {poles.length > 1 && bxW > 2 && bxH > 2 && (
+      {safePoles.length > 1 && bxW > 2 && bxH > 2 && (
         <div style={{
           position: 'absolute', left: bxL, top: bxT, width: bxW, height: bxH,
           border: '2px dashed rgba(245, 158, 11, 0.8)', borderRadius: 6,
@@ -219,7 +223,7 @@ function NodeVicinityMap({ nodeId, nodeName }: { nodeId: number; nodeName: strin
       )}
 
       {/* Pole dots with glowing rings */}
-      {poles.map((p, i) => {
+      {safePoles.map((p, i) => {
         const { xFrac: px, yFrac: py } = latLngToTileFrac(p.lat, p.lng, zoom)
         const dotColor = STATUS_DOT[p.status] ?? '#94a3b8'
         return (
@@ -239,7 +243,7 @@ function NodeVicinityMap({ nodeId, nodeName }: { nodeId: number; nodeName: strin
       <div className="absolute bottom-2.5 left-2.5 right-2.5 flex items-center justify-between gap-2 rounded-lg border border-white/10 bg-slate-950/60 backdrop-blur-md px-3 py-1.5 shadow-lg z-3">
         <span className="truncate text-xs font-bold tracking-wide text-white">{nodeName}</span>
         <span className="shrink-0 rounded-md bg-white/10 px-1.5 py-0.5 text-[9px] font-black uppercase tracking-widest text-white/80 backdrop-blur-xs">
-          {poles.length} {poles.length === 1 ? 'Pole' : 'Poles'}
+          {safePoles.length} {safePoles.length === 1 ? 'Pole' : 'Poles'}
         </span>
       </div>
     </div>
@@ -282,6 +286,11 @@ function h() {
     Accept: 'application/json',
     'Content-Type': 'application/json',
     }
+}
+
+function toFiniteNumber(value: unknown, fallback = 0) {
+  const parsed = typeof value === 'number' ? value : Number(value)
+  return Number.isFinite(parsed) ? parsed : fallback
 }
 
 function Modal({ title, sub, onClose, maxWidth = 'max-w-lg', children }: { title: string; sub?: string; onClose: () => void; maxWidth?: string; children: React.ReactNode }) {
@@ -451,7 +460,6 @@ export default function SiteNodes() {
   // CRUD state
   const [addOpen, setAddOpen] = useState(false)
   const [editOpen, setEditOpen] = useState(false)
-  const [delOpen, setDelOpen] = useState(false)
   const [selected, setSelected] = useState<Node | null>(null)
   const [form, setForm] = useState<NodeForm>(emptyForm())
   const [saving, setSaving] = useState(false)
@@ -532,7 +540,7 @@ export default function SiteNodes() {
   }, [nodes, filter, search])
 
   function closeAll() {
-    setAddOpen(false); setEditOpen(false); setDelOpen(false)
+    setAddOpen(false); setEditOpen(false)
     setSelected(null); setForm(emptyForm()); setFormErr('')
   }
 
@@ -613,47 +621,6 @@ export default function SiteNodes() {
     } finally { setSaving(false) }
   }
 
-  async function handleDelete() {
-    if (!selected || !siteId) return
-    const deletedId = selected.id
-    setSaving(true); setFormErr('')
-    try {
-      // Try permanent/force delete first; fall back to standard DELETE
-      let res = await fetch(`${SKYCABLE_API}/nodes/${deletedId}/force-delete`, { method: 'DELETE', headers: h() })
-      if (res.status === 404) {
-        res = await fetch(`${SKYCABLE_API}/nodes/${deletedId}?force=true`, { method: 'DELETE', headers: h() })
-      }
-      if (!res.ok && res.status !== 204) {
-        const body = await res.json().catch(() => ({}))
-        throw new Error(body?.message ?? `Delete failed (HTTP ${res.status})`)
-      }
-
-      setNodes(prev => {
-        const next = prev.filter(node => node.id !== deletedId)
-        siteNodesCache.set(siteId, next)
-        cacheSet(nodesKey(siteId), next, TTL.DEFAULT)
-        return next
-      })
-
-      setArea(prev => {
-        if (!prev) return prev
-        const next = {
-          ...prev,
-          nodes_count: typeof prev.nodes_count === 'number'
-            ? Math.max(0, prev.nodes_count - 1)
-            : prev.nodes_count,
-        }
-        siteAreaCache.set(siteId, next)
-        cacheSet(areaKey(siteId), next, TTL.DEFAULT)
-        return next
-      })
-
-      closeAll()
-    } catch (err) {
-      setFormErr(err instanceof Error ? err.message : 'Failed to delete')
-    } finally { setSaving(false) }
-  }
-
   function openEdit(node: Node, e: React.MouseEvent) {
     e.stopPropagation()
     setSelected(node)
@@ -683,12 +650,6 @@ export default function SiteNodes() {
       fetch(`${SKYCABLE_API.replace('/skycable', '')}/admin/teams?subcontractor_id=${subId}&per_page=200`, { headers: h() })
         .then(r => r.json()).then(d => setTeams(Array.isArray(d) ? d : (d?.data ?? []))).catch(() => { }).finally(() => setTeamsLoading(false))
     }
-  }
-
-  function openDel(node: Node, e: React.MouseEvent) {
-    e.stopPropagation()
-    setSelected(node)
-    setDelOpen(true)
   }
 
   const summaryCards = [
@@ -846,10 +807,11 @@ export default function SiteNodes() {
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
               {filtered.map(node => {
                 const cfg = STATUS_CFG[node.status] ?? STATUS_CFG.pending
-                const spanTarget   = node.span_summaries_sum_expected_cable ?? node.expected_cable ?? 0
-                const spanActual   = node.span_summaries_sum_actual_cable ?? node.actual_cable ?? 0
-                const spanPct      = spanTarget > 0 ? Math.min(100, Math.round((spanActual / spanTarget) * 100)) : (node.progress_percentage ?? 0)
-                const pct = spanPct
+                const spanTarget = toFiniteNumber(node.span_summaries_sum_expected_cable ?? node.expected_cable)
+                const spanActual = toFiniteNumber(node.span_summaries_sum_actual_cable ?? node.actual_cable)
+                const fallbackPct = toFiniteNumber(node.progress_percentage)
+                const spanPct = spanTarget > 0 ? Math.min(100, Math.round((spanActual / spanTarget) * 100)) : fallbackPct
+                const pct = Number.isFinite(spanPct) ? Math.max(0, spanPct) : 0
                 return (
                   <div
                     key={node.id}
@@ -904,7 +866,7 @@ export default function SiteNodes() {
                       <div className="mt-4 grid grid-cols-4 rounded-2xl bg-slate-50/80 p-2.5 text-center border border-slate-100/80 dark:bg-slate-950/30 dark:border-slate-800/60">
                         <div className="border-r border-slate-200/60 last:border-none dark:border-slate-800/80">
                           <span className="block text-sm font-black text-slate-900 dark:text-white">
-                            {node.spans_count ?? node.expected_nodes ?? 0}
+                            {toFiniteNumber(node.spans_count ?? node.expected_nodes)}
                           </span>
                           <span className="block text-[8px] font-bold tracking-wider text-slate-400 uppercase mt-0.5">
                             SPANS
@@ -954,9 +916,6 @@ export default function SiteNodes() {
                             <button onClick={e => openEdit(node, e)} className="flex h-6 w-6 items-center justify-center rounded-lg hover:bg-slate-100 text-slate-400 hover:text-indigo-600 transition-colors dark:hover:bg-slate-800 dark:hover:text-indigo-400" title="Edit Node">
                               <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.2}><path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
                             </button>
-                            <button onClick={e => openDel(node, e)} className="flex h-6 w-6 items-center justify-center rounded-lg hover:bg-rose-50 text-slate-400 hover:text-rose-600 transition-colors dark:hover:bg-rose-950/40 dark:hover:text-rose-400" title="Delete Node">
-                              <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.2}><path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
-                            </button>
                           </div>
                         ) : (
                           <svg className="h-3.5 w-3.5 shrink-0 text-slate-300 transition-transform group-hover:translate-x-1 duration-300 dark:text-slate-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" /></svg>
@@ -997,37 +956,6 @@ export default function SiteNodes() {
         </Modal>
       )}
 
-      {/* Delete Modal */}
-      {delOpen && selected && (
-        <Modal title="Revoke & Delete Node?" sub="Warning: This operation purges tracking pointers." onClose={closeAll}>
-          <div className="p-6">
-            <p className="text-sm text-slate-600 dark:text-slate-300">
-              Are you absolutely certain you wish to unregister <strong className="font-bold text-slate-900 dark:text-white">{selected.full_label ?? selected.name}</strong> from the operational coverage database?
-            </p>
-            {formErr && <p className="mt-3 rounded-lg bg-rose-50 p-2.5 text-xs font-bold text-rose-600 dark:bg-rose-950/30 dark:text-rose-400">{formErr}</p>}
-            <div className="mt-6 flex gap-3">
-              <button type="button" onClick={closeAll} disabled={saving} className="flex-1 rounded-xl border border-slate-200/80 bg-white py-3 text-sm font-bold text-slate-700 shadow-2xs transition-all hover:bg-slate-50 hover:border-slate-300 disabled:opacity-60 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700">Keep Registry</button>
-              <button
-                type="button"
-                onClick={handleDelete}
-                disabled={saving}
-                className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl py-3 text-sm font-bold text-white shadow-lg shadow-rose-600/20 transition-all hover:shadow-rose-600/30 disabled:opacity-60 active:scale-[0.98]"
-                style={{ background: 'linear-gradient(90deg, #e11d48 0%, #dc2626 100%)' }}
-              >
-                {saving ? (
-                  <>
-                    <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                      <circle cx="12" cy="12" r="9" className="opacity-30" stroke="currentColor" strokeWidth="3" />
-                      <path d="M21 12a9 9 0 00-9-9" className="opacity-100" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
-                    </svg>
-                    <span>Revoking…</span>
-                  </>
-                ) : 'Confirm Deletion'}
-              </button>
-            </div>
-          </div>
-        </Modal>
-      )}
     </div>
   )
 }
